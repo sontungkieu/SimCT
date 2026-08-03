@@ -151,6 +151,19 @@ class DistillationArguments:
                   "is masked (original behaviour); 0.0 means no masking (all spans "
                   "contribute to loss). Range: [0.0, 1.0]."}
     )
+    # SimCT (span_ctkd) re-normalization safeguard: mask positions whose
+    # re-normalization multiplier G(h) = 1 / Z_T(h) exceeds this threshold,
+    # where Z_T(h) is the teacher mass captured by the SimCT candidate space.
+    # G(h) > threshold means the candidate space holds < 1/threshold of the
+    # teacher mass, so re-normalization would amplify a low-mass tail; such
+    # positions contribute no distillation gradient. Set to 0 to disable.
+    span_gh_mask_threshold: float = field(
+        default=2.0,
+        metadata={"help": "Mask the distillation loss at positions where the SimCT "
+                  "re-normalization multiplier G(h)=1/Z_T(h) exceeds this value "
+                  "(default 2.0, i.e. teacher captured mass Z_T(h) < 0.5). "
+                  "Set to 0 to disable masking."}
+    )
 
     def __post_init__(self):
         # Validate teacher parallel size settings

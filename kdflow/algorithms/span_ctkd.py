@@ -310,6 +310,46 @@ class SpanCrossTokenizerKD:
         return stu_virtual_logits, tea_virtual_logits
 
     # ------------------------------------------------------------------
+    # Re-normalization multiplier G(h) safeguard
+    # ------------------------------------------------------------------
+    @torch.no_grad()
+    def _compute_segment_teacher_Z(self, segments, tea_logits_aligned, tea_label_ids_list):
+        """Teacher mass ``Z_T(h)`` captured by the SimCT candidate space, per segment.
+
+        ``Z_T(h)`` is computed on the **full-vocabulary** teacher softmax so that
+        it measures the original teacher probability mass that the candidate
+        space (shared tokens + the span realized at this position) represents:
+
+        - shared-token mass at the first teacher position, plus
+        - for a span, the geometric-mean probability of the span's teacher
+          tokens (matching the span logit used in the virtual distribution).
+
+        The re-normalization multiplier is then ``G(h) = 1 / Z_T(h)``.  A large
+        ``G(h)`` means the candidate space holds little teacher mass, so
+        re-normalizing over it would amplify a low-mass tail.
+
+        Returns:
+            Z: [num_segments] float tensor in (0, 1].
+        """
+        device = tea_logits_aligned.device
+        Z = torch.ones(len(segments), device=device, dtype=torch.float32)
+        for seg_idx, (ts, te, ss, se) in enumerate(segments):
+            tea_seg_logits = tea_logits_aligned[ts:te]                       # [k_t, vocab_t]
+            p_first = torch.softmax(tea_seg_logits[0].float(), dim=-1)        # full-vocab probs
+            m = p_first[self.teacher_overlap_token_ids].sum()                # shared-token mass
+            if (te - ts) > 1 or (se - ss) > 1:
+                span_ids = tea_label_ids_list[ts:te]
+                logps = torch.stack([
+                    torch.log_softmax(tea_seg_logits[k].float(), dim=-1)[tid]
+                    for k, tid in enumerate(span_ids)
+                ])
+                span_prob = torch.exp(logps.mean())                          # geometric mean
+                Z[seg_idx] = (m + span_prob).clamp(max=1.0)
+            else:
+                Z[seg_idx] = m.clamp(max=1.0)
+        return Z
+
+    # ------------------------------------------------------------------
     # Training step
     # ------------------------------------------------------------------
     def training_step(self, micro_batch):
@@ -369,6 +409,8 @@ class SpanCrossTokenizerKD:
         total_loss = torch.tensor(0.0, device=student_logits_flat.device, requires_grad=True)
         total_aligned_tokens = 0
         total_response_tokens = 0
+        total_kept_segments = 0
+        total_masked_segments = 0
 
         # Offset trackers for flattened logits (both are 2D across batch)
         tea_logits_offset = 0
@@ -419,6 +461,20 @@ class SpanCrossTokenizerKD:
                 tea_virtual.detach(),
                 reduction="none",
             )
+
+            # Re-normalization safeguard: drop positions whose multiplier
+            # G(h) = 1 / Z_T(h) exceeds the threshold (teacher captured mass
+            # Z_T(h) < 1/threshold). These low-mass positions would otherwise
+            # let re-normalization amplify a weak/noisy teacher tail, so they
+            # contribute no distillation gradient.
+            gh_threshold = getattr(self.args.kd, "span_gh_mask_threshold", 0.0)
+            if gh_threshold and gh_threshold > 0:
+                Z = self._compute_segment_teacher_Z(segments, tea_logits_b, tea_ids_list)
+                keep = (Z >= (1.0 / gh_threshold)).to(sample_loss.dtype)  # G(h) <= threshold
+                total_kept_segments += int(keep.sum().item())
+                total_masked_segments += int((keep.numel() - keep.sum()).item())
+                sample_loss = sample_loss * keep
+
             total_loss = total_loss + sample_loss.sum()
 
             # Count aligned tokens (sum of all segment lengths on student side)
@@ -435,6 +491,12 @@ class SpanCrossTokenizerKD:
         )
 
         loss_info = {"loss": kd_loss, "kd_loss": kd_loss, "align_ratio": align_ratio}
+
+        gh_masked_total = total_kept_segments + total_masked_segments
+        loss_info["gh_mask_ratio"] = torch.tensor(
+            total_masked_segments / max(gh_masked_total, 1),
+            device=student_logits_flat.device,
+        )
 
         if self.args.kd.kd_ratio < 1:
             ce_label_ids = student_label_ids[student_loss_mask]
