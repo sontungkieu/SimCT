@@ -237,30 +237,71 @@ def fetch_to_path(
     attempts: int = 3,
     chunk_size: int = 8 * 1024 * 1024,
 ) -> dict[str, Any]:
-    """Stream an immutable source to disk without retaining it in RAM."""
+    """Stream an immutable source to disk and resume an interrupted transfer."""
 
-    request = urllib.request.Request(
-        url,
-        headers={"User-Agent": "SimCT-reproduction/1 evaluation-materializer"},
-    )
     destination.parent.mkdir(parents=True, exist_ok=True)
     last_error: Exception | None = None
     for attempt in range(1, attempts + 1):
-        digest = hashlib.sha256()
-        byte_count = 0
+        existing_bytes = destination.stat().st_size if destination.is_file() else 0
+        headers = {
+            "User-Agent": "SimCT-reproduction/1 evaluation-materializer"
+        }
+        if existing_bytes:
+            headers["Range"] = f"bytes={existing_bytes}-"
+        request = urllib.request.Request(url, headers=headers)
         try:
             with urllib.request.urlopen(request, timeout=timeout_s) as response:
-                with destination.open("wb") as output:
+                status = int(getattr(response, "status", response.getcode()))
+                content_range = response.headers.get("Content-Range", "")
+                if existing_bytes and status == 206:
+                    if not content_range.startswith(f"bytes {existing_bytes}-"):
+                        destination.unlink(missing_ok=True)
+                        raise EvaluationDataError(
+                            f"invalid Content-Range while resuming {url}: "
+                            f"{content_range!r}"
+                        )
+                    digest = hashlib.sha256()
+                    with destination.open("rb") as existing:
+                        while chunk := existing.read(chunk_size):
+                            digest.update(chunk)
+                    byte_count = existing_bytes
+                    mode = "ab"
+                else:
+                    digest = hashlib.sha256()
+                    byte_count = 0
+                    mode = "wb"
+                response_bytes = 0
+                with destination.open(mode) as output:
                     while chunk := response.read(chunk_size):
                         output.write(chunk)
                         digest.update(chunk)
                         byte_count += len(chunk)
+                        response_bytes += len(chunk)
+                content_length = response.headers.get("Content-Length")
+                if content_length is not None and response_bytes != int(
+                    content_length
+                ):
+                    raise EvaluationDataError(
+                        f"incomplete response from {url}: expected "
+                        f"{content_length} bytes, received {response_bytes}"
+                    )
             if byte_count == 0:
                 raise EvaluationDataError(f"empty response from {url}")
             return {"bytes": byte_count, "sha256": digest.hexdigest()}
+        except urllib.error.HTTPError as exc:
+            if exc.code == 416 and existing_bytes:
+                content_range = exc.headers.get("Content-Range", "")
+                expected_suffix = f"*/{existing_bytes}"
+                if content_range.endswith(expected_suffix):
+                    return {
+                        "bytes": existing_bytes,
+                        "sha256": sha256_file(destination),
+                    }
+            last_error = exc
+            if attempt < attempts:
+                time.sleep(min(2**attempt, 8))
         except (OSError, urllib.error.URLError, EvaluationDataError) as exc:
             last_error = exc
-            destination.unlink(missing_ok=True)
             if attempt < attempts:
                 time.sleep(min(2**attempt, 8))
     raise EvaluationDataError(
@@ -417,17 +458,23 @@ def materialize_benchmark(
         records_digest.update(encoded)
         record_count += 1
 
+    source_temporaries = [
+        root / f".source-{index:03d}.partial"
+        for index in range(len(source.files))
+    ]
     records_temporary.unlink(missing_ok=True)
     try:
         with records_temporary.open("wb") as output:
             for file_index, item in enumerate(source.files):
                 if source.format == "jsonl":
-                    source_temporary = root / f".source-{file_index:03d}.tmp"
-                    source_temporary.unlink(missing_ok=True)
+                    source_temporary = source_temporaries[file_index]
+                    fetched_complete = False
                     try:
                         if stream_fetcher is not None:
+                            source_temporary.unlink(missing_ok=True)
                             fetched = dict(stream_fetcher(item.url, source_temporary))
                         elif fetcher is not fetch_bytes:
+                            source_temporary.unlink(missing_ok=True)
                             content = fetcher(item.url)
                             source_temporary.write_bytes(content)
                             fetched = {
@@ -436,6 +483,7 @@ def materialize_benchmark(
                             }
                         else:
                             fetched = fetch_to_path(item.url, source_temporary)
+                        fetched_complete = True
                         if not source_temporary.is_file():
                             raise EvaluationDataError(
                                 f"stream fetcher did not create {source_temporary}"
@@ -461,7 +509,10 @@ def materialize_benchmark(
                         ):
                             append_row(row, output)
                     finally:
-                        source_temporary.unlink(missing_ok=True)
+                        if fetched_complete and (
+                            stream_fetcher is not None or fetcher is not fetch_bytes
+                        ):
+                            source_temporary.unlink(missing_ok=True)
                 else:
                     content = fetcher(item.url)
                     source_files.append(
@@ -501,6 +552,8 @@ def materialize_benchmark(
                 + "\n"
             ).encode("utf-8"),
         )
+        for source_temporary in source_temporaries:
+            source_temporary.unlink(missing_ok=True)
         return manifest
     except BaseException:
         records_temporary.unlink(missing_ok=True)

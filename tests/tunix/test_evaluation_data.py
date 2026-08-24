@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
+import io
 import json
 
 import pytest
@@ -9,6 +11,7 @@ from vdt_tunix.evaluation_data import (
     BenchmarkSource,
     EvaluationDataError,
     SourceFile,
+    fetch_to_path,
     load_verified_materialization,
     materialize_benchmark,
 )
@@ -85,7 +88,7 @@ def test_materialization_streams_multiple_jsonl_sources(tmp_path):
     assert manifest["record_count"] == 2
     assert len(manifest["source_files"]) == 2
     assert not list((tmp_path / "gsm8k").glob("*.tmp"))
-    assert not list((tmp_path / "gsm8k").glob(".source-*.tmp"))
+    assert not list((tmp_path / "gsm8k").glob(".source-*.partial"))
 
 
 def test_verified_existing_artifact_skips_network(tmp_path):
@@ -135,4 +138,31 @@ def test_failed_second_shard_does_not_publish_partial_artifact(tmp_path):
     assert (root / "records.jsonl").read_bytes() == old_records
     assert (root / "manifest.json").read_bytes() == old_manifest
     assert not list(root.glob("*.tmp"))
-    assert not list(root.glob(".source-*.tmp"))
+    assert not list(root.glob(".source-*.partial"))
+
+
+def test_fetch_to_path_resumes_with_http_range(tmp_path, monkeypatch):
+    destination = tmp_path / "source.partial"
+    destination.write_bytes(b"abcd")
+
+    class Response(io.BytesIO):
+        status = 206
+        headers = {"Content-Range": "bytes 4-7/8", "Content-Length": "4"}
+
+        def getcode(self):
+            return self.status
+
+    def fake_urlopen(request, timeout):
+        assert request.get_header("Range") == "bytes=4-"
+        assert timeout == 180
+        return Response(b"efgh")
+
+    monkeypatch.setattr(
+        "vdt_tunix.evaluation_data.urllib.request.urlopen", fake_urlopen
+    )
+    report = fetch_to_path("https://fixture/source", destination)
+    assert destination.read_bytes() == b"abcdefgh"
+    assert report == {
+        "bytes": 8,
+        "sha256": hashlib.sha256(b"abcdefgh").hexdigest(),
+    }
