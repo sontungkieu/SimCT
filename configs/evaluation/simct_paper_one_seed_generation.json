@@ -1,0 +1,39 @@
+{
+  "contract_version": 1,
+  "protocol_id": "simct-paper-v2-one-seed-generation-v1",
+  "paper_revision": "arxiv-2605.07711v2",
+  "prompt_protocol": "gemma2-merged-system-zero-shot-v1",
+  "evaluator_revision": "cf0f33a0e6c967d4b74ea32b2dba12be01b73b9e",
+  "seed": 42,
+  "temperature": 0.6,
+  "top_p": 0.95,
+  "samples_per_instance": 1,
+  "batch_size": 4,
+  "max_prompt_tokens": 4096,
+  "benchmarks": [
+    {
+      "name": "gsm8k",
+      "records_sha256": "32c548f08195e19e33408b844dd7be6aa4bcae457d957bc05909ff4bd4a00595",
+      "record_count": 1319,
+      "max_new_tokens": 4096
+    },
+    {
+      "name": "math500",
+      "records_sha256": "8c64443b4679d04084c214ae2cd13788f384ae5e3b17c33086a8960e97aa686b",
+      "record_count": 500,
+      "max_new_tokens": 4096
+    },
+    {
+      "name": "mbpp",
+      "records_sha256": "f3dbe5f5668108d6c7b75b3407d4900b425dd0bec373a53bc5aa00cc6c395b5a",
+      "record_count": 500,
+      "max_new_tokens": 2048
+    },
+    {
+      "name": "live-code-bench-v6",
+      "records_sha256": "c9498140a3686181c25da47c905df5daff75563fa03ba414384da79c3e6d9b79",
+      "record_count": 1055,
+      "max_new_tokens": 4096
+    }
+  ]
+}

@@ -690,3 +690,50 @@ def build_backends(
         student=TunixStudentRolloutBackend(config, student_adapter),
         teacher=MaxTextFrozenTeacherScoreBackend(config, teacher_adapter),
     )
+
+
+def load_native_student(
+    config: RunConfig,
+    *,
+    dependencies: ModelRuntimeDependencies | None = None,
+) -> tuple[_LoadedTunixModel, TokenizerByteAdapter]:
+    """Load only the student model for inference.
+
+    Evaluation must not materialize the frozen 7B teacher merely to sample a
+    2B student checkpoint.  This path shares the production dependency bundle
+    and validation used by training, but intentionally constructs one adapter.
+    The dependency seam is retained for CPU contract tests; the public
+    one-argument call remains fail-closed and production-only.
+    """
+
+    if config.tpu.pipeline_parallelism != 1:
+        raise RealBackendUnavailable(
+            "the bounded real backend currently supports PP1 only"
+        )
+    _validate_model_path(config.student)
+    runtime = dependencies or _production_dependencies(config)
+    try:
+        runtime.validate_model_spec(config.student)
+        tokenizer = TokenizerByteAdapter(
+            runtime.load_tokenizer(config.student),
+            config.student,
+        )
+        adapter = CausalModelForwardAdapter(
+            config.student,
+            tokenizer,
+            runtime,
+            trainable=True,
+        )
+        loaded = adapter.require_loaded_model()
+    except RealBackendUnavailable:
+        raise
+    except Exception as exc:
+        raise RealBackendUnavailable(
+            "student-only adapter initialization failed: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    if not isinstance(loaded, _LoadedTunixModel):
+        raise RealBackendUnavailable(
+            "student-only loader did not return a native Tunix model"
+        )
+    return loaded, tokenizer

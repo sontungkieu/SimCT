@@ -207,6 +207,50 @@ as `paper_five_run`; the latter requires five distinct seeds. Passing training
 or the one-seed screen still does not, by itself, reproduce the paper's
 five-run mean and standard deviation.
 
+### Native generation and paper-released scoring
+
+`configs/evaluation/simct_paper_one_seed_generation.json` pins the four
+materialized benchmark hashes, seed 42, temperature `0.6`, top-p `0.95`, one
+sample per instance, and the released evaluator revision. The generation path
+loads only the Gemma student, verifies the full Orbax checkpoint lineage, and
+restores model arrays through the model-only warm-start contract; it does not
+materialize Qwen teacher weights. Batch artifacts are atomic and resumable, but
+every resumed row must match its prompt hash, checkpoint hash, seed, sampling
+parameters, token counts, and truncation flag.
+
+Render the checkpoint-attached Kaggle notebook with:
+
+```bash
+python scripts/tpu/render_generation_notebook.py \
+  --variant sft \
+  --training-config-relative-path \
+    configs/reproduction/qwen25_7b_to_gemma2_2b_public_sft_screen.json \
+  --generation-protocol-relative-path \
+    configs/evaluation/simct_paper_one_seed_generation.json \
+  --repo-dataset-source <owner>/<repo-snapshot> \
+  --evaluation-dataset-source <owner>/<pinned-evaluation-bundle> \
+  --checkpoint-kernel-source <owner>/<completed-training-kernel> \
+  --checkpoint-relative-path vdt_public_sft_screen/checkpoints \
+  --student-model-source google/gemma-2/flax/gemma2-2b-it/1 \
+  --output /path/to/generation_notebook.ipynb
+```
+
+The notebook runs generation first and then
+`scripts/evaluation/score_generated_predictions.py` before removing the
+expanded 4.5 GB evaluation input. The scorer verifies that
+`scripts/evaluation/evaluation.py` has SHA-256
+`21378cfb1aa1d2f3ddab684a1bcb671fd588919c76fd410fac424bd062db2839`,
+then AST-extracts the exact GSM8K, MATH-500, MBPP, and LCB scoring functions
+released at `cf0f33a`. It records Python, multiprocessing, SymPy, and LaTeX
+parser availability because the upstream requirements do not pin the latter
+two behaviors.
+
+These metrics are classified as **paper-released evaluator** results, not
+official Math-Verify or LiveCodeBench results. A completed one-seed score is
+scientific evidence about the bounded public-substitute screen, but
+`paper_reproduction=false`: it cannot recover the unavailable 10K training
+corpus or replace the paper's five-run mean and standard deviation.
+
 ## Still pending
 
 - a provenance-complete reconstruction of the unavailable paper 10K corpus and
@@ -215,7 +259,8 @@ five-run mean and standard deviation.
 - terminal TPU execution evidence for SimpleOPD from the identical warm start;
 - downstream GSM8K/MATH-500/MBPP/LCB evaluation artifacts under one decoding
   and scoring contract;
-- a verified conversion or native inference path from Orbax/Tunix checkpoints
-  to the evaluation runtime; checkpoint manifests alone are not loadable by
-  the existing SGLang evaluator;
+- terminal proof that the native Orbax/Tunix restore, generation, and
+  paper-released scoring path works on the pinned Kaggle TPU runtime;
+- a separately pinned official/reference scorer for robustness against quirks
+  in the released paper evaluator;
 - terminal TPU canary evidence and any scientific comparison metric.

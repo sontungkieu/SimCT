@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import dataclasses
+from types import SimpleNamespace
+from typing import ClassVar
 
 import numpy as np
 import pytest
@@ -18,14 +20,16 @@ from vdt_tunix.model_adapters import (
 from vdt_tunix.pipeline import run_contract_canary
 from vdt_tunix.real_backend import (
     RealBackendUnavailable,
+    _LoadedTunixModel,
     build_backends,
+    load_native_student,
 )
 
 
 class PieceTokenizer:
     pad_token_id = 0
     eos_token_id = 1
-    all_special_ids = [0, 1]
+    all_special_ids: ClassVar[list[int]] = [0, 1]
 
     def __init__(self, pieces):
         self._id_to_piece = {index + 2: piece for index, piece in enumerate(pieces)}
@@ -213,3 +217,48 @@ def test_builder_rejects_unimplemented_pipeline_layout(real_config):
     config = dataclasses.replace(real_config, tpu=tpu)
     with pytest.raises(RealBackendUnavailable, match="PP1"):
         build_backends(config, dependencies=dependencies)
+
+
+def test_student_only_loader_never_materializes_teacher(real_config):
+    tokenizer = PieceTokenizer(["P:", "ha", "pp", "y"])
+    validate_calls = []
+    tokenizer_calls = []
+    model_calls = []
+
+    def validate_model_spec(config):
+        validate_calls.append(config.model_id)
+
+    def load_tokenizer(config):
+        tokenizer_calls.append(config.model_id)
+        return tokenizer
+
+    def load_model(config, trainable):
+        model_calls.append((config.model_id, trainable))
+        return _LoadedTunixModel(
+            model="student-model",
+            mesh="student-mesh",
+            forward_fn="student-forward",
+            model_config=SimpleNamespace(
+                num_layers=2,
+                num_kv_heads=1,
+                head_dim=4,
+            ),
+        )
+
+    dependencies = ModelRuntimeDependencies(
+        name="student-only-cpu-fake",
+        production=False,
+        validate_model_spec=validate_model_spec,
+        load_tokenizer=load_tokenizer,
+        load_model=load_model,
+        forward_model=lambda *args: None,
+        stop_gradient=lambda value: value,
+        to_host=np.asarray,
+    )
+    loaded, adapter = load_native_student(real_config, dependencies=dependencies)
+
+    assert loaded.model == "student-model"
+    assert adapter.raw_tokenizer is tokenizer
+    assert validate_calls == [real_config.student.model_id]
+    assert tokenizer_calls == [real_config.student.model_id]
+    assert model_calls == [(real_config.student.model_id, True)]

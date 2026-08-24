@@ -484,10 +484,16 @@ def resolve_input(source, owner, slug):
     del source
     root = Path(os.environ.get("KJO_KAGGLE_INPUT_ROOT", "/kaggle/input"))
     legacy = root / slug
+    owner_direct = root / owner / slug
+    kernel_direct = root / "kernels" / owner / slug
     direct = root / "datasets" / owner / slug
     version_root = direct / "versions"
     if legacy.is_dir():
         return legacy
+    if owner_direct.is_dir():
+        return owner_direct
+    if kernel_direct.is_dir():
+        return kernel_direct
     if direct.is_dir() and not version_root.is_dir():
         return direct
     versions = sorted(
