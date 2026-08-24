@@ -118,6 +118,7 @@ def attach_model_sources(
 def render_canary_notebook(
     *,
     config_relative_path: str,
+    repo_dataset_source: str,
     student_model_source: str,
     teacher_model_source: str,
 ) -> dict[str, Any]:
@@ -126,10 +127,58 @@ def render_canary_notebook(
     config_relative = PurePosixPath(config_relative_path)
     if config_relative.is_absolute() or ".." in config_relative.parts:
         raise KaggleModelSourceError("config_relative_path must stay inside repo")
+    repo_parts = repo_dataset_source.split("/")
+    if len(repo_parts) != 2 or not all(repo_parts):
+        raise KaggleModelSourceError(
+            "repo_dataset_source must be owner/slug"
+        )
+    repo_owner, repo_slug = repo_parts
     student_source = validate_model_source(student_model_source)
     teacher_source = validate_model_source(teacher_model_source)
     student_mount = str(model_source_mount(student_source))
     teacher_mount = str(model_source_mount(teacher_source))
+
+    copy_repo = f'''from pathlib import Path
+import json
+import os
+import shutil
+
+KJO_REPO_DATASET_SOURCE = {repo_dataset_source!r}
+KJO_REPO_DATASET_SLUG = {repo_slug!r}
+KJO_REPO_DIR_NAME = "repo"
+KJO_REPO_WORKING_DIR = Path("/kaggle/working/repo")
+input_root = Path(os.environ.get("KJO_KAGGLE_INPUT_ROOT", "/kaggle/input"))
+legacy_root = input_root / KJO_REPO_DATASET_SLUG
+version_root = input_root / "datasets" / {repo_owner!r} / KJO_REPO_DATASET_SLUG / "versions"
+if legacy_root.is_dir():
+    dataset_root = legacy_root
+else:
+    versions = sorted(
+        (path for path in version_root.glob("*") if path.is_dir()),
+        key=lambda path: int(path.name) if path.name.isdigit() else -1,
+    )
+    if len(versions) != 1:
+        available = sorted(str(path.relative_to(input_root)) for path in input_root.rglob("*") if path.is_dir())
+        raise FileNotFoundError(
+            "Kaggle dataset is not mounted at either supported layout. "
+            f"dataset_source={{KJO_REPO_DATASET_SOURCE}} versions={{versions}} "
+            f"available_inputs={{available[:100]}}"
+        )
+    dataset_root = versions[0]
+source_repo = dataset_root / KJO_REPO_DIR_NAME
+if not source_repo.is_dir():
+    raise FileNotFoundError(f"repo directory is missing from dataset: {{source_repo}}")
+if KJO_REPO_WORKING_DIR.exists():
+    shutil.rmtree(KJO_REPO_WORKING_DIR)
+shutil.copytree(source_repo, KJO_REPO_WORKING_DIR, symlinks=False)
+summary = {{
+    "dataset_source": KJO_REPO_DATASET_SOURCE,
+    "dataset_root": str(dataset_root),
+    "source_repo": str(source_repo),
+    "working_dir": str(KJO_REPO_WORKING_DIR),
+    "file_count": sum(1 for path in KJO_REPO_WORKING_DIR.rglob("*") if path.is_file()),
+}}
+print("KJO_REPO_DATASET_COPY_SUMMARY " + json.dumps(summary, sort_keys=True))'''
 
     setup = f'''from pathlib import Path
 import importlib.metadata
@@ -251,6 +300,7 @@ print("VDT_CANARY_SUMMARY " + json.dumps(payload, sort_keys=True))'''
                     "One real optimizer update; this is not a scientific reproduction result.\n",
                 ],
             },
+            code_cell(copy_repo),
             code_cell(setup),
             code_cell(dependencies),
             code_cell(run),

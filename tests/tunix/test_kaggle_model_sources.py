@@ -16,6 +16,7 @@ from vdt_tunix.kaggle_model_sources import (
 
 STUDENT = "google/gemma-2/flax/gemma2-2b-it/1"
 TEACHER = "qwen-lm/qwen2.5/transformers/7b-instruct/1"
+REPO_DATASET = "testowner/simct-tunix-repro-src"
 
 
 def test_model_source_mount_matches_kaggle_layout():
@@ -65,13 +66,17 @@ def test_rendered_canary_is_pinned_bounded_and_preserves_jax():
         config_relative_path=(
             "configs/reproduction/qwen25_7b_to_gemma2_2b_paper_canary.json"
         ),
+        repo_dataset_source=REPO_DATASET,
         student_model_source=STUDENT,
         teacher_model_source=TEACHER,
     )
     source = "".join(
         "".join(cell.get("source", [])) for cell in notebook["cells"]
     )
-    assert len(notebook["cells"]) == 4
+    assert len(notebook["cells"]) == 5
+    assert REPO_DATASET in source
+    assert 'input_root / "datasets"' in source
+    assert "KJO_REPO_DATASET_COPY_SUMMARY" in source
     assert STUDENT in source
     assert TEACHER in source
     assert "--no-deps" in source
@@ -84,6 +89,17 @@ def test_render_rejects_config_escape():
     with pytest.raises(KaggleModelSourceError, match="inside repo"):
         render_canary_notebook(
             config_relative_path="../secret.json",
+            repo_dataset_source=REPO_DATASET,
+            student_model_source=STUDENT,
+            teacher_model_source=TEACHER,
+        )
+
+
+def test_render_rejects_malformed_repo_dataset_source():
+    with pytest.raises(KaggleModelSourceError, match="owner/slug"):
+        render_canary_notebook(
+            config_relative_path="configs/canary.json",
+            repo_dataset_source="missing-owner",
             student_model_source=STUDENT,
             teacher_model_source=TEACHER,
         )

@@ -23,12 +23,14 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--config-relative-path", required=True)
+    parser.add_argument("--repo-dataset-source", required=True)
     parser.add_argument("--student-model-source", required=True)
     parser.add_argument("--teacher-model-source", required=True)
     args = parser.parse_args(argv)
     try:
         payload = render_canary_notebook(
             config_relative_path=args.config_relative_path,
+            repo_dataset_source=args.repo_dataset_source,
             student_model_source=args.student_model_source,
             teacher_model_source=args.teacher_model_source,
         )
