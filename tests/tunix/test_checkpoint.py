@@ -18,6 +18,7 @@ from vdt_tunix.config import RunConfig
 def _state(run_config, *, completed_steps=1, suffix="a"):
     return CheckpointState.create(
         run_config,
+        dataset_manifest_sha256="d" * 64,
         completed_steps=completed_steps,
         data_cursor=DataCursor(epoch=0, next_prompt_index=completed_steps * 2),
         rng_state={"student_rollout": f"rollout-{completed_steps}", "trainer": f"train-{completed_steps}"},
@@ -62,6 +63,14 @@ def test_resume_rejects_config_drift(run_config, config_payload, tmp_path):
     changed_config = RunConfig.from_mapping(changed)
     with pytest.raises(CheckpointError, match="resume identity mismatch"):
         load_latest_checkpoint(root, config=changed_config)
+
+
+def test_checkpoint_identity_ignores_storage_and_resume_paths(config_payload):
+    original = RunConfig.from_mapping(copy.deepcopy(config_payload))
+    moved = copy.deepcopy(config_payload)
+    moved["checkpoint"]["root"] = "/different/output/root"
+    moved["checkpoint"]["resume_from"] = "/mounted/input/checkpoint"
+    assert RunConfig.from_mapping(moved).digest() == original.digest()
 
 
 def test_checkpoint_refuses_latest_rollback(run_config, tmp_path):

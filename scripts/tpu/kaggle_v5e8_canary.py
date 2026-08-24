@@ -24,7 +24,9 @@ from vdt_tunix.integration import (
     RealModelIntegrationUnavailable,
     load_real_backend_bundle,
 )
+from vdt_tunix.model_adapters import ModelAdapterError
 from vdt_tunix.pipeline import PipelineContractError, run_contract_canary
+from vdt_tunix.real_backend import RealBackendUnavailable
 from vdt_tunix.runtime import TPUPreflightError, require_tpu_v5e8
 from vdt_tunix.trainer import PaperSimCTTrainer, TrainingError
 
@@ -126,7 +128,13 @@ def main(argv: list[str] | None = None) -> int:
             simct_update_executed=True,
             update_metrics=update.to_dict(),
         )
-    except (TPUPreflightError, PipelineContractError, TrainingError) as exc:
+    except (
+        TPUPreflightError,
+        PipelineContractError,
+        TrainingError,
+        ModelAdapterError,
+        RealBackendUnavailable,
+    ) as exc:
         return _finish(
             {
                 "phase": "tpu_contract_canary",

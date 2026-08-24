@@ -530,9 +530,18 @@ class RunConfig:
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
 
+    def identity_dict(self) -> dict[str, Any]:
+        """Return training identity without environment-local storage paths."""
+
+        payload = self.to_dict()
+        payload["checkpoint"] = {
+            "save_every_steps": self.checkpoint.save_every_steps,
+        }
+        return payload
+
     def canonical_json(self) -> str:
         return json.dumps(
-            self.to_dict(),
+            self.identity_dict(),
             sort_keys=True,
             separators=(",", ":"),
             ensure_ascii=False,

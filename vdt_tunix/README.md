@@ -10,14 +10,16 @@ keeps the CPU-testable boundary separate from the existing KDFlow and
 | Student rollout interface | implemented | prompt/completion ids, exact UTF-8 token pieces, rollout log-probability shape and provenance |
 | Teacher score interface | implemented | the same completion text retokenized by one teacher plus full-vocabulary logit shape/provenance |
 | CPU contract pipeline | implemented | identity, sample count, exact text bridge and genuinely different tokenization are checked with both original mocks and dependency-injected adapter fakes |
-| Checkpoint/resume manifest | implemented | atomic latest pointer, manifest SHA-256, config/model/tokenizer identity, data cursor, RNG and opaque parameter/optimizer references |
+| Prompt dataset contract | implemented | strict JSONL schema, immutable revision, file and manifest SHA-256, unique prompt IDs, deterministic cursor batches |
+| Checkpoint/resume manifest | implemented | atomic latest pointer, config/dataset/model/tokenizer identity, data cursor, RNG and content-addressed parameter/optimizer references |
 | TPU v5e-8 hardware preflight | implemented | lazily checks JAX backend, exactly eight devices and v5e/v5-lite device kinds |
 | Tunix/MaxText model adapters | implemented, execution pending | lazy local-checkpoint `AutoModel` restore contract, full-sequence causal forward, trainable student and stop-gradient teacher; TP8/PP1 only |
-| Real student rollout canary | implemented, execution pending | bounded full-sequence autoregressive decode and rollout log-probabilities; this is deliberately not a KV-cache training rollout engine |
+| Real student rollout canary | implemented, execution pending | native Tunix KV-cached sampler, deterministic rollout coordinate, rollout log-probabilities and exact decoded-byte bridge |
 | Real frozen-teacher scoring | implemented, execution pending | exact completion retokenization and full-vocabulary causal rows from the local MaxText teacher |
-| JAX paper-math SimCT kernel | implemented, local JAX execution pending | Eq. (7) mean log-probability scores, finite-candidate softmax, reverse KL, and student-score gradients; no optimizer step is wired into the canary |
-| Orbax array save/restore | pending | this scaffold records references only; it does not serialize arrays |
-| Kaggle/TPU evidence | not run | no job has been submitted and no TPU claim is made |
+| JAX paper-math SimCT update | implemented, TPU execution pending | Eq. (7) mean log-probability scores, finite-candidate softmax, reverse KL, NNX gradient and AdamW update |
+| Tunix/Orbax array save/restore | implemented, TPU execution pending | synchronous model plus optimizer persistence, directory digest, custom metadata cross-check, movable resume root |
+| Resume-safe TPU train entrypoint | implemented, TPU execution pending | verified prompt manifest, deterministic cursor, finite metric gate, periodic full checkpoints and training summary |
+| Kaggle/TPU evidence | submitted, terminal evidence pending | a v5e-8 canary is operational work only; no scientific metric claim is made |
 
 ## Contract boundaries
 
@@ -32,10 +34,13 @@ non-v5e-8 layouts fail validation.
 
 Checkpoint manifests are immutable at a completed-step coordinate. A resume
 loads only through `latest.json`, verifies the manifest hash, then matches the
-full configuration digest and all model/tokenizer revisions. Real integration
-must durably write student parameters and optimizer state before publishing
-their artifact references. Teacher weights are immutable configuration inputs,
-not mutable checkpoint payloads in this single-teacher contract.
+training-identity digest, dataset-manifest digest, and all model/tokenizer
+revisions. Storage paths are deliberately excluded from training identity so a
+checkpoint downloaded from one Kaggle output can resume under a new input
+mount. Tunix writes student parameters and optimizer state synchronously before
+the manifest publishes their content digest. Teacher weights are immutable
+configuration inputs, not mutable checkpoint payloads in this single-teacher
+contract.
 
 ## Local CPU checks
 
@@ -84,10 +89,27 @@ from the read-only reference. It deliberately does not pin or install JAX.
 The project package discovery includes `vdt_tunix`; the CPU canaries can also be
 executed directly from the repository checkout.
 
+## Resume-safe training
+
+After materializing a strict prompt manifest, a full training process uses:
+
+```bash
+python scripts/tpu/kaggle_v5e8_train.py \
+  --config configs/reproduction/<run>.json \
+  --dataset-manifest /kaggle/input/<dataset>/manifest.json \
+  --metrics /kaggle/working/<run>/train_metrics.jsonl \
+  --output /kaggle/working/<run>/train_summary.json
+```
+
+The output explicitly remains `scientific_evidence=false` until a downstream
+evaluation under the shared comparison contract is complete.
+
 ## Still pending
 
-- a KV-cache rollout engine suitable for training throughput;
-- construction of aligned virtual-candidate tensors from real student and
-  teacher forward rows and invocation of the JAX loss in the canary;
-- optimizer/update wiring and Orbax parameter/optimizer serialization;
-- any TPU/Kaggle execution or scientific metric evidence.
+- a provenance-complete reconstruction of the unavailable paper 10K corpus and
+  warm-start checkpoint, or an explicitly labeled public-data substitute;
+- SFT warm-start training in the same native Tunix model representation;
+- SimpleOPD control training from the identical warm start;
+- downstream GSM8K/MATH-500/MBPP/LCB evaluation artifacts under one decoding
+  and scoring contract;
+- terminal TPU canary evidence and any scientific comparison metric.

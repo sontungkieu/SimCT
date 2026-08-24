@@ -17,7 +17,7 @@ from typing import Any
 from vdt_tunix.config import RunConfig
 
 
-CHECKPOINT_CONTRACT_VERSION = 1
+CHECKPOINT_CONTRACT_VERSION = 2
 LATEST_POINTER = "latest.json"
 
 
@@ -99,6 +99,7 @@ class CheckpointState:
     contract_version: int
     run_id: str
     config_sha256: str
+    dataset_manifest_sha256: str
     completed_steps: int
     student_model_revision: str
     student_tokenizer_revision: str
@@ -115,6 +116,9 @@ class CheckpointState:
         if not self.run_id:
             raise CheckpointError("checkpoint run_id must be non-empty")
         _require_sha256(self.config_sha256, "config_sha256")
+        _require_sha256(
+            self.dataset_manifest_sha256, "dataset_manifest_sha256"
+        )
         if self.completed_steps < 0:
             raise CheckpointError("completed_steps must be non-negative")
         if not all(
@@ -137,6 +141,7 @@ class CheckpointState:
         cls,
         config: RunConfig,
         *,
+        dataset_manifest_sha256: str,
         completed_steps: int,
         data_cursor: DataCursor,
         rng_state: Mapping[str, str],
@@ -152,6 +157,7 @@ class CheckpointState:
             contract_version=CHECKPOINT_CONTRACT_VERSION,
             run_id=config.run_id,
             config_sha256=config.digest(),
+            dataset_manifest_sha256=dataset_manifest_sha256,
             completed_steps=completed_steps,
             student_model_revision=config.student.model_revision,
             student_tokenizer_revision=config.student.tokenizer_revision,
@@ -173,6 +179,7 @@ class CheckpointState:
             "contract_version",
             "run_id",
             "config_sha256",
+            "dataset_manifest_sha256",
             "completed_steps",
             "student_model_revision",
             "student_tokenizer_revision",
@@ -203,6 +210,7 @@ class CheckpointState:
             for name in (
                 "run_id",
                 "config_sha256",
+                "dataset_manifest_sha256",
                 "student_model_revision",
                 "student_tokenizer_revision",
                 "teacher_model_revision",
@@ -215,6 +223,7 @@ class CheckpointState:
             contract_version=version,
             run_id=string_fields["run_id"],
             config_sha256=string_fields["config_sha256"],
+            dataset_manifest_sha256=string_fields["dataset_manifest_sha256"],
             completed_steps=completed,
             student_model_revision=string_fields["student_model_revision"],
             student_tokenizer_revision=string_fields["student_tokenizer_revision"],
@@ -231,6 +240,7 @@ class CheckpointState:
             "contract_version": self.contract_version,
             "run_id": self.run_id,
             "config_sha256": self.config_sha256,
+            "dataset_manifest_sha256": self.dataset_manifest_sha256,
             "completed_steps": self.completed_steps,
             "student_model_revision": self.student_model_revision,
             "student_tokenizer_revision": self.student_tokenizer_revision,
