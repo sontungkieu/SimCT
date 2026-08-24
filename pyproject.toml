@@ -24,7 +24,15 @@ all = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["kdflow*"]
+include = ["kdflow*", "vdt_span*", "vdt_tunix*"]
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -s"
+markers = [
+    "upstream_parity: checks that may require PyTorch or upstream KDFlow objects",
+    "tpu: tests for the Tunix/MaxText adapter contract",
+]

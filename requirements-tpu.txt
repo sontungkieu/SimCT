@@ -1,0 +1,10 @@
+# Preserve Kaggle's provider-managed JAX/libtpu stack. Install these explicit
+# packages with --no-deps; do not request jax[tpu] or replace libtpu in-place.
+# The Tunix fork/MaxText versions mirror the read-only infrastructure reference.
+google-tunix @ git+https://github.com/sontungkieu/tunix.git@50f5752a17edec56e2aa30aabfc03859949adf6f
+maxtext==0.2.3
+pathwaysutils>=0.1.8,<0.2
+orbax-checkpoint
+pyarrow>=24.0.0
+psutil
+transformers
