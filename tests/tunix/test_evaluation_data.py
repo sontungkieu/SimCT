@@ -4,6 +4,7 @@ import dataclasses
 import hashlib
 import io
 import json
+import urllib.error
 
 import pytest
 
@@ -165,4 +166,37 @@ def test_fetch_to_path_resumes_with_http_range(tmp_path, monkeypatch):
     assert report == {
         "bytes": 8,
         "sha256": hashlib.sha256(b"abcdefgh").hexdigest(),
+    }
+
+
+def test_fetch_to_path_recognizes_complete_file_after_416(
+    tmp_path, monkeypatch
+):
+    destination = tmp_path / "source.partial"
+    destination.write_bytes(b"complete")
+    calls = []
+
+    class HeadResponse(io.BytesIO):
+        status = 200
+        headers = {"Content-Length": "8"}
+
+        def getcode(self):
+            return self.status
+
+    def fake_urlopen(request, timeout):
+        calls.append(request.get_method())
+        if request.get_method() == "GET":
+            raise urllib.error.HTTPError(
+                request.full_url, 416, "Range Not Satisfiable", {}, None
+            )
+        return HeadResponse(b"")
+
+    monkeypatch.setattr(
+        "vdt_tunix.evaluation_data.urllib.request.urlopen", fake_urlopen
+    )
+    report = fetch_to_path("https://fixture/source", destination, attempts=1)
+    assert calls == ["GET", "HEAD"]
+    assert report == {
+        "bytes": 8,
+        "sha256": hashlib.sha256(b"complete").hexdigest(),
     }

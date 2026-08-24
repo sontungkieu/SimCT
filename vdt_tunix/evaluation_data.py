@@ -292,11 +292,36 @@ def fetch_to_path(
             if exc.code == 416 and existing_bytes:
                 content_range = exc.headers.get("Content-Range", "")
                 expected_suffix = f"*/{existing_bytes}"
+                remote_bytes: int | None = None
                 if content_range.endswith(expected_suffix):
+                    remote_bytes = existing_bytes
+                else:
+                    head_request = urllib.request.Request(
+                        url,
+                        method="HEAD",
+                        headers={
+                            "User-Agent": (
+                                "SimCT-reproduction/1 evaluation-materializer"
+                            )
+                        },
+                    )
+                    try:
+                        with urllib.request.urlopen(
+                            head_request, timeout=timeout_s
+                        ) as response:
+                            size_header = response.headers.get(
+                                "X-Linked-Size"
+                            ) or response.headers.get("Content-Length")
+                            if size_header is not None:
+                                remote_bytes = int(size_header)
+                    except (OSError, urllib.error.URLError, ValueError):
+                        remote_bytes = None
+                if remote_bytes == existing_bytes:
                     return {
                         "bytes": existing_bytes,
                         "sha256": sha256_file(destination),
                     }
+                destination.unlink(missing_ok=True)
             last_error = exc
             if attempt < attempts:
                 time.sleep(min(2**attempt, 8))
