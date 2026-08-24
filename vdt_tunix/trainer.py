@@ -171,12 +171,17 @@ def prepare_simct_batch(
 
     for row_index, rollout in enumerate(rollouts.samples):
         score = scores[rollout.sample_id]
-        full_ids = rollout.student_prompt_token_ids + rollout.completion.token_ids
+        model_prompt_ids = (
+            backends.student.model_adapter.tokenizer.with_model_prefix(
+                rollout.student_prompt_token_ids
+            )
+        )
+        full_ids = model_prompt_ids + rollout.completion.token_ids
         if len(full_ids) > total_length:
             raise TrainingError("student prompt plus completion exceeds static capacity")
         student_input_ids[row_index, : len(full_ids)] = full_ids
         student_segment_ids[row_index, : len(full_ids)] = 1
-        start = len(rollout.student_prompt_token_ids) - 1
+        start = len(model_prompt_ids) - 1
         width = len(rollout.completion.token_ids)
         completion_positions[row_index, :width] = np.arange(
             start, start + width, dtype=np.int32

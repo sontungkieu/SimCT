@@ -65,9 +65,13 @@ class TokenizerByteAdapter:
         self.config = config
         self.pad_token_id = self._special_id("pad_token_id", "pad_id")
         self.eos_token_id = self._special_id("eos_token_id", "eos_id")
+        self.bos_token_id = self._optional_special_id("bos_token_id", "bos_id")
         special = getattr(tokenizer, "all_special_ids", ()) or ()
         self.special_token_ids = frozenset(int(value) for value in special)
-        self.special_token_ids = self.special_token_ids | {self.eos_token_id}
+        explicit_special = {self.pad_token_id, self.eos_token_id}
+        if self.bos_token_id is not None:
+            explicit_special.add(self.bos_token_id)
+        self.special_token_ids = self.special_token_ids | explicit_special
 
     @property
     def raw_tokenizer(self) -> Any:
@@ -83,6 +87,43 @@ class TokenizerByteAdapter:
                 f"tokenizer must expose a non-negative {attribute}"
             )
         return int(value)
+
+    def _optional_special_id(self, attribute: str, method: str) -> int | None:
+        value = getattr(self._tokenizer, attribute, None)
+        if value is None:
+            candidate = getattr(self._tokenizer, method, None)
+            value = candidate() if callable(candidate) else candidate
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ModelAdapterError(
+                f"tokenizer must expose a non-negative {attribute} or None"
+            )
+        return int(value)
+
+    def with_model_prefix(self, text_token_ids: Sequence[int]) -> tuple[int, ...]:
+        """Add exactly the BOS prefix used by Tunix's native sampler.
+
+        Loss-bearing text token IDs deliberately exclude zero-byte special
+        tokens so byte alignment remains exact.  Native model forwards still
+        need the same BOS-conditioned state used by ``Sampler.tokenize``.
+        Tunix treats BOS id zero as disabled and de-duplicates an already
+        present leading BOS; mirror those semantics here.
+        """
+
+        token_ids = _as_token_ids(list(text_token_ids))
+        bos_id = self.bos_token_id
+        if not bos_id:
+            return token_ids
+        prefixed = (bos_id, *token_ids)
+        while len(prefixed) > 1 and prefixed[0] == prefixed[1] == bos_id:
+            prefixed = prefixed[1:]
+        return prefixed
+
+    def encode_model_prompt(self, text: str) -> tuple[int, ...]:
+        """Encode text and add the native model prefix without changing text IDs."""
+
+        return self.with_model_prefix(self.encode(text))
 
     def _decode(self, token_ids: Sequence[int]) -> str:
         try:

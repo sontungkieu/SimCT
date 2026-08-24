@@ -71,7 +71,8 @@ def prepare_sft_batch(
             prompt_text=row.student_prompt,
             completion_text=row.target_response,
         )
-        if len(prompt_ids) > config.rollout.max_prompt_tokens:
+        model_prompt_ids = tokenizer.with_model_prefix(prompt_ids)
+        if len(model_prompt_ids) > config.rollout.max_prompt_tokens:
             raise SFTTrainingError(
                 f"SFT prompt {row.prompt_id!r} exceeds max_prompt_tokens"
             )
@@ -79,11 +80,11 @@ def prepare_sft_batch(
             raise SFTTrainingError(
                 f"SFT response {row.prompt_id!r} exceeds max_completion_tokens"
             )
-        row_input = prompt_ids + completion.token_ids
+        row_input = model_prompt_ids + completion.token_ids
         if len(row_input) > total_length:
             raise SFTTrainingError("SFT input exceeds static sequence capacity")
         targets = completion.token_ids + (tokenizer.eos_token_id,)
-        start = len(prompt_ids) - 1
+        start = len(model_prompt_ids) - 1
         positions = np.arange(start, start + len(targets), dtype=np.int32)
         input_ids[row_index, : len(row_input)] = row_input
         segment_ids[row_index, : len(row_input)] = 1

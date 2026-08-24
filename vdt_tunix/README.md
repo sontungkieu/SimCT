@@ -30,7 +30,11 @@ keeps the CPU-testable boundary separate from the existing KDFlow and
 `TokenSequence.pieces` excludes padding and terminal special tokens. Concatenated
 UTF-8 bytes must exactly equal the shared completion text. This lets a later
 SimCT implementation align tokenizer boundaries without equating teacher tokens
-with student tokens.
+with student tokens. Prompt token IDs stored in the rollout/score contracts are
+likewise text-only. Native rollout, SFT, teacher scoring, and OPD forwards add
+the tokenizer's BOS model prefix separately, so every loss is conditioned on
+the same model state as Tunix's sampler without introducing a zero-byte special
+token into the byte-alignment coordinate.
 
 The configuration contains a singular `teacher` object. Unknown keys, a
 `teachers` list, mutable `main`/`latest` revisions, same-tokenizer configs, and

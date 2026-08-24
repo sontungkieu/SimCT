@@ -63,7 +63,12 @@ class PieceTokenizer:
         return "".join(self._id_to_piece.get(int(value), "") for value in token_ids)
 
 
-def _fake_dependencies(student_tokenizer, teacher_tokenizer):
+def _fake_dependencies(
+    student_tokenizer,
+    teacher_tokenizer,
+    *,
+    forward_inputs=None,
+):
     load_calls = []
     stop_gradient_calls = []
 
@@ -81,6 +86,10 @@ def _fake_dependencies(student_tokenizer, teacher_tokenizer):
         ids = np.asarray(input_ids)
         segments = np.asarray(segment_ids)
         tokenizer = model["tokenizer"]
+        if forward_inputs is not None:
+            forward_inputs.append(
+                (bool(model["trainable"]), ids.copy(), segments.copy())
+            )
         logits = np.full(
             (*ids.shape, tokenizer.vocab_size),
             -5.0,
@@ -95,7 +104,10 @@ def _fake_dependencies(student_tokenizer, teacher_tokenizer):
             ]
             for row in range(ids.shape[0]):
                 active = int(segments[row].sum())
-                generated = active - 1  # the fake prompt is the single piece P:
+                prompt_width = 1 + bool(
+                    getattr(tokenizer, "bos_token_id", None)
+                )
+                generated = active - prompt_width
                 next_id = desired[min(generated, len(desired) - 1)]
                 logits[row, active - 1, next_id] = 8.0
         else:
@@ -190,6 +202,75 @@ def test_teacher_tokenization_without_prompt_boundary_fails_closed(real_config):
     adapter = TokenizerByteAdapter(tokenizer, real_config.teacher)
     with pytest.raises(ModelAdapterError, match="no exact prompt/completion"):
         adapter.tokenize_continuation(prompt_text="P:", completion_text="happy")
+
+
+def test_model_prompt_prefix_matches_tunix_sampler_without_polluting_text_ids(
+    real_config,
+):
+    class BosPieceTokenizer(PieceTokenizer):
+        bos_token_id = 9
+        all_special_ids: ClassVar[list[int]] = [0, 1, 9]
+
+    adapter = TokenizerByteAdapter(
+        BosPieceTokenizer(["P:", "ha", "pp", "y"]),
+        real_config.student,
+    )
+
+    text_ids = adapter.encode("P:")
+
+    assert text_ids == (2,)
+    assert adapter.with_model_prefix(text_ids) == (9, 2)
+    assert adapter.encode_model_prompt("P:") == (9, 2)
+    assert adapter.with_model_prefix((9, 2)) == (9, 2)
+    assert adapter.bos_token_id == 9
+    assert 9 in adapter.special_token_ids
+
+
+def test_rollout_and_teacher_scoring_share_bos_conditioning_state(real_config):
+    class StudentBosTokenizer(PieceTokenizer):
+        bos_token_id = 9
+        all_special_ids: ClassVar[list[int]] = [0, 1, 9]
+
+    class TeacherBosTokenizer(PieceTokenizer):
+        bos_token_id = 10
+        all_special_ids: ClassVar[list[int]] = [0, 1, 10]
+
+    student_tokenizer = StudentBosTokenizer(["P:", "ha", "pp", "y"])
+    teacher_tokenizer = TeacherBosTokenizer(["P:", "hap", "py"])
+    forward_inputs = []
+    dependencies, _, _ = _fake_dependencies(
+        student_tokenizer,
+        teacher_tokenizer,
+        forward_inputs=forward_inputs,
+    )
+    bundle = build_backends(real_config, dependencies=dependencies)
+    prompts = (
+        PromptRecord(
+            prompt_id=real_config.canary.prompt_id,
+            student_prompt=real_config.canary.student_prompt,
+            teacher_prompt=real_config.canary.teacher_prompt,
+        ),
+    )
+
+    rollouts = bundle.student.rollout(
+        RolloutRequest(
+            run_id=real_config.run_id,
+            step=1,
+            prompts=prompts,
+            samples_per_prompt=1,
+        )
+    )
+    scores = bundle.teacher.score(
+        TeacherScoreRequest(rollouts=rollouts, prompts=prompts)
+    )
+
+    assert rollouts.samples[0].completion.text == "happy"
+    assert rollouts.samples[0].student_prompt_token_ids == (2,)
+    assert scores.samples[0].teacher_prompt_token_ids == (2,)
+    student_forwards = [row for row in forward_inputs if row[0]]
+    teacher_forwards = [row for row in forward_inputs if not row[0]]
+    assert student_forwards[0][1][0, :2].tolist() == [9, 2]
+    assert teacher_forwards[0][1][0, :2].tolist() == [10, 2]
 
 
 def test_builder_rejects_missing_local_checkpoint(real_config):

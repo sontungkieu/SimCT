@@ -12,7 +12,7 @@ from vdt_tunix.config import RunConfig
 from vdt_tunix.contracts import BackendBundle
 from vdt_tunix.model_adapters import TokenizerByteAdapter
 from vdt_tunix.real_backend import _LoadedTunixModel
-from vdt_tunix.sft_trainer import TunixSFTTrainer
+from vdt_tunix.sft_trainer import TunixSFTTrainer, prepare_sft_batch
 from vdt_tunix.training_data import SFTRecord
 
 
@@ -163,3 +163,40 @@ def test_sft_trainer_updates_native_student_state():
     assert metrics.gradient_norm > 0.0
     assert metrics.target_tokens == 4
     assert not bool(jnp.allclose(before, model.table.get_value()))
+
+
+def test_sft_batch_uses_bos_conditioning_but_keeps_text_boundary():
+    config = _config()
+
+    class BosPieceTokenizer(PieceTokenizer):
+        bos_token_id = 7
+        all_special_ids = [0, 1, 7]
+
+    tokenizer = TokenizerByteAdapter(
+        BosPieceTokenizer(
+            {0: "", 1: "", 2: "P:", 3: "ha", 4: "pp", 5: "y"}
+        ),
+        config.student,
+    )
+    student = SimpleNamespace(
+        model_adapter=SimpleNamespace(tokenizer=tokenizer),
+    )
+    backends = BackendBundle(
+        student=student,
+        teacher=SimpleNamespace(),
+    )
+    row = SFTRecord(
+        prompt_id="p",
+        student_prompt="P:",
+        teacher_prompt="P:",
+        target_response="happy",
+        source="fixture",
+        source_id="p",
+        source_license="MIT",
+    )
+
+    batch = prepare_sft_batch(config, (row,), backends)
+
+    assert batch.input_ids[0, :5].tolist() == [7, 2, 3, 4, 5]
+    assert batch.label_positions[0, :4].tolist() == [1, 2, 3, 4]
+    assert batch.label_ids[0, :4].tolist() == [3, 4, 5, 1]

@@ -436,7 +436,9 @@ class TunixStudentRolloutBackend:
     def _tunix_sampler_rollout(
         self,
         request: RolloutRequest,
-        rows: Sequence[tuple[Any, int, str, tuple[int, ...]]],
+        rows: Sequence[
+            tuple[Any, int, str, tuple[int, ...], tuple[int, ...]]
+        ],
     ) -> StudentRolloutBatch:
         """Use Tunix's KV-cached sampler for the production native-model path."""
 
@@ -507,7 +509,7 @@ class TunixStudentRolloutBackend:
         for row, token_ids, log_probs in zip(
             rows, sampled.tokens, sampled.logprobs, strict=True
         ):
-            prompt, _, sample_id, prompt_ids = row
+            prompt, _, sample_id, prompt_ids, _ = row
             generated = tuple(int(value) for value in token_ids.tolist())
             completion = self.model_adapter.tokenizer.continuation_from_generated_ids(
                 prompt_text=prompt.student_prompt,
@@ -538,21 +540,34 @@ class TunixStudentRolloutBackend:
     def rollout(self, request: RolloutRequest) -> StudentRolloutBatch:
         import numpy as np
 
-        rows: list[tuple[Any, int, str, tuple[int, ...]]] = []
+        rows: list[
+            tuple[Any, int, str, tuple[int, ...], tuple[int, ...]]
+        ] = []
         for prompt in request.prompts:
             prompt_ids = self.model_adapter.tokenizer.encode(prompt.student_prompt)
-            if len(prompt_ids) > self._config.rollout.max_prompt_tokens:
+            model_prompt_ids = self.model_adapter.tokenizer.with_model_prefix(
+                prompt_ids
+            )
+            if len(model_prompt_ids) > self._config.rollout.max_prompt_tokens:
                 raise ModelAdapterError(
                     f"student prompt {prompt.prompt_id!r} exceeds max_prompt_tokens"
                 )
             for sample_index in range(request.samples_per_prompt):
                 sample_id = f"{prompt.prompt_id}/{sample_index}"
-                rows.append((prompt, sample_index, sample_id, prompt_ids))
+                rows.append(
+                    (
+                        prompt,
+                        sample_index,
+                        sample_id,
+                        prompt_ids,
+                        model_prompt_ids,
+                    )
+                )
 
         if self.real_model_integration:
             return self._tunix_sampler_rollout(request, rows)
 
-        max_prompt = max(len(row[3]) for row in rows)
+        max_prompt = max(len(row[4]) for row in rows)
         total_length = max_prompt + self._config.rollout.max_completion_tokens
         pad_id = self.model_adapter.tokenizer.pad_token_id
         input_ids = np.full((len(rows), total_length), pad_id, dtype=np.int32)
@@ -567,9 +582,9 @@ class TunixStudentRolloutBackend:
             )
             for row in rows
         ]
-        for row_index, (_, _, _, prompt_ids) in enumerate(rows):
-            width = len(prompt_ids)
-            input_ids[row_index, :width] = prompt_ids
+        for row_index, (_, _, _, _, model_prompt_ids) in enumerate(rows):
+            width = len(model_prompt_ids)
+            input_ids[row_index, :width] = model_prompt_ids
             segment_ids[row_index, :width] = 1
             lengths[row_index] = width
 
@@ -605,7 +620,7 @@ class TunixStudentRolloutBackend:
                 break
 
         samples: list[StudentRolloutSample] = []
-        for row_index, (prompt, _, sample_id, prompt_ids) in enumerate(rows):
+        for row_index, (prompt, _, sample_id, prompt_ids, _) in enumerate(rows):
             completion = self.model_adapter.tokenizer.continuation_from_generated_ids(
                 prompt_text=prompt.student_prompt,
                 prompt_token_ids=prompt_ids,
@@ -649,7 +664,9 @@ class MaxTextFrozenTeacherScoreBackend:
         import numpy as np
 
         prompt_by_id = {prompt.prompt_id: prompt for prompt in request.prompts}
-        tokenized: list[tuple[Any, tuple[int, ...], Any]] = []
+        tokenized: list[
+            tuple[Any, tuple[int, ...], tuple[int, ...], Any]
+        ] = []
         for rollout in request.rollouts.samples:
             prompt = prompt_by_id[rollout.prompt_id]
             prompt_ids, completion = (
@@ -658,19 +675,27 @@ class MaxTextFrozenTeacherScoreBackend:
                     completion_text=rollout.completion.text,
                 )
             )
-            if len(prompt_ids) > self._config.rollout.max_prompt_tokens:
+            model_prompt_ids = self.model_adapter.tokenizer.with_model_prefix(
+                prompt_ids
+            )
+            if len(model_prompt_ids) > self._config.rollout.max_prompt_tokens:
                 raise ModelAdapterError(
                     f"teacher prompt {prompt.prompt_id!r} exceeds max_prompt_tokens"
                 )
-            tokenized.append((rollout, prompt_ids, completion))
+            tokenized.append(
+                (rollout, prompt_ids, model_prompt_ids, completion)
+            )
 
-        widths = [len(prompt_ids) + len(completion.token_ids) for _, prompt_ids, completion in tokenized]
+        widths = [
+            len(model_prompt_ids) + len(completion.token_ids)
+            for _, _, model_prompt_ids, completion in tokenized
+        ]
         max_width = max(widths)
         pad_id = self.model_adapter.tokenizer.pad_token_id
         input_ids = np.full((len(tokenized), max_width), pad_id, dtype=np.int32)
         segment_ids = np.zeros_like(input_ids)
-        for row_index, (_, prompt_ids, completion) in enumerate(tokenized):
-            row_ids = prompt_ids + completion.token_ids
+        for row_index, (_, _, model_prompt_ids, completion) in enumerate(tokenized):
+            row_ids = model_prompt_ids + completion.token_ids
             input_ids[row_index, : len(row_ids)] = row_ids
             segment_ids[row_index, : len(row_ids)] = 1
 
@@ -679,8 +704,13 @@ class MaxTextFrozenTeacherScoreBackend:
         # The contract payload is backend-owned and accepts JAX or NumPy arrays.
         full_logits = self.model_adapter.forward(input_ids, segment_ids)
         samples: list[TeacherScoreSample] = []
-        for row_index, (rollout, prompt_ids, completion) in enumerate(tokenized):
-            start = len(prompt_ids) - 1
+        for row_index, (
+            rollout,
+            prompt_ids,
+            model_prompt_ids,
+            completion,
+        ) in enumerate(tokenized):
+            start = len(model_prompt_ids) - 1
             end = start + len(completion.token_ids)
             position_logits = full_logits[row_index, start:end, :]
             samples.append(
