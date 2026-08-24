@@ -1,10 +1,13 @@
-# Preserve Kaggle's provider-managed JAX/libtpu stack. Install these explicit
-# packages with --no-deps; do not request jax[tpu] or replace libtpu in-place.
-# The Tunix fork/MaxText versions mirror the read-only infrastructure reference.
+# Preserve Kaggle's provider-managed JAX/libtpu stack.  The notebook installs
+# this file with --no-deps and verifies that the jax and jaxlib versions did
+# not change.  Native Gemma/Qwen loading does not require the MaxText package.
 google-tunix @ git+https://github.com/sontungkieu/tunix.git@50f5752a17edec56e2aa30aabfc03859949adf6f
-maxtext==0.2.3
-pathwaysutils>=0.1.8,<0.2
-orbax-checkpoint
-pyarrow>=24.0.0
-psutil
-transformers
+flax>=0.12.5,<0.13
+google-metrax>=0.2.3,<0.3
+grain
+jaxtyping
+orbax-checkpoint>=0.12,<0.13
+qwix>=0.1.6
+safetensors>=0.6,<0.8
+sentencepiece>=0.2,<0.3
+transformers>=4.55,<5,!=4.57.2

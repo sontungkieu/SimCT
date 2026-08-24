@@ -1,4 +1,4 @@
-"""Fail-closed extension point for the intentionally absent real backend."""
+"""Fail-closed extension point for the optional real Tunix backend."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ REAL_BACKEND_MODULE = "vdt_tunix.real_backend"
 
 
 class RealModelIntegrationUnavailable(RuntimeError):
-    """Raised until real Tunix rollout and MaxText teacher scoring exist."""
+    """Raised when the requested real model integration cannot be loaded."""
 
 
 def load_real_backend_bundle(config: RunConfig) -> BackendBundle:

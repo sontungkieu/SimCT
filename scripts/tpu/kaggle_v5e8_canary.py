@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Kaggle TPU v5e-8 contract canary.
+"""One-update Kaggle TPU v5e-8 contract canary using real local model mounts.
 
-This entrypoint intentionally exits non-zero before JAX hardware discovery
-while the real model adapter is absent. It never substitutes the CPU mocks.
+The entrypoint fails closed and never substitutes the CPU mocks.  A passing
+result validates the integration plumbing only; it is not scientific evidence.
 """
 
 from __future__ import annotations
