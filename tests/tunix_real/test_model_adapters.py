@@ -211,5 +211,5 @@ def test_builder_rejects_unimplemented_pipeline_layout(real_config):
         pipeline_parallelism=2,
     )
     config = dataclasses.replace(real_config, tpu=tpu)
-    with pytest.raises(RealBackendUnavailable, match="TP8/PP1"):
+    with pytest.raises(RealBackendUnavailable, match="PP1"):
         build_backends(config, dependencies=dependencies)

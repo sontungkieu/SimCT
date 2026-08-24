@@ -1,11 +1,10 @@
-"""Bounded real Tunix/MaxText backend for the contract canary.
+"""Bounded real Tunix backend for rollout and frozen-teacher scoring.
 
-The production path uses only local MaxText checkpoints and locally available
-tokenizer files.  Model construction is lazy: ``build_backends`` validates
-dependencies, model specs, tokenizers, checkpoint paths, and the supported
-TP8/PP1 layout; the first rollout/score call performs the exact weight restore.
-Any unsupported or unavailable component fails closed.  There is no mock
-fallback and no network/model-weight download path.
+The production path uses only locally mounted, provenance-pinned model and
+tokenizer files.  Native Tunix safetensors (Qwen), native Gemma Flax/Orbax
+checkpoints, and MaxText checkpoints are explicit source modes.  Model
+construction is lazy.  Any unsupported or unavailable component fails closed;
+there is no mock or network-download fallback.
 """
 
 from __future__ import annotations
@@ -43,27 +42,29 @@ class RealBackendUnavailable(RuntimeError):
 
 
 @dataclasses.dataclass(slots=True)
-class _LoadedMaxTextModel:
+class _LoadedTunixModel:
     model: Any
     mesh: Any
     forward_fn: Any
+    model_config: Any
+    sampler: Any | None = None
 
 
-def _validate_checkpoint_path(config: ModelConfig) -> Path:
-    uri = config.maxtext_checkpoint_uri
+def _validate_model_path(config: ModelConfig) -> Path:
+    uri = config.resolved_model_path
     if "://" in uri:
         raise RealBackendUnavailable(
-            "the bounded backend supports local MaxText checkpoint directories "
+            "the bounded backend supports local mounted model directories "
             f"only, not URI {uri!r}"
         )
     path = Path(uri).expanduser()
     if not path.is_absolute():
         raise RealBackendUnavailable(
-            f"MaxText checkpoint path must be absolute: {uri!r}"
+            f"model path must be absolute: {uri!r}"
         )
     if not path.is_dir():
         raise RealBackendUnavailable(
-            f"MaxText checkpoint directory is unavailable: {path}"
+            f"model directory is unavailable: {path}"
         )
     return path.resolve()
 
@@ -81,13 +82,9 @@ def _production_dependencies(config: RunConfig) -> ModelRuntimeDependencies:
         )
         mesh_lib = importlib.import_module("tunix.utils.mesh")
         transformers = importlib.import_module("transformers")
-        try:
-            importlib.import_module("maxtext.configs.pyconfig")
-        except ImportError:
-            importlib.import_module("maxtext.src.maxtext.configs.pyconfig")
     except ImportError as exc:
         raise RealBackendUnavailable(
-            "required Tunix/MaxText real-backend dependency is unavailable: "
+            "required Tunix real-backend dependency is unavailable: "
             f"{exc.name or exc}"
         ) from exc
 
@@ -104,13 +101,30 @@ def _production_dependencies(config: RunConfig) -> ModelRuntimeDependencies:
 
     def load_tokenizer(model_config: ModelConfig) -> Any:
         try:
-            tokenizer = transformers.AutoTokenizer.from_pretrained(
-                model_config.tokenizer_id,
-                revision=model_config.tokenizer_revision,
-                local_files_only=True,
-                trust_remote_code=False,
-                token=None,
-            )
+            tokenizer_path = Path(model_config.resolved_tokenizer_path).expanduser()
+            if not tokenizer_path.is_absolute() or not tokenizer_path.exists():
+                raise RealBackendUnavailable(
+                    "tokenizer_path must be a locally mounted absolute path: "
+                    f"{model_config.resolved_tokenizer_path!r}"
+                )
+            if model_config.tokenizer_type == "huggingface":
+                tokenizer = transformers.AutoTokenizer.from_pretrained(
+                    str(tokenizer_path),
+                    local_files_only=True,
+                    trust_remote_code=False,
+                    token=None,
+                )
+            else:
+                tokenizer_lib = importlib.import_module(
+                    "tunix.generate.tokenizer_adapter"
+                )
+                tokenizer = tokenizer_lib.Tokenizer(
+                    tokenizer_type="sentencepiece",
+                    tokenizer_path=str(tokenizer_path),
+                    add_bos=False,
+                    add_eos=False,
+                    hf_access_token=None,
+                )
         except Exception as exc:
             raise RealBackendUnavailable(
                 "tokenizer is not available locally at the pinned revision for "
@@ -134,12 +148,28 @@ def _production_dependencies(config: RunConfig) -> ModelRuntimeDependencies:
                 "model loading requires the validated eight-device runtime; "
                 f"observed {len(devices)} devices"
             )
-        axis_sizes = {
-            "stage": config.tpu.pipeline_parallelism,
-            "tensor": config.tpu.tensor_parallelism,
-        }
-        axis_names = maxtext_parallelism.MAXTEXT_MESH_AXIS_NAMES
-        mesh_shape = tuple(axis_sizes.get(axis, 1) for axis in axis_names)
+        sources = {config.student.model_source, config.teacher.model_source}
+        if "maxtext" in sources and len(sources) != 1:
+            raise RealBackendUnavailable(
+                "student and teacher cannot mix MaxText and native Tunix meshes"
+            )
+        if sources == {"maxtext"}:
+            axis_sizes = {
+                "stage": config.tpu.pipeline_parallelism,
+                "tensor": config.tpu.tensor_parallelism,
+            }
+            axis_names = maxtext_parallelism.MAXTEXT_MESH_AXIS_NAMES
+            mesh_shape = tuple(axis_sizes.get(axis, 1) for axis in axis_names)
+        else:
+            if config.tpu.pipeline_parallelism != 1:
+                raise RealBackendUnavailable(
+                    "native Tunix model sources currently require PP1"
+                )
+            axis_names = ("fsdp", "tp")
+            mesh_shape = (
+                config.tpu.fsdp_parallelism,
+                config.tpu.tensor_parallelism,
+            )
         mesh_cache["mesh"] = mesh_lib.create_mesh(
             mesh_shape,
             axis_names,
@@ -148,8 +178,7 @@ def _production_dependencies(config: RunConfig) -> ModelRuntimeDependencies:
         return mesh_cache["mesh"]
 
     def load_model(model_config: ModelConfig, trainable: bool) -> Any:
-        del trainable  # Gradient behavior is enforced by the forward adapter.
-        checkpoint_path = _validate_checkpoint_path(model_config)
+        model_path = _validate_model_path(model_config)
         mesh = require_mesh()
         sample_batch = (
             config.rollout.prompt_batch_size * config.rollout.samples_per_prompt
@@ -160,31 +189,70 @@ def _production_dependencies(config: RunConfig) -> ModelRuntimeDependencies:
         )
         try:
             with jax.set_mesh(mesh):
-                model, _ = automodel.AutoModel.from_pretrained(
-                    model_id=model_config.model_id,
-                    model_path=str(checkpoint_path),
-                    mesh=mesh,
-                    model_source=automodel.ModelSource.MAXTEXT,
-                    per_device_batch_size=(
-                        sample_batch / config.tpu.expected_device_count
-                    ),
-                    max_target_length=max_target_length,
-                    steps=1,
-                    dataset_type="synthetic",
-                    enable_checkpointing=True,
-                    enable_dropout=False,
-                    attention="dot_product",
-                    remat_policy="full",
-                    scan_layers=True,
-                    scan_layers_per_stage=False,
-                    skip_jax_distributed_system=True,
-                    # Supplying the key prevents AutoModel from consulting an
-                    # ambient HF_TOKEN.  Local checkpoints need no credential.
-                    hf_access_token="",
-                )
+                if model_config.model_source == "maxtext":
+                    model, model_params = automodel.AutoModel.from_pretrained(
+                        model_id=model_config.model_id,
+                        model_path=str(model_path),
+                        mesh=mesh,
+                        model_source=automodel.ModelSource.MAXTEXT,
+                        per_device_batch_size=(
+                            sample_batch / config.tpu.expected_device_count
+                        ),
+                        max_target_length=max_target_length,
+                        steps=1,
+                        dataset_type="synthetic",
+                        enable_checkpointing=True,
+                        enable_dropout=False,
+                        attention="dot_product",
+                        remat_policy="full",
+                        scan_layers=True,
+                        scan_layers_per_stage=False,
+                        skip_jax_distributed_system=True,
+                        hf_access_token="",
+                    )
+                elif model_config.model_source == "huggingface":
+                    model_params = automodel.call_model_config(
+                        model_config.model_id
+                    )
+                    model = automodel.create_model_from_safe_tensors(
+                        model_config.model_id,
+                        str(model_path),
+                        model_params,
+                        mesh,
+                        dtype=jnp.bfloat16,
+                    )
+                else:
+                    candidates = [
+                        child
+                        for child in model_path.iterdir()
+                        if child.is_dir()
+                        and (
+                            (child / "_CHECKPOINT_METADATA").exists()
+                            or (child / "checkpoint").exists()
+                        )
+                    ]
+                    if len(candidates) != 1:
+                        raise RealBackendUnavailable(
+                            "Gemma Kaggle mount must contain exactly one Flax "
+                            f"checkpoint directory; found {candidates}"
+                        )
+                    cache_role = "student" if trainable else "teacher"
+                    intermediate = (
+                        Path(config.checkpoint.root).parent
+                        / "base-model-cache"
+                        / cache_role
+                    )
+                    model, model_params = automodel.create_gemma_model_with_nnx_conversion(
+                        model_name=model_config.model_id,
+                        ckpt_path=str(model_path),
+                        intermediate_ckpt_dir=str(intermediate),
+                        rng_seed=0,
+                        mesh=mesh,
+                        model_path=candidates[0].name,
+                    )
         except Exception as exc:
             raise RealBackendUnavailable(
-                f"local MaxText checkpoint restore failed for "
+                f"local Tunix model restore failed for "
                 f"{model_config.model_id!r}: {type(exc).__name__}: {exc}"
             ) from exc
 
@@ -199,10 +267,15 @@ def _production_dependencies(config: RunConfig) -> ModelRuntimeDependencies:
             )
             return logits
 
-        return _LoadedMaxTextModel(model=model, mesh=mesh, forward_fn=forward_fn)
+        return _LoadedTunixModel(
+            model=model,
+            mesh=mesh,
+            forward_fn=forward_fn,
+            model_config=model_params,
+        )
 
     def forward_model(
-        loaded: _LoadedMaxTextModel,
+        loaded: _LoadedTunixModel,
         input_ids: Any,
         segment_ids: Any,
     ) -> Any:
@@ -217,7 +290,7 @@ def _production_dependencies(config: RunConfig) -> ModelRuntimeDependencies:
             return loaded.forward_fn(loaded.model, ids, positions, segments)
 
     return ModelRuntimeDependencies(
-        name="tunix-maxtext-local",
+        name="tunix-local-mounted",
         production=True,
         validate_model_spec=validate_model_spec,
         load_tokenizer=load_tokenizer,
@@ -287,6 +360,108 @@ class TunixStudentRolloutBackend:
         self.model_adapter = model_adapter
         self.real_model_integration = model_adapter.dependencies.production
 
+    def _tunix_sampler_rollout(
+        self,
+        request: RolloutRequest,
+        rows: Sequence[tuple[Any, int, str, tuple[int, ...]]],
+    ) -> StudentRolloutBatch:
+        """Use Tunix's KV-cached sampler for the production native-model path."""
+
+        if self._config.student.model_source == "maxtext":
+            raise ModelAdapterError(
+                "the KV-cached rollout path currently requires a native Tunix model"
+            )
+        try:
+            from flax import nnx
+            from tunix.generate import sampler as sampler_lib
+        except ImportError as exc:
+            raise ModelAdapterError(
+                f"Tunix sampler dependency is unavailable: {exc}"
+            ) from exc
+
+        loaded = self.model_adapter.require_loaded_model()
+        if not isinstance(loaded, _LoadedTunixModel):
+            raise ModelAdapterError("production loader returned an unknown model wrapper")
+        params = loaded.model_config
+        for name in ("num_layers", "num_kv_heads", "head_dim"):
+            if not hasattr(params, name):
+                raise ModelAdapterError(
+                    f"native model config does not expose sampler field {name}"
+                )
+        if loaded.sampler is None:
+            loaded.sampler = sampler_lib.Sampler(
+                transformer=loaded.model,
+                tokenizer=self.model_adapter.tokenizer.raw_tokenizer,
+                cache_config=sampler_lib.CacheConfig(
+                    cache_size=(
+                        self._config.rollout.max_prompt_tokens
+                        + self._config.rollout.max_completion_tokens
+                        + 1
+                    ),
+                    num_layers=int(params.num_layers),
+                    num_kv_heads=int(params.num_kv_heads),
+                    head_dim=int(params.head_dim),
+                ),
+            )
+        else:
+            # The student changes after every optimizer step.  Synchronize the
+            # sampler before generating the next on-policy batch.
+            loaded.sampler.transformer_state = nnx.state(loaded.model)
+
+        prompts = [row[0].student_prompt for row in rows]
+        top_p = (
+            None
+            if self._config.rollout.temperature == 0.0
+            else self._config.rollout.top_p
+        )
+        with __import__("jax").set_mesh(loaded.mesh):
+            sampled = loaded.sampler(
+                prompts,
+                max_generation_steps=self._config.rollout.max_completion_tokens,
+                max_prompt_length=self._config.rollout.max_prompt_tokens,
+                temperature=self._config.rollout.temperature,
+                top_p=top_p,
+                seed=_stable_seed(request.run_id, request.step) % (2**31 - 1),
+                return_logits=False,
+                return_logprobs=True,
+                echo=False,
+                pad_output=False,
+            )
+        if len(sampled.tokens) != len(rows) or sampled.logprobs is None:
+            raise ModelAdapterError("Tunix sampler returned an invalid sample batch")
+
+        samples: list[StudentRolloutSample] = []
+        for row, token_ids, log_probs in zip(
+            rows, sampled.tokens, sampled.logprobs, strict=True
+        ):
+            prompt, _, sample_id, prompt_ids = row
+            generated = tuple(int(value) for value in token_ids.tolist())
+            completion = self.model_adapter.tokenizer.continuation_from_generated_ids(
+                prompt_text=prompt.student_prompt,
+                prompt_token_ids=prompt_ids,
+                completion_token_ids=generated,
+            )
+            samples.append(
+                StudentRolloutSample(
+                    sample_id=sample_id,
+                    prompt_id=prompt.prompt_id,
+                    student_prompt_token_ids=prompt_ids,
+                    completion=completion,
+                    rollout_log_probs=tuple(float(value) for value in log_probs),
+                )
+            )
+        model = self._config.student
+        return StudentRolloutBatch(
+            contract_version=INTERFACE_CONTRACT_VERSION,
+            run_id=request.run_id,
+            step=request.step,
+            model_id=model.model_id,
+            model_revision=model.model_revision,
+            tokenizer_id=model.tokenizer_id,
+            tokenizer_revision=model.tokenizer_revision,
+            samples=tuple(samples),
+        )
+
     def rollout(self, request: RolloutRequest) -> StudentRolloutBatch:
         import numpy as np
 
@@ -300,6 +475,9 @@ class TunixStudentRolloutBackend:
             for sample_index in range(request.samples_per_prompt):
                 sample_id = f"{prompt.prompt_id}/{sample_index}"
                 rows.append((prompt, sample_index, sample_id, prompt_ids))
+
+        if self.real_model_integration:
+            return self._tunix_sampler_rollout(request, rows)
 
         max_prompt = max(len(row[3]) for row in rows)
         total_length = max_prompt + self._config.rollout.max_completion_tokens
@@ -383,7 +561,7 @@ class TunixStudentRolloutBackend:
 
 
 class MaxTextFrozenTeacherScoreBackend:
-    backend_name = "tunix-maxtext-frozen-teacher-forward"
+    backend_name = "tunix-frozen-teacher-forward"
 
     def __init__(
         self,
@@ -423,11 +601,10 @@ class MaxTextFrozenTeacherScoreBackend:
             input_ids[row_index, : len(row_ids)] = row_ids
             segment_ids[row_index, : len(row_ids)] = 1
 
-        full_logits = np.asarray(
-            self.model_adapter.to_host(
-                self.model_adapter.forward(input_ids, segment_ids)
-            )
-        )
+        # Keep teacher logits on device.  Moving [batch, sequence, vocabulary]
+        # to host would dominate the cross-tokenizer update and can exceed RAM.
+        # The contract payload is backend-owned and accepts JAX or NumPy arrays.
+        full_logits = self.model_adapter.forward(input_ids, segment_ids)
         samples: list[TeacherScoreSample] = []
         for row_index, (rollout, prompt_ids, completion) in enumerate(tokenized):
             start = len(prompt_ids) - 1
@@ -471,12 +648,12 @@ def build_backends(
     dependencies and never falls back to those fakes.
     """
 
-    if config.tpu.tensor_parallelism != 8 or config.tpu.pipeline_parallelism != 1:
+    if config.tpu.pipeline_parallelism != 1:
         raise RealBackendUnavailable(
-            "the bounded real backend currently supports TP8/PP1 only"
+            "the bounded real backend currently supports PP1 only"
         )
-    _validate_checkpoint_path(config.student)
-    _validate_checkpoint_path(config.teacher)
+    _validate_model_path(config.student)
+    _validate_model_path(config.teacher)
     runtime = dependencies or _production_dependencies(config)
     try:
         runtime.validate_model_spec(config.student)

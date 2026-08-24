@@ -15,6 +15,7 @@ from vdt_span.scoring import (
 )
 from vdt_tunix.jax_kernels import (
     candidate_log_probs,
+    paper_simct_aligned_batch_loss,
     paper_candidate_scores,
     paper_simct_reverse_kl,
     reverse_kl_loss_and_student_score_gradient,
@@ -113,6 +114,85 @@ def test_end_to_end_kernel_stops_teacher_gradient():
         loss_fn,
         argnums=(0, 1),
     )(student_logits, teacher_logits)
+    assert bool(jnp.all(jnp.isfinite(student_gradient)))
+    assert float(jnp.linalg.norm(student_gradient)) > 0.0
+    assert float(jnp.linalg.norm(teacher_gradient)) == pytest.approx(0.0)
+
+
+def test_aligned_batch_loss_matches_two_row_python_reference():
+    student_logits = jnp.asarray(
+        [[
+            [2.0, 0.0, -1.0, 1.0],
+            [0.0, 3.0, 1.0, -1.0],
+            [1.0, -1.0, 2.0, 0.0],
+        ]]
+    )
+    teacher_logits = jnp.asarray(
+        [[
+            [0.0, 2.0, -1.0, 1.0, 0.5],
+            [2.0, 0.0, 1.0, -1.0, 0.2],
+        ]]
+    )
+    student_ids = jnp.asarray([[0, 1, 2]])
+    teacher_ids = jnp.asarray([[1, 0]])
+    bounds = jnp.asarray([[[0, 1, 0, 2], [1, 2, 2, 3]]])
+    unit_mask = jnp.asarray([[1.0, 1.0]])
+    span_mask = jnp.asarray([[True, False]])
+
+    s_lp = [_python_log_softmax(row) for row in student_logits[0].tolist()]
+    t_lp = [_python_log_softmax(row) for row in teacher_logits[0].tolist()]
+    expected_rows = [
+        reverse_kl_from_candidate_scores(
+            [s_lp[0][0], s_lp[0][3], (s_lp[0][0] + s_lp[1][1]) / 2.0],
+            [t_lp[0][1], t_lp[0][4], t_lp[0][1]],
+        ),
+        reverse_kl_from_candidate_scores(
+            [s_lp[2][0], s_lp[2][3]],
+            [t_lp[1][1], t_lp[1][4]],
+        ),
+    ]
+    observed = paper_simct_aligned_batch_loss(
+        student_logits,
+        student_ids,
+        teacher_logits,
+        teacher_ids,
+        jnp.asarray([0, 3]),
+        jnp.asarray([1, 4]),
+        bounds,
+        unit_mask,
+        span_mask,
+    )
+    assert float(observed) == pytest.approx(sum(expected_rows) / 2.0, abs=1e-6)
+
+
+def test_aligned_batch_loss_stops_teacher_gradient_and_uses_padding_mask():
+    student_logits = jnp.asarray(
+        [[[2.0, 0.0, -1.0], [0.0, 2.0, -1.0]]]
+    )
+    teacher_logits = jnp.asarray(
+        [[[0.0, 2.0, -1.0], [2.0, 0.0, -1.0]]]
+    )
+    labels = jnp.asarray([[0, 1]])
+    bounds = jnp.asarray([[[0, 2, 0, 2], [0, 0, 0, 0]]])
+    unit_mask = jnp.asarray([[1.0, 0.0]])
+    span_mask = jnp.asarray([[True, False]])
+
+    def loss_fn(student_values, teacher_values):
+        return paper_simct_aligned_batch_loss(
+            student_values,
+            labels,
+            teacher_values,
+            labels,
+            jnp.asarray([0, 1]),
+            jnp.asarray([0, 1]),
+            bounds,
+            unit_mask,
+            span_mask,
+        )
+
+    student_gradient, teacher_gradient = jax.grad(loss_fn, argnums=(0, 1))(
+        student_logits, teacher_logits
+    )
     assert bool(jnp.all(jnp.isfinite(student_gradient)))
     assert float(jnp.linalg.norm(student_gradient)) > 0.0
     assert float(jnp.linalg.norm(teacher_gradient)) == pytest.approx(0.0)

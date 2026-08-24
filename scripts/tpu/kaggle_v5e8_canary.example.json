@@ -21,7 +21,8 @@
     "alignment_unit": "utf8_bytes",
     "virtual_support": "shared_tokens_plus_realized_spans",
     "temperature": 1.0,
-    "span_gh_mask_threshold": 2.0
+    "span_gh_mask_threshold": 0.0,
+    "reproduction_mode": "paper_math"
   },
   "rollout": {
     "prompt_batch_size": 1,

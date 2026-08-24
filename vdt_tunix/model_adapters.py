@@ -69,6 +69,10 @@ class TokenizerByteAdapter:
         self.special_token_ids = frozenset(int(value) for value in special)
         self.special_token_ids = self.special_token_ids | {self.eos_token_id}
 
+    @property
+    def raw_tokenizer(self) -> Any:
+        return self._tokenizer
+
     def _special_id(self, attribute: str, method: str) -> int:
         value = getattr(self._tokenizer, attribute, None)
         if value is None:
@@ -240,6 +244,11 @@ class CausalModelForwardAdapter:
                     f"{self.role} model loader returned no model"
                 )
         return self._model
+
+    def require_loaded_model(self) -> Any:
+        """Materialize and return the framework-owned model wrapper."""
+
+        return self._require_model()
 
     def forward(self, input_ids: Any, segment_ids: Any) -> Any:
         """Return full causal logits; teacher results are stop-gradient."""

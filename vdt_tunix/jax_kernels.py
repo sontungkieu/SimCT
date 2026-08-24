@@ -174,3 +174,129 @@ def paper_simct_reverse_kl(
         teacher_scores,
         temperature=temperature,
     )
+
+
+def _selected_log_probabilities(position_logits: Any, token_ids: Any) -> Any:
+    """Return the realized-token log-probability at every causal position."""
+
+    jax, jnp = _jax_modules()
+    logits = jnp.asarray(position_logits)
+    labels = jnp.asarray(token_ids)
+    _require_rank("position_logits", logits, 3)
+    _require_rank("token_ids", labels, 2)
+    if logits.shape[:2] != labels.shape:
+        raise ValueError("position logits and token ids must share batch/length")
+    log_probs = jax.nn.log_softmax(logits.astype(jnp.float32), axis=-1)
+    return jnp.take_along_axis(log_probs, labels[..., None], axis=-1)[..., 0]
+
+
+def paper_simct_aligned_batch_loss(
+    student_position_logits: Any,
+    student_token_ids: Any,
+    teacher_position_logits: Any,
+    teacher_token_ids: Any,
+    student_overlap_ids: Any,
+    teacher_overlap_ids: Any,
+    segment_bounds: Any,
+    segment_mask: Any,
+    span_mask: Any,
+    *,
+    temperature: float = 1.0,
+    normalizer: Any | None = None,
+) -> Any:
+    """Vectorized paper-math SimCT loss on precomputed aligned segments.
+
+    ``segment_bounds`` has shape ``[batch, unit, 4]`` and stores
+    ``(teacher_start, teacher_end, student_start, student_end)`` over the
+    completion-token axes.  Padding units are ignored by ``segment_mask``.
+
+    Each real row compares the shared vocabulary plus, for a tokenizer-
+    mismatched unit, one realized continuation candidate.  Shared candidates
+    use the original next-token log-probability at the unit prefix.  The span
+    candidate uses Eq. (7), i.e. the mean autoregressive token
+    log-probability.  This is the written-paper coordinate system; it never
+    substitutes mean raw logits and never applies the post-paper ``G(h)``
+    safeguard.
+    """
+
+    jax, jnp = _jax_modules()
+    student_logits = jnp.asarray(student_position_logits)
+    teacher_logits = jax.lax.stop_gradient(jnp.asarray(teacher_position_logits))
+    student_labels = jnp.asarray(student_token_ids)
+    teacher_labels = jnp.asarray(teacher_token_ids)
+    student_shared = jnp.asarray(student_overlap_ids)
+    teacher_shared = jnp.asarray(teacher_overlap_ids)
+    bounds = jnp.asarray(segment_bounds)
+    units = jnp.asarray(segment_mask, dtype=jnp.float32)
+    spans = jnp.asarray(span_mask, dtype=bool)
+
+    _require_rank("student_position_logits", student_logits, 3)
+    _require_rank("teacher_position_logits", teacher_logits, 3)
+    _require_rank("student_token_ids", student_labels, 2)
+    _require_rank("teacher_token_ids", teacher_labels, 2)
+    _require_rank("student_overlap_ids", student_shared, 1)
+    _require_rank("teacher_overlap_ids", teacher_shared, 1)
+    _require_rank("segment_bounds", bounds, 3)
+    _require_rank("segment_mask", units, 2)
+    _require_rank("span_mask", spans, 2)
+    if student_logits.shape[:2] != student_labels.shape:
+        raise ValueError("student logits/labels shape mismatch")
+    if teacher_logits.shape[:2] != teacher_labels.shape:
+        raise ValueError("teacher logits/labels shape mismatch")
+    if bounds.shape[:2] != units.shape or units.shape != spans.shape:
+        raise ValueError("segment bounds and masks must share batch/unit axes")
+    if bounds.shape[-1] != 4:
+        raise ValueError("segment_bounds must end in four interval coordinates")
+    if student_shared.shape != teacher_shared.shape:
+        raise ValueError("student/teacher overlap id arrays must have equal length")
+    if student_shared.shape[0] < 1:
+        raise ValueError("SimCT requires at least one shared-vocabulary token")
+
+    s_selected = _selected_log_probabilities(student_logits, student_labels)
+    t_selected = jax.lax.stop_gradient(
+        _selected_log_probabilities(teacher_logits, teacher_labels)
+    )
+    s_all_log_probs = jax.nn.log_softmax(
+        student_logits.astype(jnp.float32), axis=-1
+    )
+    t_all_log_probs = jax.lax.stop_gradient(
+        jax.nn.log_softmax(teacher_logits.astype(jnp.float32), axis=-1)
+    )
+
+    ts, te, ss, se = (bounds[..., index] for index in range(4))
+    batch = jnp.arange(bounds.shape[0], dtype=jnp.int32)[:, None]
+    s_first = s_all_log_probs[batch, ss]
+    t_first = t_all_log_probs[batch, ts]
+    s_shared_scores = jnp.take(s_first, student_shared, axis=-1)
+    t_shared_scores = jnp.take(t_first, teacher_shared, axis=-1)
+
+    def interval_means(selected: Any, starts: Any, ends: Any) -> Any:
+        prefix = jnp.pad(jnp.cumsum(selected, axis=-1), ((0, 0), (1, 0)))
+        total = prefix[batch, ends] - prefix[batch, starts]
+        width = jnp.maximum(ends - starts, 1)
+        return total / width.astype(jnp.float32)
+
+    s_span_scores = interval_means(s_selected, ss, se)
+    t_span_scores = interval_means(t_selected, ts, te)
+    inactive = jnp.asarray(-1.0e30, dtype=jnp.float32)
+    s_span_scores = jnp.where(spans, s_span_scores, inactive)
+    t_span_scores = jnp.where(spans, t_span_scores, inactive)
+    s_scores = jnp.concatenate(
+        (s_shared_scores, s_span_scores[..., None]), axis=-1
+    )
+    t_scores = jnp.concatenate(
+        (t_shared_scores, t_span_scores[..., None]), axis=-1
+    )
+
+    s_log_q = jax.nn.log_softmax(s_scores / float(temperature), axis=-1)
+    t_log_q = jax.lax.stop_gradient(
+        jax.nn.log_softmax(t_scores / float(temperature), axis=-1)
+    )
+    row_kl = jnp.sum(jnp.exp(s_log_q) * (s_log_q - t_log_q), axis=-1)
+    numerator = jnp.sum(row_kl * units)
+    denominator = (
+        jnp.sum(units)
+        if normalizer is None
+        else jnp.asarray(normalizer, dtype=jnp.float32)
+    )
+    return numerator / jnp.maximum(denominator, 1.0)

@@ -34,6 +34,7 @@ class CanaryReport:
     hardware: dict[str, Any] | None
     scientific_evidence: bool = False
     simct_update_executed: bool = False
+    update_metrics: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)

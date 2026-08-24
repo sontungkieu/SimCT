@@ -68,6 +68,10 @@ class ModelConfig:
     tokenizer_id: str
     tokenizer_revision: str
     maxtext_checkpoint_uri: str
+    model_source: str = "maxtext"
+    model_path: str | None = None
+    tokenizer_type: str = "huggingface"
+    tokenizer_path: str | None = None
 
     def __post_init__(self) -> None:
         for name in (
@@ -78,6 +82,18 @@ class ModelConfig:
             "maxtext_checkpoint_uri",
         ):
             _string(getattr(self, name), f"model.{name}")
+        if self.model_source not in {"maxtext", "huggingface", "kaggle"}:
+            raise ConfigError(
+                "model.model_source must be 'maxtext', 'huggingface', or 'kaggle'"
+            )
+        if self.model_path is not None:
+            _string(self.model_path, "model.model_path")
+        if self.tokenizer_type not in {"huggingface", "sentencepiece"}:
+            raise ConfigError(
+                "model.tokenizer_type must be 'huggingface' or 'sentencepiece'"
+            )
+        if self.tokenizer_path is not None:
+            _string(self.tokenizer_path, "model.tokenizer_path")
         mutable_names = {"main", "master", "head", "latest"}
         if self.model_revision.lower() in mutable_names:
             raise ConfigError("model_revision must identify an immutable revision")
@@ -94,8 +110,46 @@ class ModelConfig:
             "tokenizer_revision",
             "maxtext_checkpoint_uri",
         }
-        _keys(raw, context=context, required=names)
-        return cls(**{name: _string(raw[name], f"{context}.{name}") for name in names})
+        optional = {
+            "model_source",
+            "model_path",
+            "tokenizer_type",
+            "tokenizer_path",
+        }
+        _keys(raw, context=context, required=names, optional=optional)
+        required_values = {
+            name: _string(raw[name], f"{context}.{name}") for name in names
+        }
+        model_path = raw.get("model_path")
+        tokenizer_path = raw.get("tokenizer_path")
+        return cls(
+            **required_values,
+            model_source=_string(
+                raw.get("model_source", "maxtext"), f"{context}.model_source"
+            ),
+            model_path=(
+                None
+                if model_path is None
+                else _string(model_path, f"{context}.model_path")
+            ),
+            tokenizer_type=_string(
+                raw.get("tokenizer_type", "huggingface"),
+                f"{context}.tokenizer_type",
+            ),
+            tokenizer_path=(
+                None
+                if tokenizer_path is None
+                else _string(tokenizer_path, f"{context}.tokenizer_path")
+            ),
+        )
+
+    @property
+    def resolved_model_path(self) -> str:
+        return self.model_path or self.maxtext_checkpoint_uri
+
+    @property
+    def resolved_tokenizer_path(self) -> str:
+        return self.tokenizer_path or self.tokenizer_id
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -106,6 +160,7 @@ class SimCTConfig:
     virtual_support: str
     temperature: float
     span_gh_mask_threshold: float
+    reproduction_mode: str = "public_code_cf0f33a_default"
 
     def __post_init__(self) -> None:
         if self.algorithm != "simct":
@@ -121,12 +176,36 @@ class SimCTConfig:
             )
         if not math.isfinite(self.temperature) or self.temperature <= 0:
             raise ConfigError("simct.temperature must be positive and finite")
-        if (
-            not math.isfinite(self.span_gh_mask_threshold)
-            or self.span_gh_mask_threshold < 1.0
+        modes = {
+            "paper_math",
+            "public_code_pre_safeguard",
+            "public_code_cf0f33a_default",
+            "public_scripts_cf0f33a",
+        }
+        if self.reproduction_mode not in modes:
+            raise ConfigError(
+                f"simct.reproduction_mode must be one of {sorted(modes)}"
+            )
+        if not math.isfinite(self.span_gh_mask_threshold) or (
+            self.span_gh_mask_threshold != 0.0
+            and self.span_gh_mask_threshold < 1.0
         ):
             raise ConfigError(
-                "simct.span_gh_mask_threshold must be finite and at least 1"
+                "simct.span_gh_mask_threshold must be 0 (disabled) or at least 1"
+            )
+        if self.reproduction_mode in {
+            "paper_math",
+            "public_code_pre_safeguard",
+        } and self.span_gh_mask_threshold != 0.0:
+            raise ConfigError(
+                f"{self.reproduction_mode} requires span_gh_mask_threshold=0"
+            )
+        if self.reproduction_mode in {
+            "public_code_cf0f33a_default",
+            "public_scripts_cf0f33a",
+        } and self.span_gh_mask_threshold < 1.0:
+            raise ConfigError(
+                f"{self.reproduction_mode} requires an active G(h) threshold"
             )
 
     @classmethod
@@ -141,7 +220,12 @@ class SimCTConfig:
             "temperature",
             "span_gh_mask_threshold",
         }
-        _keys(raw, context=context, required=required)
+        _keys(
+            raw,
+            context=context,
+            required=required,
+            optional={"reproduction_mode"},
+        )
         return cls(
             algorithm=_string(raw["algorithm"], "simct.algorithm"),
             divergence=_string(raw["divergence"], "simct.divergence"),
@@ -151,6 +235,12 @@ class SimCTConfig:
             span_gh_mask_threshold=_number(
                 raw["span_gh_mask_threshold"],
                 "simct.span_gh_mask_threshold",
+            ),
+            reproduction_mode=_string(
+                raw.get(
+                    "reproduction_mode", "public_code_cf0f33a_default"
+                ),
+                "simct.reproduction_mode",
             ),
         )
 
@@ -253,17 +343,28 @@ class TPUConfig:
     expected_device_count: int
     tensor_parallelism: int
     pipeline_parallelism: int
+    fsdp_parallelism: int = 1
 
     def __post_init__(self) -> None:
         if self.accelerator_type != "v5e-8":
             raise ConfigError("tpu.accelerator_type must be 'v5e-8'")
         if self.expected_device_count != 8:
             raise ConfigError("tpu.expected_device_count must be 8")
-        if self.tensor_parallelism < 1 or self.pipeline_parallelism < 1:
+        if (
+            self.tensor_parallelism < 1
+            or self.pipeline_parallelism < 1
+            or self.fsdp_parallelism < 1
+        ):
             raise ConfigError("TPU parallelism values must be positive")
-        if self.tensor_parallelism * self.pipeline_parallelism != 8:
+        if (
+            self.tensor_parallelism
+            * self.pipeline_parallelism
+            * self.fsdp_parallelism
+            != 8
+        ):
             raise ConfigError(
-                "tensor_parallelism * pipeline_parallelism must equal 8"
+                "fsdp_parallelism * tensor_parallelism * "
+                "pipeline_parallelism must equal 8"
             )
 
     @classmethod
@@ -276,7 +377,12 @@ class TPUConfig:
             "tensor_parallelism",
             "pipeline_parallelism",
         }
-        _keys(raw, context=context, required=required)
+        _keys(
+            raw,
+            context=context,
+            required=required,
+            optional={"fsdp_parallelism"},
+        )
         return cls(
             accelerator_type=_string(
                 raw["accelerator_type"], "tpu.accelerator_type"
@@ -289,6 +395,9 @@ class TPUConfig:
             ),
             pipeline_parallelism=_integer(
                 raw["pipeline_parallelism"], "tpu.pipeline_parallelism"
+            ),
+            fsdp_parallelism=_integer(
+                raw.get("fsdp_parallelism", 1), "tpu.fsdp_parallelism"
             ),
         )
 

@@ -493,7 +493,7 @@ def render_source_notebook(spec: PackageSpec) -> dict[str, Any]:
         if result.returncode:
             raise RuntimeError(f"VDT canary failed with exit code {result.returncode}")
         payload = json.loads(output.read_text(encoding="utf-8"))
-        expected = {"status": "passed", "real_model_integration": True, "cross_tokenization_observed": True, "scientific_evidence": False, "simct_update_executed": False}
+        expected = {"status": "passed", "real_model_integration": True, "cross_tokenization_observed": True, "scientific_evidence": False, "simct_update_executed": True}
         if any(payload.get(key) != value for key, value in expected.items()):
             raise RuntimeError("VDT canary evidence contract mismatch")
         print("VDT_CANARY_SUMMARY " + json.dumps(payload, sort_keys=True))
@@ -516,7 +516,7 @@ def render_source_notebook(spec: PackageSpec) -> dict[str, Any]:
                 "metadata": {},
                 "source": [
                     "# VDT single-teacher cross-tokenizer TPU v5e-8 dry run\n",
-                    "Contract canary only; no optimizer update or scientific result.\n",
+                    "One optimizer-step canary; not a scientific reproduction result.\n",
                 ],
             },
             cell(setup),
@@ -724,7 +724,7 @@ def stage_package(
             "dataset_sources": list(spec.dataset_sources),
             "remote_submit_performed": False,
             "scientific_evidence": False,
-            "simct_update_executed": False,
+            "simct_update_executed": True,
             "remaining_submit_gates": [
                 "successful source/checkpoint/tokenizer dataset upload evidence",
                 "exact-slug absence check",

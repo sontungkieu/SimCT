@@ -26,6 +26,7 @@ from vdt_tunix.integration import (
 )
 from vdt_tunix.pipeline import PipelineContractError, run_contract_canary
 from vdt_tunix.runtime import TPUPreflightError, require_tpu_v5e8
+from vdt_tunix.trainer import PaperSimCTTrainer, TrainingError
 
 
 EX_UNAVAILABLE = 69
@@ -118,7 +119,14 @@ def main(argv: list[str] | None = None) -> int:
             require_real_integration=True,
             hardware=hardware,
         )
-    except (TPUPreflightError, PipelineContractError) as exc:
+        trainer = PaperSimCTTrainer(config, backends)
+        update = trainer.step(prompts, step=0)
+        report = __import__("dataclasses").replace(
+            report,
+            simct_update_executed=True,
+            update_metrics=update.to_dict(),
+        )
+    except (TPUPreflightError, PipelineContractError, TrainingError) as exc:
         return _finish(
             {
                 "phase": "tpu_contract_canary",

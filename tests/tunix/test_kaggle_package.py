@@ -217,7 +217,7 @@ def test_rendered_notebook_is_bounded_and_records_evidence(package_fixture):
     assert package.TUNIX_COMMIT in source
     assert "kaggle_v5e8_canary.py" in source
     assert '"scientific_evidence": False' in source
-    assert '"simct_update_executed": False' in source
+    assert '"simct_update_executed": True' in source
 
 
 def test_stage_materializes_metadata_manifest_and_future_command(

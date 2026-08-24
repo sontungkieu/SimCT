@@ -45,3 +45,35 @@ def test_contract_rejects_non_v5e8_layout(config_payload):
     payload["tpu"]["expected_device_count"] = 4
     with pytest.raises(ConfigError, match="must be 8"):
         RunConfig.from_mapping(payload)
+
+
+def test_paper_math_mode_requires_post_paper_safeguard_disabled(config_payload):
+    payload = copy.deepcopy(config_payload)
+    payload["simct"]["reproduction_mode"] = "paper_math"
+    with pytest.raises(ConfigError, match="requires span_gh_mask_threshold=0"):
+        RunConfig.from_mapping(payload)
+    payload["simct"]["span_gh_mask_threshold"] = 0
+    assert RunConfig.from_mapping(payload).simct.reproduction_mode == "paper_math"
+
+
+def test_native_tunix_fsdp8_layout_and_source_are_explicit(config_payload):
+    payload = copy.deepcopy(config_payload)
+    for role in ("student", "teacher"):
+        payload[role].update(
+            {
+                "model_source": "huggingface",
+                "model_path": f"/kaggle/input/{role}-weights",
+                "tokenizer_type": "huggingface",
+                "tokenizer_path": f"/kaggle/input/{role}-weights",
+            }
+        )
+    payload["tpu"].update(
+        {
+            "tensor_parallelism": 1,
+            "pipeline_parallelism": 1,
+            "fsdp_parallelism": 8,
+        }
+    )
+    config = RunConfig.from_mapping(payload)
+    assert config.student.resolved_model_path.endswith("student-weights")
+    assert config.tpu.fsdp_parallelism == 8
