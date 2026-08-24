@@ -40,6 +40,9 @@ def test_generation_notebook_is_pinned_and_syntax_valid(variant):
     assert STUDENT in source
     assert "qwen-lm/qwen2.5/transformers/7b-instruct/1" not in source
     assert '"teacher_loaded": False' in source
+    assert "resolve_model_source_mount(STUDENT_SOURCE)" in source
+    assert "bind_runtime_model_mount" in source
+    assert '"--training-config", str(RUNTIME_TRAINING_CONFIG)' in source
     assert "--no-deps" in source
     assert "kaggle_v5e8_generate.py" in source
     assert "score_generated_predictions.py" in source

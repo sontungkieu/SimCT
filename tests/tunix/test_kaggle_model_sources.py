@@ -10,7 +10,9 @@ import pytest
 from vdt_tunix.kaggle_model_sources import (
     KaggleModelSourceError,
     attach_model_sources,
+    bind_runtime_model_mount,
     model_source_mount,
+    resolve_model_source_mount,
     render_canary_notebook,
     render_training_notebook,
 )
@@ -28,6 +30,57 @@ def test_model_source_mount_matches_kaggle_layout():
     assert str(model_source_mount(TEACHER)) == (
         "/kaggle/input/models/qwen-lm/qwen2.5/transformers/7b-instruct/1"
     )
+
+
+def test_resolve_model_source_mount_uses_exact_versioned_handle(tmp_path: Path):
+    mounted = tmp_path / "attached-model"
+    mounted.mkdir()
+    observed = []
+
+    resolved = resolve_model_source_mount(
+        STUDENT,
+        model_download=lambda handle: observed.append(handle) or str(mounted),
+    )
+
+    assert resolved == mounted
+    assert observed == [STUDENT]
+
+
+def test_resolve_model_source_mount_rejects_missing_download(tmp_path: Path):
+    with pytest.raises(KaggleModelSourceError, match="missing directory"):
+        resolve_model_source_mount(
+            STUDENT,
+            model_download=lambda handle: tmp_path / "missing",
+        )
+
+
+def test_bind_runtime_model_mount_preserves_tokenizer_asset_semantics(
+    tmp_path: Path,
+):
+    mount = tmp_path / "gemma"
+    mount.mkdir()
+    tokenizer = mount / "tokenizer.model"
+    tokenizer.write_text("tokenizer", encoding="utf-8")
+    section = {
+        "model_path": "/old/model",
+        "maxtext_checkpoint_uri": "/old/model",
+        "tokenizer_path": "/old/model/tokenizer.model",
+    }
+
+    provenance = bind_runtime_model_mount(section, mount)
+
+    assert section["model_path"] == str(mount)
+    assert section["maxtext_checkpoint_uri"] == str(mount)
+    assert section["tokenizer_path"] == str(tokenizer)
+    assert provenance == section
+
+    root_tokenizer_section = {
+        "model_path": "/old/qwen",
+        "maxtext_checkpoint_uri": "/old/qwen",
+        "tokenizer_path": "/old/qwen",
+    }
+    bind_runtime_model_mount(root_tokenizer_section, mount)
+    assert root_tokenizer_section["tokenizer_path"] == str(mount)
 
 
 def test_attach_model_sources_refreshes_stage_fingerprint(tmp_path: Path):
@@ -82,6 +135,10 @@ def test_rendered_canary_is_pinned_bounded_and_preserves_jax():
     assert "KJO_REPO_DATASET_COPY_SUMMARY" in source
     assert STUDENT in source
     assert TEACHER in source
+    assert "resolve_model_source_mount(STUDENT_SOURCE)" in source
+    assert "resolve_model_source_mount(TEACHER_SOURCE)" in source
+    assert "bind_runtime_model_mount" in source
+    assert '"--config", str(RUNTIME_CONFIG)' in source
     assert "--no-deps" in source
     assert "provider-managed JAX stack changed" in source
     assert 'importlib.metadata.version("huggingface-hub")' in source
@@ -184,6 +241,9 @@ def test_rendered_training_notebook_is_pinned_and_syntax_valid(phase):
     assert "testowner/public-substitute-v1" in source
     assert STUDENT in source
     assert TEACHER in source
+    assert "resolve_model_source_mount(STUDENT_SOURCE)" in source
+    assert "resolve_model_source_mount(TEACHER_SOURCE)" in source
+    assert "bind_runtime_model_mount" in source
     assert "--no-deps" in source
     assert 'importlib.metadata.version("huggingface-hub")' in source
     assert "provider-managed JAX stack changed" in source

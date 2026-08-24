@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 from pathlib import Path, PurePosixPath
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 
 _MODEL_SOURCE = re.compile(
@@ -39,6 +39,76 @@ def model_source_mount(source: str) -> PurePosixPath:
 
     validated = validate_model_source(source)
     return PurePosixPath("/kaggle/input/models") / validated
+
+
+def resolve_model_source_mount(
+    source: str,
+    *,
+    model_download: Callable[[str], str | Path] | None = None,
+) -> Path:
+    """Resolve an attached Kaggle model without assuming its mount layout.
+
+    Kaggle's supported notebook interface is ``kagglehub.model_download``.
+    The attached model is resolved from Kaggle's local cache, while the exact
+    versioned handle keeps the dependency pinned.  ``model_download`` is
+    injectable so the behavior can be tested without network or Kaggle state.
+    """
+
+    validated = validate_model_source(source)
+    if model_download is None:
+        try:
+            import kagglehub
+        except ImportError as exc:  # pragma: no cover - Kaggle runtime contract
+            raise KaggleModelSourceError(
+                "kagglehub is required to resolve attached Kaggle models"
+            ) from exc
+        model_download = kagglehub.model_download
+    try:
+        resolved = Path(model_download(validated))
+    except Exception as exc:
+        raise KaggleModelSourceError(
+            f"failed to resolve attached Kaggle model {validated}"
+        ) from exc
+    if not resolved.is_dir():
+        raise KaggleModelSourceError(
+            f"Kaggle model resolver returned a missing directory for "
+            f"{validated}: {resolved}"
+        )
+    return resolved
+
+
+def bind_runtime_model_mount(
+    config_section: dict[str, Any], mount: str | Path
+) -> dict[str, str]:
+    """Rewrite one model config section to a resolved runtime directory."""
+
+    required = ("model_path", "tokenizer_path", "maxtext_checkpoint_uri")
+    missing = [key for key in required if not isinstance(config_section.get(key), str)]
+    if missing:
+        raise KaggleModelSourceError(
+            f"model config section is missing string fields: {missing}"
+        )
+    resolved = Path(mount)
+    if not resolved.is_dir():
+        raise KaggleModelSourceError(f"resolved model mount is absent: {resolved}")
+    previous_model = PurePosixPath(config_section["model_path"])
+    previous_tokenizer = PurePosixPath(config_section["tokenizer_path"])
+    if previous_tokenizer == previous_model:
+        tokenizer = resolved
+    else:
+        tokenizer = resolved / previous_tokenizer.name
+        if not tokenizer.exists():
+            raise KaggleModelSourceError(
+                f"tokenizer asset {previous_tokenizer.name!r} is absent in {resolved}"
+            )
+    config_section["model_path"] = str(resolved)
+    config_section["maxtext_checkpoint_uri"] = str(resolved)
+    config_section["tokenizer_path"] = str(tokenizer)
+    return {
+        "model_path": str(resolved),
+        "maxtext_checkpoint_uri": str(resolved),
+        "tokenizer_path": str(tokenizer),
+    }
 
 
 def _read_object(path: Path) -> dict[str, Any]:
@@ -133,8 +203,6 @@ def render_canary_notebook(
     repo_owner, repo_slug = repo_parts
     student_source = validate_model_source(student_model_source)
     teacher_source = validate_model_source(teacher_model_source)
-    student_mount = str(model_source_mount(student_source))
-    teacher_mount = str(model_source_mount(teacher_source))
 
     copy_repo = f'''from pathlib import Path
 import json
@@ -203,22 +271,32 @@ REPO = Path("/kaggle/working/repo")
 CONFIG_PATH = REPO / {config_relative.as_posix()!r}
 STUDENT_SOURCE = {student_source!r}
 TEACHER_SOURCE = {teacher_source!r}
-STUDENT_MOUNT = Path({student_mount!r})
-TEACHER_MOUNT = Path({teacher_mount!r})
+sys.path.insert(0, str(REPO))
+from vdt_tunix.kaggle_model_sources import (
+    bind_runtime_model_mount,
+    resolve_model_source_mount,
+)
+STUDENT_MOUNT = resolve_model_source_mount(STUDENT_SOURCE)
+TEACHER_MOUNT = resolve_model_source_mount(TEACHER_SOURCE)
 for required in (REPO, CONFIG_PATH, STUDENT_MOUNT, TEACHER_MOUNT):
     if not required.exists():
         available = sorted(path.name for path in Path("/kaggle/input").glob("*"))
         raise FileNotFoundError(f"required input missing: {{required}}; inputs={{available}}")
 config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-if Path(config["student"]["model_path"]) != STUDENT_MOUNT:
-    raise RuntimeError("student model mount drifted from config")
-if Path(config["teacher"]["model_path"]) != TEACHER_MOUNT:
-    raise RuntimeError("teacher model mount drifted from config")
+student_runtime = bind_runtime_model_mount(config["student"], STUDENT_MOUNT)
+teacher_runtime = bind_runtime_model_mount(config["teacher"], TEACHER_MOUNT)
+RUNTIME_CONFIG = Path("/kaggle/working/vdt_simct_canary/runtime_config.json")
+RUNTIME_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+RUNTIME_CONFIG.write_text(
+    json.dumps(config, indent=2, sort_keys=True) + "\\n", encoding="utf-8"
+)
 print("VDT_MODEL_SOURCE_PROVENANCE " + json.dumps({{
     "student": STUDENT_SOURCE,
     "student_mount": str(STUDENT_MOUNT),
+    "student_runtime": student_runtime,
     "teacher": TEACHER_SOURCE,
     "teacher_mount": str(TEACHER_MOUNT),
+    "teacher_runtime": teacher_runtime,
     "python": platform.python_version(),
 }}, sort_keys=True))'''
 
@@ -261,7 +339,7 @@ cache = work / "base-model-cache"
 command = [
     sys.executable,
     str(REPO / "scripts/tpu/kaggle_v5e8_canary.py"),
-    "--config", str(CONFIG_PATH),
+    "--config", str(RUNTIME_CONFIG),
     "--output", str(output),
 ]
 try:
@@ -388,8 +466,6 @@ def render_training_notebook(
     )
     student_source = validate_model_source(student_model_source)
     teacher_source = validate_model_source(teacher_model_source)
-    student_mount = str(model_source_mount(student_source))
-    teacher_mount = str(model_source_mount(teacher_source))
 
     if phase == "sft":
         if warm_start_kernel_source is not None or warm_start_relative_path is not None:
@@ -571,18 +647,21 @@ import sys
 
 STUDENT_SOURCE = {student_source!r}
 TEACHER_SOURCE = {teacher_source!r}
-STUDENT_MOUNT = Path({student_mount!r})
-TEACHER_MOUNT = Path({teacher_mount!r})
+sys.path.insert(0, str(REPO))
+from vdt_tunix.kaggle_model_sources import (
+    bind_runtime_model_mount,
+    resolve_model_source_mount,
+)
+STUDENT_MOUNT = resolve_model_source_mount(STUDENT_SOURCE)
+TEACHER_MOUNT = resolve_model_source_mount(TEACHER_SOURCE)
 for required in (REPO, CONFIG_PATH, TRAINING_MANIFEST, STUDENT_MOUNT, TEACHER_MOUNT):
     if not required.exists():
         raise FileNotFoundError(f"required input missing: {{required}}")
 config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+student_runtime = bind_runtime_model_mount(config["student"], STUDENT_MOUNT)
+teacher_runtime = bind_runtime_model_mount(config["teacher"], TEACHER_MOUNT)
 if config["run_id"] != {('vdt-public-' + phase + '-screen')!r}:
     raise RuntimeError(f"unexpected run_id in {{CONFIG_PATH}}: {{config['run_id']}}")
-if Path(config["student"]["model_path"]) != STUDENT_MOUNT:
-    raise RuntimeError("student model mount drifted from config")
-if Path(config["teacher"]["model_path"]) != TEACHER_MOUNT:
-    raise RuntimeError("teacher model mount drifted from config")
 expected_algorithm = "simct" if {phase!r} == "sft" else {phase!r}
 if config["simct"]["algorithm"] != expected_algorithm:
     raise RuntimeError("training phase and algorithm drifted")
@@ -600,8 +679,10 @@ RUNTIME_CONFIG.write_text(
 print("VDT_MODEL_SOURCE_PROVENANCE " + json.dumps({{
     "student": STUDENT_SOURCE,
     "student_mount": str(STUDENT_MOUNT),
+    "student_runtime": student_runtime,
     "teacher": TEACHER_SOURCE,
     "teacher_mount": str(TEACHER_MOUNT),
+    "teacher_runtime": teacher_runtime,
     "python": platform.python_version(),
     "runtime_config_sha256": hashlib.sha256(RUNTIME_CONFIG.read_bytes()).hexdigest(),
 }}, sort_keys=True))'''

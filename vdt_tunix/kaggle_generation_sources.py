@@ -9,7 +9,6 @@ from vdt_tunix.kaggle_model_sources import (
     KaggleModelSourceError,
     _safe_relative_path,
     _validate_dataset_source,
-    model_source_mount,
     validate_model_source,
 )
 
@@ -48,7 +47,6 @@ def render_generation_notebook(
         checkpoint_kernel_source, "checkpoint_kernel_source"
     )
     student_source = validate_model_source(student_model_source)
-    student_mount = str(model_source_mount(student_source))
 
     copy_repo = f'''from pathlib import Path
 import json
@@ -189,7 +187,12 @@ import subprocess
 import sys
 
 STUDENT_SOURCE = {student_source!r}
-STUDENT_MOUNT = Path({student_mount!r})
+sys.path.insert(0, str(REPO))
+from vdt_tunix.kaggle_model_sources import (
+    bind_runtime_model_mount,
+    resolve_model_source_mount,
+)
+STUDENT_MOUNT = resolve_model_source_mount(STUDENT_SOURCE)
 for required in (
     REPO, TRAINING_CONFIG, GENERATION_PROTOCOL, EVALUATION_ROOT,
     CHECKPOINT_ROOT, STUDENT_MOUNT,
@@ -197,11 +200,21 @@ for required in (
     if not required.exists():
         raise FileNotFoundError(f"required generation input missing: {{required}}")
 training_config = json.loads(TRAINING_CONFIG.read_text(encoding="utf-8"))
-if Path(training_config["student"]["model_path"]) != STUDENT_MOUNT:
-    raise RuntimeError("student model mount drifted from config")
+student_runtime = bind_runtime_model_mount(
+    training_config["student"], STUDENT_MOUNT
+)
+RUNTIME_TRAINING_CONFIG = Path(
+    "/kaggle/working/vdt_generation_{variant}/runtime_training_config.json"
+)
+RUNTIME_TRAINING_CONFIG.parent.mkdir(parents=True, exist_ok=True)
+RUNTIME_TRAINING_CONFIG.write_text(
+    json.dumps(training_config, indent=2, sort_keys=True) + "\\n",
+    encoding="utf-8",
+)
 print("VDT_MODEL_SOURCE_PROVENANCE " + json.dumps({{
     "student": STUDENT_SOURCE,
     "student_mount": str(STUDENT_MOUNT),
+    "student_runtime": student_runtime,
     "teacher_loaded": False,
     "python": platform.python_version(),
 }}, sort_keys=True))'''
@@ -242,7 +255,7 @@ SUMMARY = WORK / "generation_summary.json"
 command = [
     sys.executable,
     str(REPO / "scripts/tpu/kaggle_v5e8_generate.py"),
-    "--training-config", str(TRAINING_CONFIG),
+    "--training-config", str(RUNTIME_TRAINING_CONFIG),
     "--generation-protocol", str(GENERATION_PROTOCOL),
     "--evaluation-root", str(EVALUATION_ROOT),
     "--checkpoint-root", str(CHECKPOINT_ROOT),

@@ -196,6 +196,13 @@ training identity digest), and fails if the terminal training summary does not
 match the expected run, step count, warm-start lineage, and non-scientific
 status.
 
+Attached Kaggle Models are resolved at runtime with
+`kagglehub.model_download()` using the exact versioned model handle. The
+renderer then writes the returned local model and tokenizer paths into a
+runtime-only config. Do not derive model locations from a presumed
+`/kaggle/input` directory layout: Kaggle may change or normalize that mount
+layout independently of the stable model handle.
+
 ## Shared evaluation contract
 
 `vdt_tunix.evaluation_contract` validates a machine-readable comparison before
