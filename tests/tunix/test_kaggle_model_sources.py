@@ -82,6 +82,7 @@ def test_rendered_canary_is_pinned_bounded_and_preserves_jax():
     assert TEACHER in source
     assert "--no-deps" in source
     assert "provider-managed JAX stack changed" in source
+    assert 'importlib.metadata.version("huggingface-hub")' in source
     assert "scientific_evidence" in source
     assert "shutil.rmtree(cache)" in source
 

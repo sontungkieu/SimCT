@@ -248,6 +248,7 @@ print("VDT_DEPENDENCY_PROVENANCE " + json.dumps({{
     "jax_before": before,
     "jax_after": after,
     "flax": flax.__version__,
+    "huggingface_hub": importlib.metadata.version("huggingface-hub"),
     "transformers": transformers.__version__,
     "tunix_commit": observed_tunix_commit,
 }}, sort_keys=True))'''

@@ -92,6 +92,9 @@ subcommand and the checked-in example spec is intentionally fail-closed.
 
 `requirements-tpu.txt` mirrors the pinned Tunix/MaxText infrastructure versions
 from the read-only reference. It deliberately does not pin or install JAX.
+Because Kaggle installs this file with `--no-deps`, compatibility-sensitive
+leaf dependencies such as `huggingface-hub` are pinned explicitly and reported
+by the canary provenance cell.
 The project package discovery includes `vdt_tunix`; the CPU canaries can also be
 executed directly from the repository checkout.
 
