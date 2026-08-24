@@ -73,6 +73,50 @@ def _normalize_tokenizer_padding(tokenizer: Any, tokenizer_type: str) -> Any:
     return tokenizer
 
 
+def _native_model_family(model_id: str) -> str:
+    """Return the exact Tunix forward-signature family used by this run."""
+
+    if model_id.startswith("gemma-2-"):
+        return "gemma2"
+    if model_id.startswith("qwen2.5-"):
+        return "qwen2p5"
+    raise RealBackendUnavailable(
+        "the bounded native forward adapter supports Gemma 2 and Qwen 2.5; "
+        f"received {model_id!r}"
+    )
+
+
+def _call_native_tunix_model(
+    module: Any,
+    *,
+    family: str,
+    input_ids: Any,
+    positions: Any,
+    attention_mask: Any,
+    segments: Any,
+) -> Any:
+    """Call the pinned Tunix model with its family-specific signature."""
+
+    if family == "gemma2":
+        logits, _ = module(
+            input_ids,
+            positions,
+            None,
+            attention_mask,
+        )
+        return logits
+    if family == "qwen2p5":
+        logits, _ = module(
+            input_ids,
+            positions,
+            None,
+            attention_mask,
+            segment_ids=segments,
+        )
+        return logits
+    raise RealBackendUnavailable(f"unsupported native Tunix family {family!r}")
+
+
 def _validate_model_path(config: ModelConfig) -> Path:
     uri = config.resolved_model_path
     if "://" in uri:
@@ -199,6 +243,7 @@ def _production_dependencies(config: RunConfig) -> ModelRuntimeDependencies:
     def load_model(model_config: ModelConfig, trainable: bool) -> Any:
         model_path = _validate_model_path(model_config)
         mesh = require_mesh()
+        model_family = _native_model_family(model_config.model_id)
         sample_batch = (
             config.rollout.prompt_batch_size * config.rollout.samples_per_prompt
         )
@@ -277,14 +322,23 @@ def _production_dependencies(config: RunConfig) -> ModelRuntimeDependencies:
 
         @nnx.jit
         def forward_fn(module: Any, input_ids: Any, positions: Any, segments: Any):
-            logits, _ = module(
-                input_ids,
-                positions,
-                None,
-                None,
-                decoder_segment_ids=segments,
+            input_mask = segments.astype(jnp.bool_)
+            sequence_length = input_ids.shape[-1]
+            causal_mask = jnp.tril(
+                jnp.ones(
+                    (sequence_length, sequence_length),
+                    dtype=jnp.bool_,
+                )
             )
-            return logits
+            attention_mask = input_mask[:, None, :] & causal_mask[None, ...]
+            return _call_native_tunix_model(
+                module,
+                family=model_family,
+                input_ids=input_ids,
+                positions=positions,
+                attention_mask=attention_mask,
+                segments=segments,
+            )
 
         return _LoadedTunixModel(
             model=model,

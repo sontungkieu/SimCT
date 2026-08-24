@@ -4,6 +4,8 @@ import pytest
 
 from vdt_tunix.real_backend import (
     RealBackendUnavailable,
+    _call_native_tunix_model,
+    _native_model_family,
     _normalize_tokenizer_padding,
 )
 
@@ -60,3 +62,76 @@ def test_huggingface_padding_requires_eos_fallback() -> None:
 
     with pytest.raises(RealBackendUnavailable, match="neither a pad token"):
         _normalize_tokenizer_padding(tokenizer, "huggingface")
+
+
+class _ModelCallRecorder:
+    def __init__(self) -> None:
+        self.args = None
+        self.kwargs = None
+
+    def __call__(self, *args, **kwargs):
+        self.args = args
+        self.kwargs = kwargs
+        return "logits", "cache"
+
+
+@pytest.mark.parametrize(
+    ("model_id", "family"),
+    [
+        ("gemma-2-2b-it", "gemma2"),
+        ("qwen2.5-7b-instruct", "qwen2p5"),
+    ],
+)
+def test_native_model_family_is_pinned(model_id: str, family: str) -> None:
+    assert _native_model_family(model_id) == family
+
+
+def test_native_model_family_rejects_unimplemented_signature() -> None:
+    with pytest.raises(RealBackendUnavailable, match="Gemma 2 and Qwen 2.5"):
+        _native_model_family("llama-3.1-8b")
+
+
+def test_gemma2_forward_uses_attention_mask_without_segment_keyword() -> None:
+    model = _ModelCallRecorder()
+
+    logits = _call_native_tunix_model(
+        model,
+        family="gemma2",
+        input_ids="ids",
+        positions="positions",
+        attention_mask="causal-mask",
+        segments="segments",
+    )
+
+    assert logits == "logits"
+    assert model.args == ("ids", "positions", None, "causal-mask")
+    assert model.kwargs == {}
+
+
+def test_qwen25_forward_uses_native_segment_ids_keyword() -> None:
+    model = _ModelCallRecorder()
+
+    logits = _call_native_tunix_model(
+        model,
+        family="qwen2p5",
+        input_ids="ids",
+        positions="positions",
+        attention_mask="causal-mask",
+        segments="segments",
+    )
+
+    assert logits == "logits"
+    assert model.args == ("ids", "positions", None, "causal-mask")
+    assert model.kwargs == {"segment_ids": "segments"}
+
+
+def test_native_forward_rejects_unknown_family() -> None:
+    with pytest.raises(RealBackendUnavailable, match="unsupported native"):
+        _call_native_tunix_model(
+            _ModelCallRecorder(),
+            family="unknown",
+            input_ids="ids",
+            positions="positions",
+            attention_mask="causal-mask",
+            segments="segments",
+        )
