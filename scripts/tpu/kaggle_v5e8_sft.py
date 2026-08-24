@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Resume-safe single-teacher SimCT training on a Kaggle TPU v5e-8.
-
-This entrypoint produces training evidence and durable model/optimizer state.
-It does not evaluate downstream tasks and therefore never labels its output as
-scientific reproduction evidence by itself.
-"""
+"""Resume-safe Gemma warm-start SFT on a provenance-checked corpus."""
 
 from __future__ import annotations
 
@@ -22,9 +17,10 @@ if str(REPO_ROOT) not in sys.path:
 
 from vdt_tunix.config import ConfigError, load_config
 from vdt_tunix.integration import RealModelIntegrationUnavailable, load_real_backend_bundle
+from vdt_tunix.model_adapters import ModelAdapterError
 from vdt_tunix.runtime import TPUPreflightError, require_tpu_v5e8
-from vdt_tunix.training_data import TrainingDataError, load_prompt_dataset
-from vdt_tunix.trainer import PaperSimCTTrainer, TrainingError
+from vdt_tunix.sft_trainer import SFTTrainingError, TunixSFTTrainer
+from vdt_tunix.training_data import TrainingDataError, load_sft_dataset
 from vdt_tunix.tunix_checkpoint import TunixCheckpointController, TunixCheckpointError
 
 
@@ -65,12 +61,14 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         config = load_config(args.config)
-        dataset = load_prompt_dataset(args.dataset_manifest)
+        dataset = load_sft_dataset(args.dataset_manifest)
+        if config.checkpoint.warm_start_from is not None:
+            raise ConfigError("SFT accepts resume_from, not warm_start_from")
     except (ConfigError, TrainingDataError, OSError) as exc:
         return _finish(
             args.output,
             {
-                "phase": "configuration_and_data",
+                "phase": "sft_configuration_and_data",
                 "status": "blocked",
                 "error_type": type(exc).__name__,
                 "error": str(exc),
@@ -85,27 +83,26 @@ def main(argv: list[str] | None = None) -> int:
         _, hardware = require_tpu_v5e8(
             expected_device_count=config.tpu.expected_device_count
         )
-        trainer = PaperSimCTTrainer(config, backends)
+        trainer = TunixSFTTrainer(config, backends)
         controller = TunixCheckpointController(
             config,
             trainer.loaded_student.model,
             trainer.optimizer,
             dataset_manifest_sha256=dataset.manifest.digest(),
         )
-        resume = controller.initialize_or_resume()
-        if resume.completed_steps > config.training.max_steps:
-            raise TrainingError("resume step exceeds training.max_steps")
+        resume = controller.restore_if_requested()
         remaining = config.training.max_steps - resume.completed_steps
+        if remaining < 0:
+            raise SFTTrainingError("resume step exceeds training.max_steps")
         cursor = resume.data_cursor
         completed = resume.completed_steps
         last_metrics: dict[str, Any] | None = None
-
-        for prompts, next_cursor in dataset.batches(
+        for rows, next_cursor in dataset.batches(
             cursor=cursor,
             batch_size=config.rollout.prompt_batch_size,
             max_steps=remaining,
         ):
-            update = trainer.step(prompts, step=completed)
+            update = trainer.step(rows, step=completed)
             row = {
                 "run_id": config.run_id,
                 "step": completed + 1,
@@ -115,7 +112,7 @@ def main(argv: list[str] | None = None) -> int:
                 not math.isfinite(float(row[name]))
                 for name in ("loss", "gradient_norm", "parameter_norm")
             ):
-                raise TrainingError("non-finite update metric")
+                raise SFTTrainingError("non-finite SFT update metric")
             _append_jsonl(args.metrics, row)
             completed += 1
             cursor = next_cursor
@@ -127,21 +124,19 @@ def main(argv: list[str] | None = None) -> int:
                 controller.save(
                     completed_steps=completed,
                     data_cursor=cursor,
-                    rng_state={
-                        "rollout_next_step": str(completed),
-                        "trainer_completed_steps": str(completed),
-                    },
+                    rng_state={"trainer_completed_steps": str(completed)},
                 )
     except (
         RealModelIntegrationUnavailable,
+        ModelAdapterError,
         TPUPreflightError,
-        TrainingError,
+        SFTTrainingError,
         TunixCheckpointError,
     ) as exc:
         return _finish(
             args.output,
             {
-                "phase": "simct_training",
+                "phase": "sft_training",
                 "status": "blocked",
                 "error_type": type(exc).__name__,
                 "error": str(exc),
@@ -156,7 +151,7 @@ def main(argv: list[str] | None = None) -> int:
         return _finish(
             args.output,
             {
-                "phase": "simct_training_unexpected",
+                "phase": "sft_training_unexpected",
                 "status": "blocked",
                 "error_type": type(exc).__name__,
                 "error": str(exc),
@@ -174,7 +169,7 @@ def main(argv: list[str] | None = None) -> int:
     return _finish(
         args.output,
         {
-            "phase": "simct_training",
+            "phase": "sft_training",
             "status": "complete",
             "run_id": config.run_id,
             "config_sha256": config.digest(),
@@ -182,11 +177,6 @@ def main(argv: list[str] | None = None) -> int:
             "dataset_id": dataset.manifest.dataset_id,
             "dataset_revision": dataset.manifest.dataset_revision,
             "start_step": resume.completed_steps,
-            "initialization": resume.initialization,
-            "source_checkpoint_steps": resume.source_checkpoint_steps,
-            "source_dataset_manifest_sha256": (
-                resume.source_dataset_manifest_sha256
-            ),
             "completed_steps": completed,
             "data_cursor": {
                 "epoch": cursor.epoch,
@@ -196,7 +186,7 @@ def main(argv: list[str] | None = None) -> int:
             "hardware": hardware,
             "checkpoint_root": config.checkpoint.root,
             "scientific_evidence": False,
-            "remaining_gate": "downstream evaluation under the comparison contract",
+            "remaining_gate": "shared downstream evaluation and OPD comparison",
         },
         0,
     )

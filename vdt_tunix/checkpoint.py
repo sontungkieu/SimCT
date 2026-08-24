@@ -359,7 +359,7 @@ def save_checkpoint(root: str | Path, state: CheckpointState) -> Path:
 
 
 def load_latest_checkpoint(
-    root: str | Path, *, config: RunConfig
+    root: str | Path, *, config: RunConfig | None = None
 ) -> CheckpointState:
     checkpoint_root = Path(root)
     pointer = _load_pointer(checkpoint_root)
@@ -388,5 +388,6 @@ def load_latest_checkpoint(
         raise CheckpointError("checkpoint manifest is invalid JSON") from exc
     if state.completed_steps != pointer["completed_steps"]:
         raise CheckpointError("checkpoint pointer step does not match manifest")
-    validate_resume(config, state)
+    if config is not None:
+        validate_resume(config, state)
     return state

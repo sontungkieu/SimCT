@@ -100,6 +100,9 @@ class ResumeState:
     completed_steps: int
     data_cursor: DataCursor
     rng_state: tuple[tuple[str, str], ...]
+    initialization: str = "fresh"
+    source_checkpoint_steps: int | None = None
+    source_dataset_manifest_sha256: str | None = None
 
 
 class TunixCheckpointController:
@@ -129,6 +132,11 @@ class TunixCheckpointController:
         self.resume_root = Path(
             config.checkpoint.resume_from or config.checkpoint.root
         ).resolve()
+        self.warm_start_root = (
+            None
+            if config.checkpoint.warm_start_from is None
+            else Path(config.checkpoint.warm_start_from).resolve()
+        )
         self._manager_factory = manager_factory or _default_manager
         self._save_manager: Any | None = None
 
@@ -194,6 +202,71 @@ class TunixCheckpointController:
             completed_steps=state.completed_steps,
             data_cursor=state.data_cursor,
             rng_state=state.rng_state,
+            initialization="resume",
+            source_checkpoint_steps=state.completed_steps,
+            source_dataset_manifest_sha256=state.dataset_manifest_sha256,
+        )
+
+    def initialize_or_resume(self) -> ResumeState:
+        """Resume an interrupted run or initialize model-only from SFT."""
+
+        if self.config.checkpoint.resume_from is not None:
+            return self.restore_if_requested()
+        if self.warm_start_root is None:
+            return self.restore_if_requested()
+        state = load_latest_checkpoint(self.warm_start_root)
+        expected_student = (
+            self.config.student.model_revision,
+            self.config.student.tokenizer_revision,
+        )
+        observed_student = (
+            state.student_model_revision,
+            state.student_tokenizer_revision,
+        )
+        if observed_student != expected_student:
+            raise TunixCheckpointError(
+                "warm-start student model/tokenizer identity mismatch"
+            )
+        step_dir = self.warm_start_root / str(state.completed_steps)
+        observed_sha = directory_sha256(step_dir)
+        if state.student_parameters.uri != _artifact_uri(
+            state.completed_steps, "model_params"
+        ):
+            raise TunixCheckpointError("warm-start model artifact URI mismatch")
+        if state.student_parameters.sha256 != observed_sha:
+            raise TunixCheckpointError("warm-start model artifact SHA-256 mismatch")
+        manager = self._manager(self.warm_start_root)
+        try:
+            restored_step, restored_metadata = manager.maybe_restore(
+                self.model,
+                None,
+                step=state.completed_steps,
+            )
+        finally:
+            manager.close()
+        if restored_step != state.completed_steps:
+            raise TunixCheckpointError(
+                "Tunix restored a different warm-start coordinate"
+            )
+        expected_metadata = {
+            "run_id": state.run_id,
+            "config_sha256": state.config_sha256,
+            "dataset_manifest_sha256": state.dataset_manifest_sha256,
+            "completed_steps": state.completed_steps,
+            "data_cursor": dataclasses.asdict(state.data_cursor),
+            "rng_state": dict(state.rng_state),
+        }
+        if restored_metadata != expected_metadata:
+            raise TunixCheckpointError(
+                "warm-start Orbax metadata does not match its manifest"
+            )
+        return ResumeState(
+            completed_steps=0,
+            data_cursor=DataCursor(epoch=0, next_prompt_index=0),
+            rng_state=(),
+            initialization="warm_start",
+            source_checkpoint_steps=state.completed_steps,
+            source_dataset_manifest_sha256=state.dataset_manifest_sha256,
         )
 
     def save(

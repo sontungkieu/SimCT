@@ -56,7 +56,8 @@
   "checkpoint": {
     "root": "/kaggle/working/vdt_simct_canary/checkpoints",
     "save_every_steps": 1,
-    "resume_from": null
+    "resume_from": null,
+    "warm_start_from": null
   },
   "canary": {
     "prompt_id": "integer-4",

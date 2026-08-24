@@ -152,3 +152,46 @@ def test_tunix_checkpoint_rejects_dataset_drift(config_payload):
     )
     with pytest.raises(TunixCheckpointError, match="dataset manifest"):
         resumed.restore_if_requested()
+
+
+def test_tunix_checkpoint_model_only_warm_start_allows_new_phase(
+    config_payload, tmp_path
+):
+    store = {}
+    sft_config = RunConfig.from_mapping(copy.deepcopy(config_payload))
+    sft = TunixCheckpointController(
+        sft_config,
+        model="sft-model",
+        optimizer="sft-optimizer",
+        dataset_manifest_sha256="d" * 64,
+        manager_factory=_factory(store),
+    )
+    sft.save(
+        completed_steps=4,
+        data_cursor=DataCursor(epoch=2, next_prompt_index=0),
+        rng_state={"trainer": "sft-4"},
+    )
+    sft.close()
+
+    opd_payload = copy.deepcopy(config_payload)
+    opd_payload["run_id"] = "opd-phase"
+    opd_payload["training"]["learning_rate"] = 2e-6
+    opd_payload["checkpoint"].update(
+        {
+            "root": str(tmp_path / "opd-checkpoints"),
+            "resume_from": None,
+            "warm_start_from": str(sft.root),
+        }
+    )
+    opd = TunixCheckpointController(
+        RunConfig.from_mapping(opd_payload),
+        model="opd-model",
+        optimizer="opd-optimizer",
+        dataset_manifest_sha256="e" * 64,
+        manager_factory=_factory(store),
+    )
+    initialized = opd.initialize_or_resume()
+    assert initialized.initialization == "warm_start"
+    assert initialized.completed_steps == 0
+    assert initialized.source_checkpoint_steps == 4
+    assert initialized.source_dataset_manifest_sha256 == "d" * 64

@@ -59,6 +59,7 @@ def config_payload(tmp_path: Path) -> dict:
             "root": str(tmp_path / "checkpoints"),
             "save_every_steps": 1,
             "resume_from": None,
+            "warm_start_from": None,
         },
         "canary": {
             "prompt_id": "prompt-0",

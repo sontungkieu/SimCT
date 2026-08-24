@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import math
 from typing import Any
 
 from vdt_tunix.config import RunConfig
@@ -202,19 +203,26 @@ class PaperSimCTTrainer:
         if not isinstance(loaded, _LoadedTunixModel):
             raise TrainingError("student backend did not expose a native Tunix model")
         self.loaded_student = loaded
-        warmup_steps = int(config.training.max_steps * 0.05)
+        optimizer_steps = max(
+            1,
+            math.ceil(
+                config.training.max_steps
+                / config.training.gradient_accumulation_steps
+            ),
+        )
+        warmup_steps = int(optimizer_steps * 0.05)
         if warmup_steps > 0:
             schedule = optax.warmup_cosine_decay_schedule(
                 init_value=0.0,
                 peak_value=config.training.learning_rate,
                 warmup_steps=warmup_steps,
-                decay_steps=config.training.max_steps,
+                decay_steps=optimizer_steps,
                 end_value=0.0,
             )
         else:
             schedule = optax.cosine_decay_schedule(
                 init_value=config.training.learning_rate,
-                decay_steps=config.training.max_steps,
+                decay_steps=optimizer_steps,
             )
         tx = optax.adamw(
             learning_rate=schedule,

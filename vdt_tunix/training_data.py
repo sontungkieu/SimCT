@@ -172,7 +172,64 @@ class VerifiedPromptDataset(Sequence[PromptRecord]):
             yield batch, DataCursor(epoch=epoch, next_prompt_index=index)
 
 
-def load_prompt_dataset(manifest_path: str | Path) -> VerifiedPromptDataset:
+@dataclasses.dataclass(frozen=True, slots=True)
+class SFTRecord:
+    prompt_id: str
+    student_prompt: str
+    teacher_prompt: str
+    target_response: str
+    source: str
+    source_id: str
+    source_license: str
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class VerifiedSFTDataset(Sequence[SFTRecord]):
+    manifest: PromptDatasetManifest
+    manifest_path: Path
+    records_path: Path
+    records: tuple[SFTRecord, ...]
+
+    def __len__(self) -> int:
+        return len(self.records)
+
+    def __getitem__(self, index: int | slice) -> SFTRecord | tuple[SFTRecord, ...]:
+        return self.records[index]
+
+    def batches(
+        self,
+        *,
+        cursor: DataCursor,
+        batch_size: int,
+        max_steps: int | None = None,
+    ) -> Iterator[tuple[tuple[SFTRecord, ...], DataCursor]]:
+        prompt_records = tuple(
+            PromptRecord(
+                prompt_id=row.prompt_id,
+                student_prompt=row.student_prompt,
+                teacher_prompt=row.teacher_prompt,
+            )
+            for row in self.records
+        )
+        proxy = VerifiedPromptDataset(
+            manifest=self.manifest,
+            manifest_path=self.manifest_path,
+            records_path=self.records_path,
+            records=prompt_records,
+        )
+        records_by_id = {record.prompt_id: record for record in self.records}
+        for batch, next_cursor in proxy.batches(
+            cursor=cursor, batch_size=batch_size, max_steps=max_steps
+        ):
+            yield (
+                tuple(records_by_id[record.prompt_id] for record in batch),
+                next_cursor,
+            )
+
+
+def _load_manifest_and_records_path(
+    manifest_path: str | Path,
+) -> tuple[Path, PromptDatasetManifest, Path]:
     path = Path(manifest_path).resolve()
     try:
         raw_manifest = json.loads(path.read_text(encoding="utf-8"))
@@ -191,6 +248,11 @@ def load_prompt_dataset(manifest_path: str | Path) -> VerifiedPromptDataset:
             "dataset records SHA-256 mismatch: "
             f"declared={manifest.records_sha256} observed={observed_sha}"
         )
+    return path, manifest, records_path
+
+
+def load_prompt_dataset(manifest_path: str | Path) -> VerifiedPromptDataset:
+    path, manifest, records_path = _load_manifest_and_records_path(manifest_path)
 
     records: list[PromptRecord] = []
     seen_ids: set[str] = set()
@@ -233,6 +295,56 @@ def load_prompt_dataset(manifest_path: str | Path) -> VerifiedPromptDataset:
             f"declared={manifest.record_count} observed={len(records)}"
         )
     return VerifiedPromptDataset(
+        manifest=manifest,
+        manifest_path=path,
+        records_path=records_path,
+        records=tuple(records),
+    )
+
+
+def load_sft_dataset(manifest_path: str | Path) -> VerifiedSFTDataset:
+    path, manifest, records_path = _load_manifest_and_records_path(manifest_path)
+    required = {
+        "prompt_id",
+        "student_prompt",
+        "teacher_prompt",
+        "target_response",
+        "source",
+        "source_id",
+        "source_license",
+    }
+    records: list[SFTRecord] = []
+    seen_ids: set[str] = set()
+    for line_number, line in enumerate(
+        records_path.read_text(encoding="utf-8").splitlines(), start=1
+    ):
+        if not line.strip():
+            raise TrainingDataError(f"blank JSONL row at line {line_number}")
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise TrainingDataError(
+                f"invalid JSONL row at line {line_number}: {exc}"
+            ) from exc
+        if not isinstance(value, Mapping):
+            raise TrainingDataError(f"row {line_number} must be an object")
+        _strict_keys(value, context=f"row {line_number}", required=required)
+        strings = {
+            name: _nonempty_string(value[name], f"row {line_number}.{name}")
+            for name in required
+        }
+        if strings["prompt_id"] in seen_ids:
+            raise TrainingDataError(
+                f"duplicate prompt_id {strings['prompt_id']!r}"
+            )
+        seen_ids.add(strings["prompt_id"])
+        records.append(SFTRecord(**strings))
+    if len(records) != manifest.record_count:
+        raise TrainingDataError(
+            "dataset record_count mismatch: "
+            f"declared={manifest.record_count} observed={len(records)}"
+        )
+    return VerifiedSFTDataset(
         manifest=manifest,
         manifest_path=path,
         records_path=records_path,

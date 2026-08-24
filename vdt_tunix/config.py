@@ -407,6 +407,7 @@ class CheckpointConfig:
     root: str
     save_every_steps: int
     resume_from: str | None = None
+    warm_start_from: str | None = None
 
     def __post_init__(self) -> None:
         _string(self.root, "checkpoint.root")
@@ -414,6 +415,12 @@ class CheckpointConfig:
             raise ConfigError("checkpoint.save_every_steps must be positive")
         if self.resume_from is not None:
             _string(self.resume_from, "checkpoint.resume_from")
+        if self.warm_start_from is not None:
+            _string(self.warm_start_from, "checkpoint.warm_start_from")
+        if self.resume_from is not None and self.warm_start_from is not None:
+            raise ConfigError(
+                "checkpoint.resume_from and warm_start_from are mutually exclusive"
+            )
 
     @classmethod
     def from_mapping(cls, value: Any) -> CheckpointConfig:
@@ -423,17 +430,23 @@ class CheckpointConfig:
             raw,
             context=context,
             required={"root", "save_every_steps"},
-            optional={"resume_from"},
+            optional={"resume_from", "warm_start_from"},
         )
         resume_from = raw.get("resume_from")
         if resume_from is not None:
             resume_from = _string(resume_from, "checkpoint.resume_from")
+        warm_start_from = raw.get("warm_start_from")
+        if warm_start_from is not None:
+            warm_start_from = _string(
+                warm_start_from, "checkpoint.warm_start_from"
+            )
         return cls(
             root=_string(raw["root"], "checkpoint.root"),
             save_every_steps=_integer(
                 raw["save_every_steps"], "checkpoint.save_every_steps"
             ),
             resume_from=resume_from,
+            warm_start_from=warm_start_from,
         )
 
 

@@ -11,6 +11,7 @@ keeps the CPU-testable boundary separate from the existing KDFlow and
 | Teacher score interface | implemented | the same completion text retokenized by one teacher plus full-vocabulary logit shape/provenance |
 | CPU contract pipeline | implemented | identity, sample count, exact text bridge and genuinely different tokenization are checked with both original mocks and dependency-injected adapter fakes |
 | Prompt dataset contract | implemented | strict JSONL schema, immutable revision, file and manifest SHA-256, unique prompt IDs, deterministic cursor batches |
+| Provenance-checked SFT dataset | implemented | strict teacher-response rows with source, source ID, license, immutable revision and content digest |
 | Checkpoint/resume manifest | implemented | atomic latest pointer, config/dataset/model/tokenizer identity, data cursor, RNG and content-addressed parameter/optimizer references |
 | TPU v5e-8 hardware preflight | implemented | lazily checks JAX backend, exactly eight devices and v5e/v5-lite device kinds |
 | Tunix/MaxText model adapters | implemented, execution pending | lazy local-checkpoint `AutoModel` restore contract, full-sequence causal forward, trainable student and stop-gradient teacher; TP8/PP1 only |
@@ -18,6 +19,8 @@ keeps the CPU-testable boundary separate from the existing KDFlow and
 | Real frozen-teacher scoring | implemented, execution pending | exact completion retokenization and full-vocabulary causal rows from the local MaxText teacher |
 | JAX paper-math SimCT update | implemented, TPU execution pending | Eq. (7) mean log-probability scores, finite-candidate softmax, reverse KL, NNX gradient and AdamW update |
 | Tunix/Orbax array save/restore | implemented, TPU execution pending | synchronous model plus optimizer persistence, directory digest, custom metadata cross-check, movable resume root |
+| Native Tunix SFT warm start | implemented, TPU execution pending | completion-plus-EOS causal loss, configurable AdamW/cosine schedule, deterministic cursor and identical student parameter representation |
+| Model-only SFT to OPD warm start | implemented, TPU execution pending | verifies student model/tokenizer and checkpoint digest, restores no SFT optimizer/cursor into the new OPD phase |
 | Resume-safe TPU train entrypoint | implemented, TPU execution pending | verified prompt manifest, deterministic cursor, finite metric gate, periodic full checkpoints and training summary |
 | Kaggle/TPU evidence | submitted, terminal evidence pending | a v5e-8 canary is operational work only; no scientific metric claim is made |
 
@@ -104,11 +107,26 @@ python scripts/tpu/kaggle_v5e8_train.py \
 The output explicitly remains `scientific_evidence=false` until a downstream
 evaluation under the shared comparison contract is complete.
 
+The SFT phase consumes the stricter teacher-response schema and writes the same
+native student state used by OPD:
+
+```bash
+python scripts/tpu/kaggle_v5e8_sft.py \
+  --config configs/reproduction/<sft-run>.json \
+  --dataset-manifest /kaggle/input/<sft-dataset>/manifest.json \
+  --metrics /kaggle/working/<sft-run>/train_metrics.jsonl \
+  --output /kaggle/working/<sft-run>/train_summary.json
+```
+
+Set `checkpoint.warm_start_from` in a new OPD config to the completed SFT
+checkpoint root. This restores only the verified student model arrays. A true
+resume instead sets `checkpoint.resume_from` and restores model, optimizer,
+data cursor, and RNG metadata; the two fields are mutually exclusive.
+
 ## Still pending
 
 - a provenance-complete reconstruction of the unavailable paper 10K corpus and
   warm-start checkpoint, or an explicitly labeled public-data substitute;
-- SFT warm-start training in the same native Tunix model representation;
 - SimpleOPD control training from the identical warm start;
 - downstream GSM8K/MATH-500/MBPP/LCB evaluation artifacts under one decoding
   and scoring contract;

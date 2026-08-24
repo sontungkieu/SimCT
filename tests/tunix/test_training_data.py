@@ -6,7 +6,11 @@ import json
 import pytest
 
 from vdt_tunix.checkpoint import DataCursor
-from vdt_tunix.training_data import TrainingDataError, load_prompt_dataset
+from vdt_tunix.training_data import (
+    TrainingDataError,
+    load_prompt_dataset,
+    load_sft_dataset,
+)
 
 
 def _write_dataset(tmp_path, rows):
@@ -99,3 +103,30 @@ def test_batches_reject_cursor_outside_dataset(tmp_path):
                 batch_size=1,
             )
         )
+
+
+def test_load_sft_dataset_preserves_target_and_source_provenance(tmp_path):
+    rows = [
+        {
+            "prompt_id": "gsm8k/train/0",
+            "student_prompt": "Solve and box the answer: 2+2",
+            "teacher_prompt": "Solve and box the answer: 2+2",
+            "target_response": "Therefore, \\boxed{4}.",
+            "source": "openai/gsm8k",
+            "source_id": "train/0",
+            "source_license": "MIT",
+        }
+    ]
+    manifest, _ = _write_dataset(tmp_path, rows)
+    dataset = load_sft_dataset(manifest)
+    assert dataset[0].target_response == "Therefore, \\boxed{4}."
+    assert dataset[0].source_license == "MIT"
+    [(batch, cursor)] = list(
+        dataset.batches(
+            cursor=DataCursor(epoch=0, next_prompt_index=0),
+            batch_size=1,
+            max_steps=1,
+        )
+    )
+    assert batch[0].source_id == "train/0"
+    assert cursor == DataCursor(epoch=1, next_prompt_index=0)

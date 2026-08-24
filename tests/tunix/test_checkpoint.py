@@ -73,6 +73,14 @@ def test_checkpoint_identity_ignores_storage_and_resume_paths(config_payload):
     assert RunConfig.from_mapping(moved).digest() == original.digest()
 
 
+def test_checkpoint_config_rejects_resume_and_warm_start_together(config_payload):
+    changed = copy.deepcopy(config_payload)
+    changed["checkpoint"]["resume_from"] = "/resume"
+    changed["checkpoint"]["warm_start_from"] = "/warm"
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        RunConfig.from_mapping(changed)
+
+
 def test_checkpoint_refuses_latest_rollback(run_config, tmp_path):
     root = tmp_path / "checkpoint"
     save_checkpoint(root, _state(run_config, completed_steps=2))
