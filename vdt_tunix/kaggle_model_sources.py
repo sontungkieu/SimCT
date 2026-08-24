@@ -35,12 +35,10 @@ def validate_model_source(source: str) -> str:
 
 
 def model_source_mount(source: str) -> PurePosixPath:
-    """Return the legacy Kaggle mount path for a validated model source."""
+    """Return Kaggle's owner-preserving model mount for an exact source."""
 
-    _, model, framework, variation, version = validate_model_source(source).split(
-        "/"
-    )
-    return PurePosixPath("/kaggle/input") / model / framework / variation / version
+    validated = validate_model_source(source)
+    return PurePosixPath("/kaggle/input/models") / validated
 
 
 def _read_object(path: Path) -> dict[str, Any]:
@@ -149,9 +147,12 @@ KJO_REPO_DIR_NAME = "repo"
 KJO_REPO_WORKING_DIR = Path("/kaggle/working/repo")
 input_root = Path(os.environ.get("KJO_KAGGLE_INPUT_ROOT", "/kaggle/input"))
 legacy_root = input_root / KJO_REPO_DATASET_SLUG
-version_root = input_root / "datasets" / {repo_owner!r} / KJO_REPO_DATASET_SLUG / "versions"
+direct_root = input_root / "datasets" / {repo_owner!r} / KJO_REPO_DATASET_SLUG
+version_root = direct_root / "versions"
 if legacy_root.is_dir():
     dataset_root = legacy_root
+elif direct_root.is_dir() and not version_root.is_dir():
+    dataset_root = direct_root
 else:
     versions = sorted(
         (path for path in version_root.glob("*") if path.is_dir()),
@@ -160,14 +161,24 @@ else:
     if len(versions) != 1:
         available = sorted(str(path.relative_to(input_root)) for path in input_root.rglob("*") if path.is_dir())
         raise FileNotFoundError(
-            "Kaggle dataset is not mounted at either supported layout. "
+            "Kaggle dataset is not mounted at a supported layout. "
             f"dataset_source={{KJO_REPO_DATASET_SOURCE}} versions={{versions}} "
             f"available_inputs={{available[:100]}}"
         )
     dataset_root = versions[0]
 source_repo = dataset_root / KJO_REPO_DIR_NAME
 if not source_repo.is_dir():
-    raise FileNotFoundError(f"repo directory is missing from dataset: {{source_repo}}")
+    source_repo = dataset_root
+required_repo_paths = (
+    source_repo / "pyproject.toml",
+    source_repo / "vdt_tunix",
+    source_repo / {config_relative.as_posix()!r},
+)
+if any(not path.exists() for path in required_repo_paths):
+    raise FileNotFoundError(
+        f"repo payload is incomplete at {{source_repo}}; "
+        f"required={{[str(path) for path in required_repo_paths]}}"
+    )
 if KJO_REPO_WORKING_DIR.exists():
     shutil.rmtree(KJO_REPO_WORKING_DIR)
 shutil.copytree(source_repo, KJO_REPO_WORKING_DIR, symlinks=False)

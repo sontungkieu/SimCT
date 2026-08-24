@@ -6,22 +6,22 @@
     "model_revision": "kaggle-google-gemma-2-flax-gemma2-2b-it-v1",
     "tokenizer_id": "google/gemma-2-2b-it",
     "tokenizer_revision": "kaggle-google-gemma-2-flax-gemma2-2b-it-v1",
-    "maxtext_checkpoint_uri": "/kaggle/input/gemma-2/flax/gemma2-2b-it/1",
+    "maxtext_checkpoint_uri": "/kaggle/input/models/google/gemma-2/flax/gemma2-2b-it/1",
     "model_source": "kaggle",
-    "model_path": "/kaggle/input/gemma-2/flax/gemma2-2b-it/1",
+    "model_path": "/kaggle/input/models/google/gemma-2/flax/gemma2-2b-it/1",
     "tokenizer_type": "sentencepiece",
-    "tokenizer_path": "/kaggle/input/gemma-2/flax/gemma2-2b-it/1/tokenizer.model"
+    "tokenizer_path": "/kaggle/input/models/google/gemma-2/flax/gemma2-2b-it/1/tokenizer.model"
   },
   "teacher": {
     "model_id": "Qwen/Qwen2.5-7B-Instruct",
     "model_revision": "a09a35458c702b33eeacc393d103063234e8bc28",
     "tokenizer_id": "Qwen/Qwen2.5-7B-Instruct",
     "tokenizer_revision": "a09a35458c702b33eeacc393d103063234e8bc28",
-    "maxtext_checkpoint_uri": "/kaggle/input/qwen2.5/transformers/7b-instruct/1",
+    "maxtext_checkpoint_uri": "/kaggle/input/models/qwen-lm/qwen2.5/transformers/7b-instruct/1",
     "model_source": "huggingface",
-    "model_path": "/kaggle/input/qwen2.5/transformers/7b-instruct/1",
+    "model_path": "/kaggle/input/models/qwen-lm/qwen2.5/transformers/7b-instruct/1",
     "tokenizer_type": "huggingface",
-    "tokenizer_path": "/kaggle/input/qwen2.5/transformers/7b-instruct/1"
+    "tokenizer_path": "/kaggle/input/models/qwen-lm/qwen2.5/transformers/7b-instruct/1"
   },
   "simct": {
     "algorithm": "simct",

@@ -21,10 +21,10 @@ REPO_DATASET = "testowner/simct-tunix-repro-src"
 
 def test_model_source_mount_matches_kaggle_layout():
     assert str(model_source_mount(STUDENT)) == (
-        "/kaggle/input/gemma-2/flax/gemma2-2b-it/1"
+        "/kaggle/input/models/google/gemma-2/flax/gemma2-2b-it/1"
     )
     assert str(model_source_mount(TEACHER)) == (
-        "/kaggle/input/qwen2.5/transformers/7b-instruct/1"
+        "/kaggle/input/models/qwen-lm/qwen2.5/transformers/7b-instruct/1"
     )
 
 
@@ -76,6 +76,7 @@ def test_rendered_canary_is_pinned_bounded_and_preserves_jax():
     assert len(notebook["cells"]) == 5
     assert REPO_DATASET in source
     assert 'input_root / "datasets"' in source
+    assert "direct_root.is_dir()" in source
     assert "KJO_REPO_DATASET_COPY_SUMMARY" in source
     assert STUDENT in source
     assert TEACHER in source
@@ -83,6 +84,44 @@ def test_rendered_canary_is_pinned_bounded_and_preserves_jax():
     assert "provider-managed JAX stack changed" in source
     assert "scientific_evidence" in source
     assert "shutil.rmtree(cache)" in source
+
+
+def test_rendered_repo_copy_supports_direct_owner_slug_mount(
+    tmp_path: Path, monkeypatch
+):
+    notebook = render_canary_notebook(
+        config_relative_path=(
+            "configs/reproduction/qwen25_7b_to_gemma2_2b_paper_canary.json"
+        ),
+        repo_dataset_source=REPO_DATASET,
+        student_model_source=STUDENT,
+        teacher_model_source=TEACHER,
+    )
+    copy_source = next(
+        "".join(cell.get("source", []))
+        for cell in notebook["cells"]
+        if "KJO_REPO_DATASET_SOURCE" in "".join(cell.get("source", []))
+    )
+    input_root = tmp_path / "input"
+    mounted = input_root / "datasets" / "testowner" / "simct-tunix-repro-src"
+    (mounted / "vdt_tunix").mkdir(parents=True)
+    config = (
+        mounted
+        / "configs"
+        / "reproduction"
+        / "qwen25_7b_to_gemma2_2b_paper_canary.json"
+    )
+    config.parent.mkdir(parents=True)
+    config.write_text("{}", encoding="utf-8")
+    (mounted / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    (mounted / "vdt_tunix" / "marker.py").write_text("VALUE = 1\n", encoding="utf-8")
+    working = tmp_path / "working" / "repo"
+    copy_source = copy_source.replace(
+        'Path("/kaggle/working/repo")', f"Path({str(working)!r})"
+    )
+    monkeypatch.setenv("KJO_KAGGLE_INPUT_ROOT", str(input_root))
+    exec(compile(copy_source, "<rendered-repo-copy>", "exec"), {})
+    assert (working / "vdt_tunix" / "marker.py").is_file()
 
 
 def test_render_rejects_config_escape():
