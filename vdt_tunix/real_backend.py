@@ -9,18 +9,18 @@ there is no mock or network-download fallback.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 import dataclasses
 import hashlib
 import importlib
 import math
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 from vdt_tunix.config import ModelConfig, RunConfig
 from vdt_tunix.contracts import (
-    BackendBundle,
     INTERFACE_CONTRACT_VERSION,
+    BackendBundle,
     LogitsPayload,
     RolloutRequest,
     StudentRolloutBatch,
@@ -48,6 +48,29 @@ class _LoadedTunixModel:
     forward_fn: Any
     model_config: Any
     sampler: Any | None = None
+
+
+def _normalize_tokenizer_padding(tokenizer: Any, tokenizer_type: str) -> Any:
+    """Add an HF pad token without imposing HF attributes on SentencePiece.
+
+    Tunix's SentencePiece adapter exposes ``pad_id()`` and ``eos_id()``; it
+    intentionally does not expose Hugging Face's ``pad_token_id`` or
+    ``eos_token`` attributes.  ``TokenizerByteAdapter`` validates the numeric
+    SentencePiece ids directly, so only Hugging Face tokenizers need this
+    normalization step.
+    """
+
+    if tokenizer_type != "huggingface":
+        return tokenizer
+    if getattr(tokenizer, "pad_token_id", None) is not None:
+        return tokenizer
+    eos_token = getattr(tokenizer, "eos_token", None)
+    if eos_token is None:
+        raise RealBackendUnavailable(
+            "Hugging Face tokenizer has neither a pad token nor an EOS token"
+        )
+    tokenizer.pad_token = eos_token
+    return tokenizer
 
 
 def _validate_model_path(config: ModelConfig) -> Path:
@@ -130,14 +153,10 @@ def _production_dependencies(config: RunConfig) -> ModelRuntimeDependencies:
                 "tokenizer is not available locally at the pinned revision for "
                 f"{model_config.tokenizer_id!r}: {type(exc).__name__}: {exc}"
             ) from exc
-        if getattr(tokenizer, "pad_token_id", None) is None:
-            eos_token = getattr(tokenizer, "eos_token", None)
-            if eos_token is None:
-                raise RealBackendUnavailable(
-                    f"tokenizer {model_config.tokenizer_id!r} has no pad or EOS token"
-                )
-            tokenizer.pad_token = eos_token
-        return tokenizer
+        return _normalize_tokenizer_padding(
+            tokenizer,
+            model_config.tokenizer_type,
+        )
 
     def require_mesh() -> Any:
         if "mesh" in mesh_cache:
