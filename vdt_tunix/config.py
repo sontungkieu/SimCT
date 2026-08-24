@@ -163,16 +163,23 @@ class SimCTConfig:
     reproduction_mode: str = "public_code_cf0f33a_default"
 
     def __post_init__(self) -> None:
-        if self.algorithm != "simct":
-            raise ConfigError("simct.algorithm must be 'simct'")
+        if self.algorithm not in {"simct", "simple_opd"}:
+            raise ConfigError(
+                "simct.algorithm must be 'simct' or 'simple_opd'"
+            )
         if self.divergence != "reverse_kl":
             raise ConfigError("simct.divergence must be 'reverse_kl'")
         if self.alignment_unit != "utf8_bytes":
             raise ConfigError("simct.alignment_unit must be 'utf8_bytes'")
-        if self.virtual_support != "shared_tokens_plus_realized_spans":
+        expected_support = (
+            "shared_tokens_plus_realized_spans"
+            if self.algorithm == "simct"
+            else "shared_tokens_only"
+        )
+        if self.virtual_support != expected_support:
             raise ConfigError(
-                "simct.virtual_support must be "
-                "'shared_tokens_plus_realized_spans'"
+                f"simct.virtual_support must be {expected_support!r} "
+                f"for algorithm={self.algorithm!r}"
             )
         if not math.isfinite(self.temperature) or self.temperature <= 0:
             raise ConfigError("simct.temperature must be positive and finite")
@@ -185,6 +192,10 @@ class SimCTConfig:
         if self.reproduction_mode not in modes:
             raise ConfigError(
                 f"simct.reproduction_mode must be one of {sorted(modes)}"
+            )
+        if self.algorithm == "simple_opd" and self.reproduction_mode != "paper_math":
+            raise ConfigError(
+                "simple_opd currently requires reproduction_mode='paper_math'"
             )
         if not math.isfinite(self.span_gh_mask_threshold) or (
             self.span_gh_mask_threshold != 0.0

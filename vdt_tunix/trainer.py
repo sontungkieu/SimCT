@@ -13,7 +13,10 @@ from vdt_tunix.contracts import (
     RolloutRequest,
     TeacherScoreRequest,
 )
-from vdt_tunix.jax_kernels import paper_simct_aligned_batch_loss
+from vdt_tunix.jax_kernels import (
+    paper_simct_aligned_batch_loss,
+    paper_simple_opd_aligned_batch_loss,
+)
 from vdt_tunix.real_backend import _LoadedTunixModel
 from vdt_tunix.supervision import (
     OverlapVocabulary,
@@ -61,6 +64,42 @@ class UpdateMetrics:
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
+
+
+def _build_optimizer(config: RunConfig, model: Any, nnx: Any, optax: Any) -> Any:
+    optimizer_steps = max(
+        1,
+        math.ceil(
+            config.training.max_steps
+            / config.training.gradient_accumulation_steps
+        ),
+    )
+    warmup_steps = int(optimizer_steps * 0.05)
+    if warmup_steps > 0:
+        schedule = optax.warmup_cosine_decay_schedule(
+            init_value=0.0,
+            peak_value=config.training.learning_rate,
+            warmup_steps=warmup_steps,
+            decay_steps=optimizer_steps,
+            end_value=0.0,
+        )
+    else:
+        schedule = optax.cosine_decay_schedule(
+            init_value=config.training.learning_rate,
+            decay_steps=optimizer_steps,
+        )
+    transform = optax.adamw(
+        learning_rate=schedule,
+        b1=0.9,
+        b2=0.98,
+        weight_decay=0.0,
+    )
+    if config.training.gradient_accumulation_steps > 1:
+        transform = optax.MultiSteps(
+            transform,
+            every_k_schedule=config.training.gradient_accumulation_steps,
+        )
+    return nnx.Optimizer(model, transform, wrt=nnx.Param)
 
 
 def _pad_device_rows(rows: list[Any], width: int, jnp: Any) -> Any:
@@ -178,6 +217,8 @@ class PaperSimCTTrainer:
     """Own a Tunix NNX optimizer and execute paper-faithful SimCT updates."""
 
     def __init__(self, config: RunConfig, backends: BackendBundle):
+        if config.simct.algorithm != "simct":
+            raise TrainingError("PaperSimCTTrainer requires algorithm=simct")
         if config.simct.reproduction_mode != "paper_math":
             raise TrainingError("PaperSimCTTrainer requires reproduction_mode=paper_math")
         if not (
@@ -203,43 +244,7 @@ class PaperSimCTTrainer:
         if not isinstance(loaded, _LoadedTunixModel):
             raise TrainingError("student backend did not expose a native Tunix model")
         self.loaded_student = loaded
-        optimizer_steps = max(
-            1,
-            math.ceil(
-                config.training.max_steps
-                / config.training.gradient_accumulation_steps
-            ),
-        )
-        warmup_steps = int(optimizer_steps * 0.05)
-        if warmup_steps > 0:
-            schedule = optax.warmup_cosine_decay_schedule(
-                init_value=0.0,
-                peak_value=config.training.learning_rate,
-                warmup_steps=warmup_steps,
-                decay_steps=optimizer_steps,
-                end_value=0.0,
-            )
-        else:
-            schedule = optax.cosine_decay_schedule(
-                init_value=config.training.learning_rate,
-                decay_steps=optimizer_steps,
-            )
-        tx = optax.adamw(
-            learning_rate=schedule,
-            b1=0.9,
-            b2=0.98,
-            weight_decay=0.0,
-        )
-        if config.training.gradient_accumulation_steps > 1:
-            tx = optax.MultiSteps(
-                tx,
-                every_k_schedule=config.training.gradient_accumulation_steps,
-            )
-        self.optimizer = nnx.Optimizer(
-            loaded.model,
-            tx,
-            wrt=nnx.Param,
-        )
+        self.optimizer = _build_optimizer(config, loaded.model, nnx, optax)
 
         student_overlap = jnp.asarray(self.overlap.student_ids, dtype=jnp.int32)
         teacher_overlap = jnp.asarray(self.overlap.teacher_ids, dtype=jnp.int32)
@@ -333,4 +338,131 @@ class PaperSimCTTrainer:
             teacher_completion_tokens=batch.teacher_completion_tokens,
             aligned_units=batch.aligned_units,
             aligned_spans=batch.aligned_spans,
+        )
+
+
+class PaperSimpleOPDTrainer:
+    """Overlap-only reverse-KL control initialized from the same SFT state."""
+
+    def __init__(self, config: RunConfig, backends: BackendBundle):
+        if config.simct.algorithm != "simple_opd":
+            raise TrainingError(
+                "PaperSimpleOPDTrainer requires algorithm=simple_opd"
+            )
+        if config.simct.reproduction_mode != "paper_math":
+            raise TrainingError(
+                "PaperSimpleOPDTrainer requires reproduction_mode=paper_math"
+            )
+        if not (
+            backends.student.real_model_integration
+            and backends.teacher.real_model_integration
+        ):
+            raise TrainingError("optimizer updates require real model integrations")
+        try:
+            import jax
+            import jax.numpy as jnp
+            from flax import nnx
+            import optax
+        except ImportError as exc:
+            raise TrainingError(
+                "Tunix optimizer dependencies are unavailable"
+            ) from exc
+
+        self.config = config
+        self.backends = backends
+        self.overlap = build_overlap_vocabulary(
+            backends.student.model_adapter.tokenizer.raw_tokenizer,
+            backends.teacher.model_adapter.tokenizer.raw_tokenizer,
+        )
+        loaded = backends.student.model_adapter.require_loaded_model()
+        if not isinstance(loaded, _LoadedTunixModel):
+            raise TrainingError("student backend did not expose a native Tunix model")
+        self.loaded_student = loaded
+        self.optimizer = _build_optimizer(config, loaded.model, nnx, optax)
+
+        student_overlap = jnp.asarray(self.overlap.student_ids, dtype=jnp.int32)
+        teacher_overlap = jnp.asarray(self.overlap.teacher_ids, dtype=jnp.int32)
+        temperature = config.simct.temperature
+        forward_fn = loaded.forward_fn
+
+        @nnx.jit
+        def update_fn(
+            model,
+            optimizer,
+            input_ids,
+            segment_ids,
+            completion_positions,
+            teacher_position_logits,
+            segment_bounds,
+            segment_mask,
+            span_mask,
+            normalizer,
+        ):
+            positions = jnp.maximum(jnp.cumsum(segment_ids, axis=-1) - 1, 0)
+
+            def loss_fn(candidate_model):
+                full_logits = forward_fn(
+                    candidate_model, input_ids, positions, segment_ids
+                )
+                batch = jnp.arange(input_ids.shape[0], dtype=jnp.int32)[:, None]
+                student_position_logits = full_logits[batch, completion_positions]
+                return paper_simple_opd_aligned_batch_loss(
+                    student_position_logits,
+                    teacher_position_logits,
+                    student_overlap,
+                    teacher_overlap,
+                    segment_bounds,
+                    segment_mask,
+                    span_mask,
+                    temperature=temperature,
+                    normalizer=normalizer,
+                )
+
+            loss, gradients = nnx.value_and_grad(loss_fn)(model)
+            gradient_norm = optax.global_norm(gradients)
+            parameter_norm = optax.global_norm(nnx.state(model, nnx.Param))
+            optimizer.update(model, gradients)
+            return loss, gradient_norm, parameter_norm
+
+        self._update_fn = update_fn
+        self._jax = jax
+
+    def step(
+        self,
+        prompts: tuple[PromptRecord, ...],
+        *,
+        step: int,
+    ) -> UpdateMetrics:
+        batch = prepare_simct_batch(
+            self.config,
+            prompts,
+            self.backends,
+            self.overlap,
+            step=step,
+        )
+        with self._jax.set_mesh(self.loaded_student.mesh):
+            loss, gradient_norm, parameter_norm = self._update_fn(
+                self.loaded_student.model,
+                self.optimizer,
+                batch.student_input_ids,
+                batch.student_segment_ids,
+                batch.student_completion_positions,
+                batch.teacher_position_logits,
+                batch.segment_bounds,
+                batch.segment_mask,
+                batch.span_mask,
+                batch.normalizer,
+            )
+        loss, gradient_norm, parameter_norm = self._jax.device_get(
+            (loss, gradient_norm, parameter_norm)
+        )
+        return UpdateMetrics(
+            loss=float(loss),
+            gradient_norm=float(gradient_norm),
+            parameter_norm=float(parameter_norm),
+            sample_count=batch.sample_count,
+            student_completion_tokens=batch.student_completion_tokens,
+            teacher_completion_tokens=batch.teacher_completion_tokens,
+            aligned_units=batch.aligned_units - batch.aligned_spans,
+            aligned_spans=0,
         )

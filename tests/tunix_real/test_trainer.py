@@ -22,7 +22,7 @@ from vdt_tunix.contracts import (
 )
 from vdt_tunix.model_adapters import TokenizerByteAdapter
 from vdt_tunix.real_backend import _LoadedTunixModel
-from vdt_tunix.trainer import PaperSimCTTrainer
+from vdt_tunix.trainer import PaperSimCTTrainer, PaperSimpleOPDTrainer
 
 
 class PieceTokenizer:
@@ -127,6 +127,38 @@ class FixedTeacher:
             position_logits=LogitsPayload(
                 values=jnp.asarray(
                     [[-1.0, -0.5, 0.0, 2.0, -1.0], [1.0, -0.5, 0.0, -1.0, 2.0]]
+                ),
+                shape=(2, 5),
+                dtype="float32",
+            ),
+        )
+        model = self.config.teacher
+        return TeacherScoreBatch(
+            contract_version=INTERFACE_CONTRACT_VERSION,
+            run_id=request.rollouts.run_id,
+            step=request.rollouts.step,
+            model_id=model.model_id,
+            model_revision=model.model_revision,
+            tokenizer_id=model.tokenizer_id,
+            tokenizer_revision=model.tokenizer_revision,
+            samples=(sample,),
+        )
+
+
+class FixedTeacherWithSharedPrefix(FixedTeacher):
+    def score(self, request):
+        sample = TeacherScoreSample(
+            sample_id="p/0",
+            prompt_id="p",
+            teacher_prompt_token_ids=(2,),
+            completion=TokenSequence(
+                text="happy",
+                token_ids=(3, 4),
+                pieces=(b"ha", b"ppy"),
+            ),
+            position_logits=LogitsPayload(
+                values=jnp.asarray(
+                    [[0.0, 2.0, 0.0, -1.0, 0.0], [0.0, -0.5, 0.0, -1.0, 2.0]]
                 ),
                 shape=(2, 5),
                 dtype="float32",
@@ -250,3 +282,59 @@ def test_paper_trainer_executes_real_gradient_update():
     assert metrics.gradient_norm > 0.0
     assert metrics.aligned_spans == 1
     assert not bool(jnp.allclose(before, after))
+
+
+def test_simple_opd_trainer_updates_only_shared_one_to_one_unit():
+    payload = _config().to_dict()
+    payload["simct"].update(
+        {
+            "algorithm": "simple_opd",
+            "virtual_support": "shared_tokens_only",
+        }
+    )
+    config = RunConfig.from_mapping(payload)
+    student_tokenizer = TokenizerByteAdapter(
+        PieceTokenizer({0: "", 1: "", 2: "P:", 3: "ha", 4: "pp", 5: "y"}),
+        config.student,
+    )
+    teacher_tokenizer = TokenizerByteAdapter(
+        PieceTokenizer({0: "", 1: "", 2: "P:", 3: "ha", 4: "ppy"}),
+        config.teacher,
+    )
+    model = ToyLM()
+    mesh = jax.make_mesh((1, 1), ("fsdp", "tp"))
+
+    @nnx.jit
+    def forward_fn(module, input_ids, positions, segments):
+        del positions, segments
+        logits, _ = module(input_ids)
+        return logits
+
+    loaded = _LoadedTunixModel(
+        model=model,
+        mesh=mesh,
+        forward_fn=forward_fn,
+        model_config=SimpleNamespace(num_layers=1, num_kv_heads=1, head_dim=1),
+    )
+    backends = BackendBundle(
+        student=FixedStudent(
+            config,
+            SimpleNamespace(
+                tokenizer=student_tokenizer,
+                require_loaded_model=lambda: loaded,
+            ),
+        ),
+        teacher=FixedTeacherWithSharedPrefix(
+            config, SimpleNamespace(tokenizer=teacher_tokenizer)
+        ),
+    )
+    before = jnp.array(model.table.get_value())
+    metrics = PaperSimpleOPDTrainer(config, backends).step(
+        (PromptRecord(prompt_id="p", student_prompt="P:", teacher_prompt="P:"),),
+        step=0,
+    )
+    assert metrics.loss > 0.0
+    assert metrics.gradient_norm > 0.0
+    assert metrics.aligned_units == 1
+    assert metrics.aligned_spans == 0
+    assert not bool(jnp.allclose(before, model.table.get_value()))

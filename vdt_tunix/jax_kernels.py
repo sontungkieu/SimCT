@@ -300,3 +300,80 @@ def paper_simct_aligned_batch_loss(
         else jnp.asarray(normalizer, dtype=jnp.float32)
     )
     return numerator / jnp.maximum(denominator, 1.0)
+
+
+def paper_simple_opd_aligned_batch_loss(
+    student_position_logits: Any,
+    teacher_position_logits: Any,
+    student_overlap_ids: Any,
+    teacher_overlap_ids: Any,
+    segment_bounds: Any,
+    segment_mask: Any,
+    span_mask: Any,
+    *,
+    temperature: float = 1.0,
+    normalizer: Any | None = None,
+) -> Any:
+    """Reverse KL on overlap vocabulary at exact one-to-one aligned units.
+
+    This is the no-span control paired with SimCT.  A row is active only when
+    the realized teacher and student tokens share both prefix and suffix byte
+    boundaries.  The candidate support is the normalized overlap vocabulary;
+    mismatched multi-token units receive no SimpleOPD credit.
+    """
+
+    jax, jnp = _jax_modules()
+    student_logits = jnp.asarray(student_position_logits)
+    teacher_logits = jax.lax.stop_gradient(jnp.asarray(teacher_position_logits))
+    student_shared = jnp.asarray(student_overlap_ids)
+    teacher_shared = jnp.asarray(teacher_overlap_ids)
+    bounds = jnp.asarray(segment_bounds)
+    units = jnp.asarray(segment_mask, dtype=jnp.float32)
+    spans = jnp.asarray(span_mask, dtype=bool)
+
+    _require_rank("student_position_logits", student_logits, 3)
+    _require_rank("teacher_position_logits", teacher_logits, 3)
+    _require_rank("student_overlap_ids", student_shared, 1)
+    _require_rank("teacher_overlap_ids", teacher_shared, 1)
+    _require_rank("segment_bounds", bounds, 3)
+    _require_rank("segment_mask", units, 2)
+    _require_rank("span_mask", spans, 2)
+    if bounds.shape[:2] != units.shape or units.shape != spans.shape:
+        raise ValueError("segment bounds and masks must share batch/unit axes")
+    if bounds.shape[-1] != 4:
+        raise ValueError("segment_bounds must end in four interval coordinates")
+    if student_shared.shape != teacher_shared.shape:
+        raise ValueError("student/teacher overlap id arrays must have equal length")
+    if student_shared.shape[0] < 2:
+        raise ValueError("SimpleOPD requires at least two shared-vocabulary tokens")
+    if not isinstance(temperature, (int, float)) or temperature <= 0.0:
+        raise ValueError("temperature must be positive")
+
+    ts, _, ss, _ = (bounds[..., index] for index in range(4))
+    batch = jnp.arange(bounds.shape[0], dtype=jnp.int32)[:, None]
+    student_scores = jnp.take(
+        student_logits[batch, ss], student_shared, axis=-1
+    )
+    teacher_scores = jax.lax.stop_gradient(
+        jnp.take(teacher_logits[batch, ts], teacher_shared, axis=-1)
+    )
+    student_log_probs = jax.nn.log_softmax(
+        student_scores.astype(jnp.float32) / float(temperature), axis=-1
+    )
+    teacher_log_probs = jax.lax.stop_gradient(
+        jax.nn.log_softmax(
+            teacher_scores.astype(jnp.float32) / float(temperature), axis=-1
+        )
+    )
+    row_kl = jnp.sum(
+        jnp.exp(student_log_probs) * (student_log_probs - teacher_log_probs),
+        axis=-1,
+    )
+    active = units * jnp.logical_not(spans).astype(jnp.float32)
+    numerator = jnp.sum(row_kl * active)
+    denominator = (
+        jnp.sum(units)
+        if normalizer is None
+        else jnp.asarray(normalizer, dtype=jnp.float32)
+    )
+    return numerator / jnp.maximum(denominator, 1.0)

@@ -134,13 +134,20 @@ def test_sft_trainer_updates_native_student_state():
         model_config=SimpleNamespace(num_layers=1, num_kv_heads=1, head_dim=1),
     )
     student = SimpleNamespace(
+        backend_name="toy-real-student",
         real_model_integration=True,
+        rollout=lambda request: None,
         model_adapter=SimpleNamespace(
             tokenizer=tokenizer,
             require_loaded_model=lambda: loaded,
         ),
     )
-    backends = BackendBundle(student=student, teacher=SimpleNamespace())
+    teacher = SimpleNamespace(
+        backend_name="unused-teacher",
+        real_model_integration=False,
+        score=lambda request: None,
+    )
+    backends = BackendBundle(student=student, teacher=teacher)
     row = SFTRecord(
         prompt_id="p",
         student_prompt="P:",

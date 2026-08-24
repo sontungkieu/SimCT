@@ -18,6 +18,7 @@ from vdt_tunix.jax_kernels import (
     paper_simct_aligned_batch_loss,
     paper_candidate_scores,
     paper_simct_reverse_kl,
+    paper_simple_opd_aligned_batch_loss,
     reverse_kl_loss_and_student_score_gradient,
 )
 
@@ -194,5 +195,40 @@ def test_aligned_batch_loss_stops_teacher_gradient_and_uses_padding_mask():
         student_logits, teacher_logits
     )
     assert bool(jnp.all(jnp.isfinite(student_gradient)))
+    assert float(jnp.linalg.norm(student_gradient)) > 0.0
+    assert float(jnp.linalg.norm(teacher_gradient)) == pytest.approx(0.0)
+
+
+def test_simple_opd_uses_only_one_to_one_units_and_stops_teacher_gradient():
+    student_logits = jnp.asarray(
+        [[[2.0, 0.0, -1.0], [0.0, 2.0, -1.0]]]
+    )
+    teacher_logits = jnp.asarray(
+        [[[0.0, 2.0, -1.0], [2.0, 0.0, -1.0]]]
+    )
+    bounds = jnp.asarray([[[0, 1, 0, 1], [1, 2, 1, 2]]])
+    unit_mask = jnp.asarray([[1.0, 1.0]])
+    span_mask = jnp.asarray([[False, True]])
+
+    expected = reverse_kl_from_candidate_scores(
+        [2.0, 0.0], [0.0, 2.0]
+    ) / 2.0
+
+    def loss_fn(student_values, teacher_values):
+        return paper_simple_opd_aligned_batch_loss(
+            student_values,
+            teacher_values,
+            jnp.asarray([0, 1]),
+            jnp.asarray([0, 1]),
+            bounds,
+            unit_mask,
+            span_mask,
+        )
+
+    observed = loss_fn(student_logits, teacher_logits)
+    student_gradient, teacher_gradient = jax.grad(loss_fn, argnums=(0, 1))(
+        student_logits, teacher_logits
+    )
+    assert float(observed) == pytest.approx(expected, abs=1e-6)
     assert float(jnp.linalg.norm(student_gradient)) > 0.0
     assert float(jnp.linalg.norm(teacher_gradient)) == pytest.approx(0.0)

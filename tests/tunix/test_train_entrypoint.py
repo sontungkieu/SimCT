@@ -5,6 +5,8 @@ import hashlib
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from scripts.tpu import kaggle_v5e8_train as train_entrypoint
 from vdt_tunix.checkpoint import DataCursor
 from vdt_tunix.trainer import UpdateMetrics
@@ -45,12 +47,21 @@ def _dataset_manifest(tmp_path):
     return manifest
 
 
+@pytest.mark.parametrize(
+    ("algorithm", "virtual_support"),
+    [
+        ("simct", "shared_tokens_plus_realized_spans"),
+        ("simple_opd", "shared_tokens_only"),
+    ],
+)
 def test_train_entrypoint_runs_steps_and_publishes_checkpoints(
-    tmp_path, config_payload, monkeypatch
+    tmp_path, config_payload, monkeypatch, algorithm, virtual_support
 ):
     payload = copy.deepcopy(config_payload)
     payload["simct"].update(
         {
+            "algorithm": algorithm,
+            "virtual_support": virtual_support,
             "reproduction_mode": "paper_math",
             "span_gh_mask_threshold": 0.0,
         }
@@ -112,6 +123,7 @@ def test_train_entrypoint_runs_steps_and_publishes_checkpoints(
         lambda **kwargs: (object(), {"device_count": kwargs["expected_device_count"]}),
     )
     monkeypatch.setattr(train_entrypoint, "PaperSimCTTrainer", FakeTrainer)
+    monkeypatch.setattr(train_entrypoint, "PaperSimpleOPDTrainer", FakeTrainer)
     monkeypatch.setattr(train_entrypoint, "TunixCheckpointController", FakeController)
 
     result = train_entrypoint.main(
@@ -129,6 +141,7 @@ def test_train_entrypoint_runs_steps_and_publishes_checkpoints(
     assert result == 0
     summary = json.loads(output.read_text(encoding="utf-8"))
     assert summary["completed_steps"] == 2
+    assert summary["objective"] == algorithm
     assert summary["scientific_evidence"] is False
     rows = [json.loads(line) for line in metrics.read_text(encoding="utf-8").splitlines()]
     assert [row["step"] for row in rows] == [1, 2]

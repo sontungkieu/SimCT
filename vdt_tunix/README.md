@@ -6,7 +6,7 @@ keeps the CPU-testable boundary separate from the existing KDFlow and
 
 | Capability | Status | What is actually established |
 |---|---:|---|
-| Strict JSON configuration | implemented | one student, exactly one teacher, distinct tokenizers, SimCT constants, v5e-8 layout |
+| Strict JSON configuration | implemented | one student, exactly one teacher, distinct tokenizers, explicit SimCT/SimpleOPD support, v5e-8 layout |
 | Student rollout interface | implemented | prompt/completion ids, exact UTF-8 token pieces, rollout log-probability shape and provenance |
 | Teacher score interface | implemented | the same completion text retokenized by one teacher plus full-vocabulary logit shape/provenance |
 | CPU contract pipeline | implemented | identity, sample count, exact text bridge and genuinely different tokenization are checked with both original mocks and dependency-injected adapter fakes |
@@ -18,6 +18,7 @@ keeps the CPU-testable boundary separate from the existing KDFlow and
 | Real student rollout canary | implemented, execution pending | native Tunix KV-cached sampler, deterministic rollout coordinate, rollout log-probabilities and exact decoded-byte bridge |
 | Real frozen-teacher scoring | implemented, execution pending | exact completion retokenization and full-vocabulary causal rows from the local MaxText teacher |
 | JAX paper-math SimCT update | implemented, TPU execution pending | Eq. (7) mean log-probability scores, finite-candidate softmax, reverse KL, NNX gradient and AdamW update |
+| JAX paper-control SimpleOPD update | implemented, TPU execution pending | reverse KL on normalized overlap vocabulary at exact one-to-one byte-aligned units; no span credit |
 | Tunix/Orbax array save/restore | implemented, TPU execution pending | synchronous model plus optimizer persistence, directory digest, custom metadata cross-check, movable resume root |
 | Native Tunix SFT warm start | implemented, TPU execution pending | completion-plus-EOS causal loss, configurable AdamW/cosine schedule, deterministic cursor and identical student parameter representation |
 | Model-only SFT to OPD warm start | implemented, TPU execution pending | verifies student model/tokenizer and checkpoint digest, restores no SFT optimizer/cursor into the new OPD phase |
@@ -33,7 +34,9 @@ with student tokens.
 
 The configuration contains a singular `teacher` object. Unknown keys, a
 `teachers` list, mutable `main`/`latest` revisions, same-tokenizer configs, and
-non-v5e-8 layouts fail validation.
+non-v5e-8 layouts fail validation. `algorithm=simct` requires shared tokens plus
+realized spans; `algorithm=simple_opd` requires overlap-only support, paper-math
+mode, and no post-paper span safeguard.
 
 Checkpoint manifests are immutable at a completed-step coordinate. A resume
 loads only through `latest.json`, verifies the manifest hash, then matches the
@@ -94,7 +97,7 @@ executed directly from the repository checkout.
 
 ## Resume-safe training
 
-After materializing a strict prompt manifest, a full training process uses:
+After materializing a strict prompt manifest, either SimCT or SimpleOPD uses:
 
 ```bash
 python scripts/tpu/kaggle_v5e8_train.py \
@@ -104,8 +107,11 @@ python scripts/tpu/kaggle_v5e8_train.py \
   --output /kaggle/working/<run>/train_summary.json
 ```
 
-The output explicitly remains `scientific_evidence=false` until a downstream
-evaluation under the shared comparison contract is complete.
+The trainer dispatches from `simct.algorithm` and records the objective in every
+metric row and summary. Both objectives must point `checkpoint.warm_start_from`
+to the identical SFT checkpoint for a fair control. Their output explicitly
+remains `scientific_evidence=false` until downstream evaluation under the shared
+comparison contract is complete.
 
 The SFT phase consumes the stricter teacher-response schema and writes the same
 native student state used by OPD:
@@ -127,7 +133,7 @@ data cursor, and RNG metadata; the two fields are mutually exclusive.
 
 - a provenance-complete reconstruction of the unavailable paper 10K corpus and
   warm-start checkpoint, or an explicitly labeled public-data substitute;
-- SimpleOPD control training from the identical warm start;
+- terminal TPU execution evidence for SimpleOPD from the identical warm start;
 - downstream GSM8K/MATH-500/MBPP/LCB evaluation artifacts under one decoding
   and scoring contract;
 - terminal TPU canary evidence and any scientific comparison metric.

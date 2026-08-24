@@ -56,6 +56,33 @@ def test_paper_math_mode_requires_post_paper_safeguard_disabled(config_payload):
     assert RunConfig.from_mapping(payload).simct.reproduction_mode == "paper_math"
 
 
+def test_simple_opd_requires_overlap_only_paper_contract(config_payload):
+    payload = copy.deepcopy(config_payload)
+    payload["simct"].update(
+        {
+            "algorithm": "simple_opd",
+            "virtual_support": "shared_tokens_only",
+            "reproduction_mode": "paper_math",
+            "span_gh_mask_threshold": 0.0,
+        }
+    )
+    config = RunConfig.from_mapping(payload)
+    assert config.simct.algorithm == "simple_opd"
+
+    wrong_support = copy.deepcopy(payload)
+    wrong_support["simct"]["virtual_support"] = (
+        "shared_tokens_plus_realized_spans"
+    )
+    with pytest.raises(ConfigError, match="shared_tokens_only"):
+        RunConfig.from_mapping(wrong_support)
+
+    wrong_mode = copy.deepcopy(payload)
+    wrong_mode["simct"]["reproduction_mode"] = "public_code_cf0f33a_default"
+    wrong_mode["simct"]["span_gh_mask_threshold"] = 2.0
+    with pytest.raises(ConfigError, match="simple_opd currently requires"):
+        RunConfig.from_mapping(wrong_mode)
+
+
 def test_native_tunix_fsdp8_layout_and_source_are_explicit(config_payload):
     payload = copy.deepcopy(config_payload)
     for role in ("student", "teacher"):

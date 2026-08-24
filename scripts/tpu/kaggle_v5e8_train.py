@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resume-safe single-teacher SimCT training on a Kaggle TPU v5e-8.
+"""Resume-safe single-teacher OPD training on a Kaggle TPU v5e-8.
 
 This entrypoint produces training evidence and durable model/optimizer state.
 It does not evaluate downstream tasks and therefore never labels its output as
@@ -22,9 +22,14 @@ if str(REPO_ROOT) not in sys.path:
 
 from vdt_tunix.config import ConfigError, load_config
 from vdt_tunix.integration import RealModelIntegrationUnavailable, load_real_backend_bundle
+from vdt_tunix.model_adapters import ModelAdapterError
 from vdt_tunix.runtime import TPUPreflightError, require_tpu_v5e8
 from vdt_tunix.training_data import TrainingDataError, load_prompt_dataset
-from vdt_tunix.trainer import PaperSimCTTrainer, TrainingError
+from vdt_tunix.trainer import (
+    PaperSimCTTrainer,
+    PaperSimpleOPDTrainer,
+    TrainingError,
+)
 from vdt_tunix.tunix_checkpoint import TunixCheckpointController, TunixCheckpointError
 
 
@@ -85,7 +90,12 @@ def main(argv: list[str] | None = None) -> int:
         _, hardware = require_tpu_v5e8(
             expected_device_count=config.tpu.expected_device_count
         )
-        trainer = PaperSimCTTrainer(config, backends)
+        trainer_type = (
+            PaperSimCTTrainer
+            if config.simct.algorithm == "simct"
+            else PaperSimpleOPDTrainer
+        )
+        trainer = trainer_type(config, backends)
         controller = TunixCheckpointController(
             config,
             trainer.loaded_student.model,
@@ -108,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
             update = trainer.step(prompts, step=completed)
             row = {
                 "run_id": config.run_id,
+                "objective": config.simct.algorithm,
                 "step": completed + 1,
                 **update.to_dict(),
             }
@@ -134,6 +145,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
     except (
         RealModelIntegrationUnavailable,
+        ModelAdapterError,
         TPUPreflightError,
         TrainingError,
         TunixCheckpointError,
@@ -141,7 +153,7 @@ def main(argv: list[str] | None = None) -> int:
         return _finish(
             args.output,
             {
-                "phase": "simct_training",
+                "phase": f"{config.simct.algorithm}_training",
                 "status": "blocked",
                 "error_type": type(exc).__name__,
                 "error": str(exc),
@@ -156,7 +168,7 @@ def main(argv: list[str] | None = None) -> int:
         return _finish(
             args.output,
             {
-                "phase": "simct_training_unexpected",
+                "phase": f"{config.simct.algorithm}_training_unexpected",
                 "status": "blocked",
                 "error_type": type(exc).__name__,
                 "error": str(exc),
@@ -174,8 +186,9 @@ def main(argv: list[str] | None = None) -> int:
     return _finish(
         args.output,
         {
-            "phase": "simct_training",
+            "phase": f"{config.simct.algorithm}_training",
             "status": "complete",
+            "objective": config.simct.algorithm,
             "run_id": config.run_id,
             "config_sha256": config.digest(),
             "dataset_manifest_sha256": dataset.manifest.digest(),
