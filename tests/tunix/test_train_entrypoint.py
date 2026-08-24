@@ -112,6 +112,9 @@ def test_train_entrypoint_runs_steps_and_publishes_checkpoints(
 
         def save(self, **kwargs):
             saves.append(kwargs)
+            return SimpleNamespace(
+                student_parameters=SimpleNamespace(sha256="a" * 64)
+            )
 
         def close(self):
             pass
@@ -142,6 +145,7 @@ def test_train_entrypoint_runs_steps_and_publishes_checkpoints(
     summary = json.loads(output.read_text(encoding="utf-8"))
     assert summary["completed_steps"] == 2
     assert summary["objective"] == algorithm
+    assert summary["final_student_parameters_sha256"] == "a" * 64
     assert summary["scientific_evidence"] is False
     rows = [json.loads(line) for line in metrics.read_text(encoding="utf-8").splitlines()]
     assert [row["step"] for row in rows] == [1, 2]

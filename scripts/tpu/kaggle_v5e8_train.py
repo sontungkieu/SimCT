@@ -109,6 +109,7 @@ def main(argv: list[str] | None = None) -> int:
         cursor = resume.data_cursor
         completed = resume.completed_steps
         last_metrics: dict[str, Any] | None = None
+        final_checkpoint = None
 
         for prompts, next_cursor in dataset.batches(
             cursor=cursor,
@@ -135,7 +136,7 @@ def main(argv: list[str] | None = None) -> int:
                 completed % config.checkpoint.save_every_steps == 0
                 or completed == config.training.max_steps
             ):
-                controller.save(
+                final_checkpoint = controller.save(
                     completed_steps=completed,
                     data_cursor=cursor,
                     rng_state={
@@ -197,6 +198,10 @@ def main(argv: list[str] | None = None) -> int:
             "start_step": resume.completed_steps,
             "initialization": resume.initialization,
             "source_checkpoint_steps": resume.source_checkpoint_steps,
+            "source_checkpoint_run_id": resume.source_checkpoint_run_id,
+            "source_student_parameters_sha256": (
+                resume.source_student_parameters_sha256
+            ),
             "source_dataset_manifest_sha256": (
                 resume.source_dataset_manifest_sha256
             ),
@@ -208,6 +213,11 @@ def main(argv: list[str] | None = None) -> int:
             "last_update_metrics": last_metrics,
             "hardware": hardware,
             "checkpoint_root": config.checkpoint.root,
+            "final_student_parameters_sha256": (
+                None
+                if final_checkpoint is None
+                else final_checkpoint.student_parameters.sha256
+            ),
             "scientific_evidence": False,
             "remaining_gate": "downstream evaluation under the comparison contract",
         },

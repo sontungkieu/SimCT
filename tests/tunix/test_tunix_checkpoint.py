@@ -194,4 +194,7 @@ def test_tunix_checkpoint_model_only_warm_start_allows_new_phase(
     assert initialized.initialization == "warm_start"
     assert initialized.completed_steps == 0
     assert initialized.source_checkpoint_steps == 4
+    assert initialized.source_checkpoint_run_id == sft_config.run_id
+    assert initialized.source_student_parameters_sha256 is not None
+    assert len(initialized.source_student_parameters_sha256) == 64
     assert initialized.source_dataset_manifest_sha256 == "d" * 64

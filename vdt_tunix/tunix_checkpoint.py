@@ -102,6 +102,8 @@ class ResumeState:
     rng_state: tuple[tuple[str, str], ...]
     initialization: str = "fresh"
     source_checkpoint_steps: int | None = None
+    source_checkpoint_run_id: str | None = None
+    source_student_parameters_sha256: str | None = None
     source_dataset_manifest_sha256: str | None = None
 
 
@@ -204,6 +206,8 @@ class TunixCheckpointController:
             rng_state=state.rng_state,
             initialization="resume",
             source_checkpoint_steps=state.completed_steps,
+            source_checkpoint_run_id=state.run_id,
+            source_student_parameters_sha256=state.student_parameters.sha256,
             source_dataset_manifest_sha256=state.dataset_manifest_sha256,
         )
 
@@ -266,6 +270,8 @@ class TunixCheckpointController:
             rng_state=(),
             initialization="warm_start",
             source_checkpoint_steps=state.completed_steps,
+            source_checkpoint_run_id=state.run_id,
+            source_student_parameters_sha256=state.student_parameters.sha256,
             source_dataset_manifest_sha256=state.dataset_manifest_sha256,
         )
 

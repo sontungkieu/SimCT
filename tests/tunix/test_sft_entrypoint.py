@@ -91,6 +91,9 @@ def test_sft_entrypoint_trains_and_saves(tmp_path, config_payload, monkeypatch):
 
         def save(self, **kwargs):
             saves.append(kwargs)
+            return SimpleNamespace(
+                student_parameters=SimpleNamespace(sha256="a" * 64)
+            )
 
         def close(self):
             pass
@@ -118,5 +121,6 @@ def test_sft_entrypoint_trains_and_saves(tmp_path, config_payload, monkeypatch):
     assert result == 0
     summary = json.loads(output.read_text(encoding="utf-8"))
     assert summary["completed_steps"] == 2
+    assert summary["final_student_parameters_sha256"] == "a" * 64
     assert summary["scientific_evidence"] is False
     assert [item["completed_steps"] for item in saves] == [1, 2]

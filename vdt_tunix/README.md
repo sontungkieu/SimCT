@@ -129,6 +129,27 @@ checkpoint root. This restores only the verified student model arrays. A true
 resume instead sets `checkpoint.resume_from` and restores model, optimizer,
 data cursor, and RNG metadata; the two fields are mutually exclusive.
 
+Every completed training summary records the final student-parameter SHA-256.
+OPD summaries additionally record the source SFT run ID, step, dataset-manifest
+digest, and student-parameter SHA-256. This proves that SimpleOPD and SimCT
+actually loaded the same SFT tensors rather than merely using similarly named
+checkpoint directories.
+
+## Shared evaluation contract
+
+`vdt_tunix.evaluation_contract` validates a machine-readable comparison before
+scores may be combined. It requires exactly SFT, SimpleOPD, and SimCT; the two
+OPD variants must share the same prompt-manifest digest, optimizer-step count,
+student/tokenizer revision, and exact SFT parameter hash. One protocol fixes
+all four paper benchmarks, immutable dataset identities and record hashes,
+zero-shot prompt/evaluator revisions, temperature `0.6`, top-p `0.95`, one
+completion per instance, and explicit run seeds.
+
+The current economical gate is labeled `one_seed_screen`. It cannot be parsed
+as `paper_five_run`; the latter requires five distinct seeds. Passing training
+or the one-seed screen still does not, by itself, reproduce the paper's
+five-run mean and standard deviation.
+
 ## Still pending
 
 - a provenance-complete reconstruction of the unavailable paper 10K corpus and
@@ -136,4 +157,7 @@ data cursor, and RNG metadata; the two fields are mutually exclusive.
 - terminal TPU execution evidence for SimpleOPD from the identical warm start;
 - downstream GSM8K/MATH-500/MBPP/LCB evaluation artifacts under one decoding
   and scoring contract;
+- a verified conversion or native inference path from Orbax/Tunix checkpoints
+  to the evaluation runtime; checkpoint manifests alone are not loadable by
+  the existing SGLang evaluator;
 - terminal TPU canary evidence and any scientific comparison metric.

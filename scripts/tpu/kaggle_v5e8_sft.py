@@ -97,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
         cursor = resume.data_cursor
         completed = resume.completed_steps
         last_metrics: dict[str, Any] | None = None
+        final_checkpoint = None
         for rows, next_cursor in dataset.batches(
             cursor=cursor,
             batch_size=config.rollout.prompt_batch_size,
@@ -121,7 +122,7 @@ def main(argv: list[str] | None = None) -> int:
                 completed % config.checkpoint.save_every_steps == 0
                 or completed == config.training.max_steps
             ):
-                controller.save(
+                final_checkpoint = controller.save(
                     completed_steps=completed,
                     data_cursor=cursor,
                     rng_state={"trainer_completed_steps": str(completed)},
@@ -185,6 +186,11 @@ def main(argv: list[str] | None = None) -> int:
             "last_update_metrics": last_metrics,
             "hardware": hardware,
             "checkpoint_root": config.checkpoint.root,
+            "final_student_parameters_sha256": (
+                None
+                if final_checkpoint is None
+                else final_checkpoint.student_parameters.sha256
+            ),
             "scientific_evidence": False,
             "remaining_gate": "shared downstream evaluation and OPD comparison",
         },
