@@ -1,5 +1,9 @@
 # SimCT: Recovering Lost Supervision for Cross-Tokenizer On-Policy Distillation
 
+> **Learning lab:** a self-contained, CPU-only set of dynamic cross-tokenizer
+> span exercises is available in [STUDY.md](STUDY.md). It uses only Python's
+> standard library and does not require installing the training stack.
+
 This repository contains the code for reproducing the experiments in our paper *"SimCT: Recovering Lost Supervision for Cross-Tokenizer On-Policy Distillation"*.
 
 ---

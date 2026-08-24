@@ -10,3 +10,6 @@ dist/
 build/
 eggs/
 *.whl
+
+# Isolated, CPU-only environment for the learning lab
+.venv-learning/

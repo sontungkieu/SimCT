@@ -1,0 +1,2 @@
+# The learning lab intentionally has no third-party runtime dependencies.
+# Python >= 3.10 is sufficient; tests use the standard-library unittest module.
