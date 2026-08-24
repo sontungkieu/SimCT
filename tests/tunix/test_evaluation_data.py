@@ -11,11 +11,19 @@ import pytest
 from vdt_tunix.evaluation_data import (
     BenchmarkSource,
     EvaluationDataError,
+    PINNED_BENCHMARKS,
     SourceFile,
     fetch_to_path,
     load_verified_materialization,
     materialize_benchmark,
 )
+
+
+def test_lcb_v6_release_count_is_pinned_after_full_materialization():
+    source = next(
+        item for item in PINNED_BENCHMARKS if item.name == "live-code-bench-v6"
+    )
+    assert source.expected_count == 1055
 
 
 def _source(expected_count=2):

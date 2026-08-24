@@ -159,6 +159,39 @@ digest, and student-parameter SHA-256. This proves that SimpleOPD and SimCT
 actually loaded the same SFT tensors rather than merely using similarly named
 checkpoint directories.
 
+The checked-in public screen configs deliberately run only ten batch-one,
+non-accumulated optimizer updates. SFT keeps the public-script learning rate
+`2e-6`; SimpleOPD and SimCT both use `5e-7`, the same 256 prompt manifest,
+sampling temperature `0.6`, and a 256-token completion cap. The public paper
+scripts instead use a 10K selected corpus, larger effective batches, one full
+OPD epoch, and up to 4096 generated tokens. Therefore this bounded run is a
+pipeline/one-seed screen and must not be reported as a paper-number
+reproduction.
+
+Render a Kaggle notebook from those immutable inputs with:
+
+```bash
+python scripts/tpu/render_training_notebook.py \
+  --phase sft \
+  --config-relative-path \
+    configs/reproduction/qwen25_7b_to_gemma2_2b_public_sft_screen.json \
+  --repo-dataset-source <owner>/<repo-snapshot> \
+  --training-dataset-source <owner>/<public-substitute> \
+  --training-manifest-relative-path sft/manifest.json \
+  --student-model-source google/gemma-2/flax/gemma2-2b-it/1 \
+  --teacher-model-source qwen-lm/qwen2.5/transformers/7b-instruct/1 \
+  --output /path/to/source_notebook.ipynb
+```
+
+For `simple_opd` or `simct`, also pass the completed same-owner SFT notebook as
+`--warm-start-kernel-source` and its output-relative checkpoint directory as
+`--warm-start-relative-path`. The renderer resolves Kaggle's legacy and
+owner/version mount layouts, handles the zip representation used by dataset
+directory uploads, patches only storage paths (which are excluded from the
+training identity digest), and fails if the terminal training summary does not
+match the expected run, step count, warm-start lineage, and non-scientific
+status.
+
 ## Shared evaluation contract
 
 `vdt_tunix.evaluation_contract` validates a machine-readable comparison before

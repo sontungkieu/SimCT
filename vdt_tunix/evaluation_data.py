@@ -116,7 +116,7 @@ PINNED_BENCHMARKS = (
         config="release_v6",
         split="test",
         format="jsonl",
-        expected_count=None,
+        expected_count=1055,
         required_fields=(
             "question_id",
             "question_content",
