@@ -98,6 +98,27 @@ by the canary provenance cell.
 The project package discovery includes `vdt_tunix`; the CPU canaries can also be
 executed directly from the repository checkout.
 
+## Public-data pipeline substitute
+
+The exact paper 10K corpus and filtered teacher trajectories remain
+unavailable. For an explicitly non-paper pipeline screen, materialize a
+content-addressed, balanced GSM8K-train/MBPP-train subset with exact test-prompt
+decontamination:
+
+```bash
+python scripts/data/materialize_public_substitute.py \
+  --output-root /path/to/public-substitute \
+  --per-source 128 \
+  --seed 42
+```
+
+This writes separate strict `sft/` and `opd/` views plus `provenance.json`.
+The provenance pins all four train/decontamination source files, licenses,
+selection algorithm and hashes, and fixes
+`paper_training_corpus_reproduced=false`. It is suitable for exercising the
+shared-checkpoint comparison path, not for claiming the paper's reported
+numbers.
+
 ## Resume-safe training
 
 After materializing a strict prompt manifest, either SimCT or SimpleOPD uses:
@@ -156,7 +177,8 @@ five-run mean and standard deviation.
 ## Still pending
 
 - a provenance-complete reconstruction of the unavailable paper 10K corpus and
-  warm-start checkpoint, or an explicitly labeled public-data substitute;
+  warm-start checkpoint (the implemented public-data substitute is only a
+  pipeline screen);
 - terminal TPU execution evidence for SimpleOPD from the identical warm start;
 - downstream GSM8K/MATH-500/MBPP/LCB evaluation artifacts under one decoding
   and scoring contract;
