@@ -29,6 +29,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--student-model-source", required=True)
     parser.add_argument("--teacher-model-source", required=True)
     parser.add_argument("--warm-start-kernel-source")
+    parser.add_argument("--warm-start-kernel-version", type=int)
     parser.add_argument("--warm-start-relative-path")
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args(argv)
@@ -42,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
             student_model_source=args.student_model_source,
             teacher_model_source=args.teacher_model_source,
             warm_start_kernel_source=args.warm_start_kernel_source,
+            warm_start_kernel_version=args.warm_start_kernel_version,
             warm_start_relative_path=args.warm_start_relative_path,
         )
         args.output.parent.mkdir(parents=True, exist_ok=True)

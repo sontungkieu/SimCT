@@ -12,6 +12,7 @@ import argparse
 import json
 import math
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,7 @@ if str(REPO_ROOT) not in sys.path:
 from vdt_tunix.config import ConfigError, load_config
 from vdt_tunix.integration import RealModelIntegrationUnavailable, load_real_backend_bundle
 from vdt_tunix.model_adapters import ModelAdapterError
+from vdt_tunix.observability import start_wandb_run
 from vdt_tunix.runtime import TPUPreflightError, require_tpu_v5e8
 from vdt_tunix.training_data import TrainingDataError, load_prompt_dataset
 from vdt_tunix.trainer import (
@@ -85,6 +87,19 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     controller: TunixCheckpointController | None = None
+    observability = start_wandb_run(
+        run_id=config.run_id,
+        objective=config.simct.algorithm,
+        config_sha256=config.digest(),
+        dataset_manifest_sha256=dataset.manifest.digest(),
+        metadata={
+            "student_model_id": config.student.model_id,
+            "teacher_model_id": config.teacher.model_id,
+            "max_steps": config.training.max_steps,
+            "learning_rate": config.training.learning_rate,
+        },
+    )
+    training_started = time.monotonic()
     try:
         backends = load_real_backend_bundle(config)
         _, hardware = require_tpu_v5e8(
@@ -116,11 +131,14 @@ def main(argv: list[str] | None = None) -> int:
             batch_size=config.rollout.prompt_batch_size,
             max_steps=remaining,
         ):
+            step_started = time.monotonic()
             update = trainer.step(prompts, step=completed)
             row = {
                 "run_id": config.run_id,
                 "objective": config.simct.algorithm,
                 "step": completed + 1,
+                "step_elapsed_s": time.monotonic() - step_started,
+                "elapsed_s": time.monotonic() - training_started,
                 **update.to_dict(),
             }
             if any(
@@ -129,6 +147,7 @@ def main(argv: list[str] | None = None) -> int:
             ):
                 raise TrainingError("non-finite update metric")
             _append_jsonl(args.metrics, row)
+            observability.log_metrics(row, step=completed + 1)
             completed += 1
             cursor = next_cursor
             last_metrics = row
@@ -151,6 +170,7 @@ def main(argv: list[str] | None = None) -> int:
         TrainingError,
         TunixCheckpointError,
     ) as exc:
+        observability.finish(training_status="blocked", exit_code=EX_UNAVAILABLE)
         return _finish(
             args.output,
             {
@@ -161,11 +181,13 @@ def main(argv: list[str] | None = None) -> int:
                 "run_id": config.run_id,
                 "config_sha256": config.digest(),
                 "dataset_manifest_sha256": dataset.manifest.digest(),
+                "observability": observability.summary(),
                 "scientific_evidence": False,
             },
             EX_UNAVAILABLE,
         )
     except Exception as exc:
+        observability.finish(training_status="blocked", exit_code=EX_UNAVAILABLE)
         return _finish(
             args.output,
             {
@@ -176,6 +198,7 @@ def main(argv: list[str] | None = None) -> int:
                 "run_id": config.run_id,
                 "config_sha256": config.digest(),
                 "dataset_manifest_sha256": dataset.manifest.digest(),
+                "observability": observability.summary(),
                 "scientific_evidence": False,
             },
             EX_UNAVAILABLE,
@@ -184,6 +207,7 @@ def main(argv: list[str] | None = None) -> int:
         if controller is not None:
             controller.close()
 
+    observability.finish(training_status="complete", exit_code=0)
     return _finish(
         args.output,
         {
@@ -218,6 +242,7 @@ def main(argv: list[str] | None = None) -> int:
                 if final_checkpoint is None
                 else final_checkpoint.student_parameters.sha256
             ),
+            "observability": observability.summary(),
             "scientific_evidence": False,
             "remaining_gate": "downstream evaluation under the comparison contract",
         },

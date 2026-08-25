@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+import sys
+from types import SimpleNamespace
 import zipfile
 
 import pytest
@@ -222,6 +224,7 @@ def _render_public_training(phase: str):
         kwargs.update(
             {
                 "warm_start_kernel_source": "testowner/public-sft-screen-v1",
+                "warm_start_kernel_version": 1,
                 "warm_start_relative_path": (
                     "vdt_public_sft_screen/checkpoints"
                 ),
@@ -249,6 +252,9 @@ def test_rendered_training_notebook_is_pinned_and_syntax_valid(phase):
     assert "provider-managed JAX stack changed" in source
     assert "scientific_evidence" in source
     assert "shared downstream one-seed evaluation contract" in source
+    assert '__KJO_SECRET_WANDB_API_KEY__' in source
+    assert 'WANDB_PROJECT' in source
+    assert 'WANDB_RUN_GROUP' in source
     assert "unsafe archive member" in source
     assert f"if {phase!r} != \"sft\"" not in source
     assert '"start_step": 0' in source
@@ -265,6 +271,8 @@ def test_rendered_training_notebook_is_pinned_and_syntax_valid(phase):
     else:
         assert "kaggle_v5e8_train.py" in source
         assert "testowner/public-sft-screen-v1" in source
+        assert "WARM_START_KERNEL_VERSION = 1" in source
+        assert "kagglehub.notebook_output_download(handle)" in source
         assert f"expected_algorithm = {phase!r}" in source
         assert f'"phase": {f"{phase}_training"!r}' in source
         assert f'"objective": {phase!r}' in source
@@ -283,6 +291,7 @@ def test_training_renderer_rejects_sft_warm_start():
             student_model_source=STUDENT,
             teacher_model_source=TEACHER,
             warm_start_kernel_source="testowner/source",
+            warm_start_kernel_version=1,
             warm_start_relative_path="checkpoints",
         )
 
@@ -310,6 +319,11 @@ def test_training_input_cell_resolves_zipped_dataset_and_kernel_source(
         for cell in notebook["cells"]
         if "TRAINING_DATASET_SOURCE" in "".join(cell.get("source", []))
     )
+    runtime_inputs = tmp_path / "runtime-inputs"
+    source = source.replace(
+        'Path("/kaggle/working/vdt_runtime_inputs")',
+        f"Path({str(runtime_inputs)!r})",
+    )
     input_root = tmp_path / "input"
     dataset_root = (
         input_root
@@ -323,13 +337,15 @@ def test_training_input_cell_resolves_zipped_dataset_and_kernel_source(
     archive_name = "sft.zip" if phase == "sft" else "opd.zip"
     with zipfile.ZipFile(dataset_root / archive_name, "w") as archive:
         archive.writestr("manifest.json", "{}\n")
-    runtime_inputs = tmp_path / "runtime-inputs"
-    source = source.replace(
-        'Path("/kaggle/working/vdt_runtime_inputs")',
-        f"Path({str(runtime_inputs)!r})",
-    )
     if phase != "sft":
-        warm_root = input_root / "public-sft-screen-v1"
+        warm_root = (
+            input_root
+            / "kernels"
+            / "testowner"
+            / "public-sft-screen-v1"
+            / "versions"
+            / "1"
+        )
         checkpoint = warm_root / "vdt_public_sft_screen" / "checkpoints"
         checkpoint.mkdir(parents=True)
         (checkpoint / "latest.json").write_text("{}\n", encoding="utf-8")
@@ -341,3 +357,51 @@ def test_training_input_cell_resolves_zipped_dataset_and_kernel_source(
         assert namespace["WARM_START_ROOT"] is None
     else:
         assert namespace["WARM_START_ROOT"] == checkpoint
+
+
+def test_training_input_cell_dynamically_attaches_versioned_notebook_output(
+    tmp_path, monkeypatch
+):
+    notebook = _render_public_training("simct")
+    source = next(
+        "".join(cell.get("source", []))
+        for cell in notebook["cells"]
+        if "TRAINING_DATASET_SOURCE" in "".join(cell.get("source", []))
+    )
+    runtime_inputs = tmp_path / "runtime-inputs"
+    source = source.replace(
+        'Path("/kaggle/working/vdt_runtime_inputs")',
+        f"Path({str(runtime_inputs)!r})",
+    )
+    input_root = tmp_path / "input"
+    dataset_root = (
+        input_root
+        / "datasets"
+        / "testowner"
+        / "public-substitute-v1"
+        / "versions"
+        / "1"
+    )
+    dataset_root.mkdir(parents=True)
+    with zipfile.ZipFile(dataset_root / "opd.zip", "w") as archive:
+        archive.writestr("manifest.json", "{}\n")
+    attached = tmp_path / "runtime-attached-output"
+    checkpoint = attached / "vdt_public_sft_screen" / "checkpoints"
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "latest.json").write_text("{}\n", encoding="utf-8")
+    observed = []
+    monkeypatch.setitem(
+        sys.modules,
+        "kagglehub",
+        SimpleNamespace(
+            notebook_output_download=lambda handle: (
+                observed.append(handle) or str(attached)
+            )
+        ),
+    )
+    monkeypatch.setenv("KJO_KAGGLE_INPUT_ROOT", str(input_root))
+    namespace = {}
+    exec(compile(source, "<dynamic-notebook-output>", "exec"), namespace)
+
+    assert namespace["WARM_START_ROOT"] == checkpoint
+    assert observed == ["testowner/public-sft-screen-v1/versions/1"]

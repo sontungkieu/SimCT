@@ -437,6 +437,7 @@ def render_training_notebook(
     student_model_source: str,
     teacher_model_source: str,
     warm_start_kernel_source: str | None = None,
+    warm_start_kernel_version: int | None = None,
     warm_start_relative_path: str | None = None,
 ) -> dict[str, Any]:
     """Render a provenance-checked SFT or OPD notebook with durable output.
@@ -468,18 +469,31 @@ def render_training_notebook(
     teacher_source = validate_model_source(teacher_model_source)
 
     if phase == "sft":
-        if warm_start_kernel_source is not None or warm_start_relative_path is not None:
+        if (
+            warm_start_kernel_source is not None
+            or warm_start_kernel_version is not None
+            or warm_start_relative_path is not None
+        ):
             raise KaggleModelSourceError("SFT may not declare a warm-start source")
         warm_owner = warm_slug = ""
         warm_relative = None
     else:
-        if warm_start_kernel_source is None or warm_start_relative_path is None:
+        if (
+            warm_start_kernel_source is None
+            or warm_start_kernel_version is None
+            or warm_start_relative_path is None
+        ):
             raise KaggleModelSourceError(
-                "OPD phases require a completed SFT kernel source and relative path"
+                "OPD phases require a completed SFT kernel source, positive "
+                "version, and relative path"
             )
         warm_owner, warm_slug = _validate_dataset_source(
             warm_start_kernel_source, "warm_start_kernel_source"
         )
+        if warm_start_kernel_version < 1:
+            raise KaggleModelSourceError(
+                "warm_start_kernel_version must be a positive integer"
+            )
         warm_relative = _safe_relative_path(
             warm_start_relative_path, "warm_start_relative_path"
         )
@@ -553,34 +567,79 @@ TRAINING_MANIFEST_RELATIVE = PurePosixPath({manifest_relative.as_posix()!r})
 WARM_START_KERNEL_SOURCE = {warm_start_kernel_source!r}
 WARM_START_OWNER = {warm_owner!r}
 WARM_START_SLUG = {warm_slug!r}
+WARM_START_KERNEL_VERSION = {warm_start_kernel_version!r}
 WARM_START_RELATIVE = {None if warm_relative is None else warm_relative.as_posix()!r}
 RUNTIME_INPUTS = Path("/kaggle/working/vdt_runtime_inputs")
 
-def resolve_input(source, owner, slug):
-    del source
+def resolve_input(source, owner, slug, *, notebook_version=None):
     root = Path(os.environ.get("KJO_KAGGLE_INPUT_ROOT", "/kaggle/input"))
     legacy = root / slug
     owner_direct = root / owner / slug
     kernel_direct = root / "kernels" / owner / slug
     direct = root / "datasets" / owner / slug
-    version_root = direct / "versions"
-    if legacy.is_dir():
-        return legacy
-    if owner_direct.is_dir():
-        return owner_direct
-    if kernel_direct.is_dir():
-        return kernel_direct
-    if direct.is_dir() and not version_root.is_dir():
-        return direct
-    versions = sorted(
-        (path for path in version_root.glob("*") if path.is_dir()),
-        key=lambda path: int(path.name) if path.name.isdigit() else -1,
+
+    def mounted_candidate(candidate, required_version=None):
+        if not candidate.is_dir():
+            return None
+        version_root = candidate / "versions"
+        if required_version is not None:
+            exact = version_root / str(required_version)
+            if exact.is_dir():
+                return exact
+        if not version_root.is_dir():
+            return candidate
+        versions = sorted(
+            (path for path in version_root.glob("*") if path.is_dir()),
+            key=lambda path: int(path.name) if path.name.isdigit() else -1,
+        )
+        if required_version is None and len(versions) == 1:
+            return versions[0]
+        return None
+
+    static_candidates = [
+        (legacy, notebook_version),
+        (owner_direct, notebook_version),
+    ]
+    if notebook_version is None:
+        static_candidates.append((direct, None))
+    else:
+        static_candidates.append((kernel_direct, notebook_version))
+    for candidate, required_version in static_candidates:
+        mounted = mounted_candidate(candidate, required_version)
+        if mounted is not None:
+            return mounted
+    if notebook_version is not None:
+        handle = f"{{source}}/versions/{{notebook_version}}"
+        try:
+            import kagglehub
+
+            attached = Path(kagglehub.notebook_output_download(handle))
+        except Exception as exc:
+            raise FileNotFoundError(
+                f"notebook output {{handle}} was neither statically mounted "
+                "nor dynamically attached by kagglehub"
+            ) from exc
+        if not attached.is_dir():
+            raise FileNotFoundError(
+                f"kagglehub returned a non-directory for notebook output "
+                f"{{handle}}: {{attached}}"
+            )
+        print("VDT_NOTEBOOK_OUTPUT_ATTACH_SUMMARY " + json.dumps({{
+            "handle": handle,
+            "method": "kagglehub_runtime_attach",
+            "root": str(attached),
+            "version": notebook_version,
+        }}, sort_keys=True))
+        return attached
+    available = sorted(
+        str(path.relative_to(root))
+        for path in root.rglob("*")
+        if path.is_dir()
     )
-    if len(versions) == 1:
-        return versions[0]
     raise FileNotFoundError(
-        f"input {{owner}}/{{slug}} is not mounted at a supported layout; "
-        f"versions={{versions}}"
+        f"input {{source}} is not mounted at a supported layout; "
+        f"required_notebook_version={{notebook_version}} "
+        f"available_inputs={{available[:100]}}"
     )
 
 def resolve_relative(root, relative, extract_name):
@@ -625,7 +684,10 @@ if WARM_START_KERNEL_SOURCE is None:
     WARM_START_ROOT = None
 else:
     warm_mount = resolve_input(
-        WARM_START_KERNEL_SOURCE, WARM_START_OWNER, WARM_START_SLUG
+        WARM_START_KERNEL_SOURCE,
+        WARM_START_OWNER,
+        WARM_START_SLUG,
+        notebook_version=WARM_START_KERNEL_VERSION,
     )
     WARM_START_ROOT = resolve_relative(
         warm_mount, PurePosixPath(WARM_START_RELATIVE), "warm-start"
@@ -635,15 +697,23 @@ print("VDT_TRAINING_INPUT_PROVENANCE " + json.dumps({{
     "training_dataset_source": TRAINING_DATASET_SOURCE,
     "training_manifest": str(TRAINING_MANIFEST),
     "warm_start_kernel_source": WARM_START_KERNEL_SOURCE,
+    "warm_start_kernel_version": WARM_START_KERNEL_VERSION,
     "warm_start_root": None if WARM_START_ROOT is None else str(WARM_START_ROOT),
 }}, sort_keys=True))'''
 
     setup = f'''import hashlib
 import importlib.metadata
 import json
+import os
 import platform
 import subprocess
 import sys
+
+os.environ["WANDB_API_KEY"] = "__KJO_SECRET_WANDB_API_KEY__"
+os.environ.setdefault("WANDB_PROJECT", "vdt-simct-tunix-reproduction")
+os.environ.setdefault("WANDB_RUN_GROUP", "public-substitute-one-seed")
+os.environ.setdefault("WANDB_MODE", "online")
+os.environ.setdefault("WANDB_INIT_TIMEOUT", "30")
 
 STUDENT_SOURCE = {student_source!r}
 TEACHER_SOURCE = {teacher_source!r}

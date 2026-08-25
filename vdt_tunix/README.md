@@ -188,13 +188,17 @@ python scripts/tpu/render_training_notebook.py \
 ```
 
 For `simple_opd` or `simct`, also pass the completed same-owner SFT notebook as
-`--warm-start-kernel-source` and its output-relative checkpoint directory as
-`--warm-start-relative-path`. The renderer resolves Kaggle's legacy and
-owner/version mount layouts, handles the zip representation used by dataset
-directory uploads, patches only storage paths (which are excluded from the
-training identity digest), and fails if the terminal training summary does not
-match the expected run, step count, warm-start lineage, and non-scientific
-status.
+`--warm-start-kernel-source`, pin the committed output with
+`--warm-start-kernel-version`, and pass its output-relative checkpoint
+directory as `--warm-start-relative-path`. The renderer first resolves
+Kaggle's static legacy and owner/version mount layouts. If the accepted
+`kernel_sources` metadata has not materialized a mount, it uses
+`kagglehub.notebook_output_download()` with the exact versioned handle inside
+the Kaggle runtime; the checkpoint never transits through the submitting
+machine. It also handles the zip representation used by dataset directory
+uploads, patches only storage paths (which are excluded from the training
+identity digest), and fails if the terminal training summary does not match the
+expected run, step count, warm-start lineage, and non-scientific status.
 
 Attached Kaggle Models are resolved at runtime with
 `kagglehub.model_download()` using the exact versioned model handle. The
@@ -202,6 +206,15 @@ renderer then writes the returned local model and tokenizer paths into a
 runtime-only config. Do not derive model locations from a presumed
 `/kaggle/input` directory layout: Kaggle may change or normalize that mount
 layout independently of the stable model handle.
+
+Training observability is optional and fail-open. A staged private notebook
+may replace `__KJO_SECRET_WANDB_API_KEY__` immediately before submission; the
+source notebook remains secret-free. When present, W&B receives finite numeric
+training metrics, elapsed time, gradient/parameter norms, and span/token
+counts. W&B import, initialization, network, logging, or finish failures are
+recorded in `VDT_WANDB_STATUS` and never alter the optimizer path or exit code.
+The staged and archived notebook copies must be scrubbed back to the
+placeholder after submission and checked with the sensitive-artifact audit.
 
 ## Shared evaluation contract
 
