@@ -307,8 +307,11 @@ python scripts/tpu/compose_cross_account_generation_notebook.py \
 ```
 
 The composer fails closed if the KJO cell, owner, config directory, output
-directory, or source slug drift. Inject only the source owner's Kaggle key into
-the private staged copy immediately before submit. KJO must scrub the staged
+directory, or source slug drift. Its first inserted runtime cell also verifies
+that a Kaggle CLI is usable and, when the ambient image has neither the
+executable nor `kaggle.cli`, installs the pinned `kaggle==2.2.3` client before
+emitting `KJO_KAGGLE_CLI_BOOTSTRAP`. Inject only the source owner's Kaggle key
+into the private staged copy immediately before submit. KJO must scrub the staged
 and archived notebook afterward; the remote notebook remains in the
 embedded-secret retention lifecycle until its scored outputs are local and it
 is actually deleted. The checkpoint itself stays Kaggle-to-Kaggle.

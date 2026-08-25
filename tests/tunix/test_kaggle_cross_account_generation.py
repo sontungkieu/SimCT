@@ -63,17 +63,20 @@ def _compose(tmp_path: Path):
 
 def test_composer_inserts_guarded_cells_before_input_resolution(tmp_path):
     notebook = _compose(tmp_path)
-    assert len(notebook["cells"]) == 9
+    assert len(notebook["cells"]) == 10
     sources = ["".join(cell.get("source", [])) for cell in notebook["cells"]]
     copy_index = next(i for i, source in enumerate(sources) if "KJO_REPO_DATASET_COPY_SUMMARY" in source)
+    bootstrap_index = next(i for i, source in enumerate(sources) if "KJO_KAGGLE_CLI_BOOTSTRAP" in source)
     credential_index = next(i for i, source in enumerate(sources) if "SOURCE_KAGGLE_KEY" in source)
     download_index = next(i for i, source in enumerate(sources) if "KJO_CROSS_ACCOUNT_OUTPUT_SUMMARY" in source)
     overlay_index = next(i for i, source in enumerate(sources) if "VDT_CROSS_ACCOUNT_INPUT_OVERLAY" in source)
     resolve_index = next(i for i, source in enumerate(sources) if "CHECKPOINT_KERNEL_SOURCE" in source and "EVALUATION_DATASET_SOURCE" in source)
-    assert copy_index < credential_index < download_index < overlay_index < resolve_index
+    assert copy_index < bootstrap_index < credential_index < download_index < overlay_index < resolve_index
+    assert "KJO_KAGGLE_CLI_VERSION = '2.2.3'" in sources[bootstrap_index]
+    assert '"pip"' in sources[bootstrap_index]
     assert "__KJO_SECRET_KAGGLE_SOURCE_KEY__" in sources[credential_index]
     assert "KAGGLE_API_V1_TOKEN" in sources[download_index]
-    for index in (credential_index, download_index, overlay_index):
+    for index in (bootstrap_index, credential_index, download_index, overlay_index):
         compile(sources[index], f"<cross-account-cell-{index}>", "exec")
 
 

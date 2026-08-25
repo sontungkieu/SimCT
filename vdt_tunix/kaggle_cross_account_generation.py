@@ -14,6 +14,7 @@ from vdt_tunix.kaggle_model_sources import (
 
 
 _SECRET_PLACEHOLDER_RE = re.compile(r"^__KJO_SECRET_[A-Z0-9_]+__$")
+_KAGGLE_CLI_VERSION = "2.2.3"
 
 
 def _code_cell(source: str, *, cell_id: str) -> dict[str, Any]:
@@ -130,6 +131,45 @@ source_credential_path.write_text(
 )
 source_credential_path.chmod(0o600)'''
 
+    cli_bootstrap_source = f'''import importlib.util
+import json
+import shutil
+import subprocess
+import sys
+
+KJO_KAGGLE_CLI_VERSION = {_KAGGLE_CLI_VERSION!r}
+
+def _kjo_kaggle_cli_available():
+    if shutil.which("kaggle"):
+        return True
+    try:
+        return importlib.util.find_spec("kaggle.cli") is not None
+    except (ImportError, ModuleNotFoundError, ValueError):
+        return False
+
+installed = False
+if not _kjo_kaggle_cli_available():
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--quiet",
+            "--disable-pip-version-check",
+            f"kaggle=={{KJO_KAGGLE_CLI_VERSION}}",
+        ],
+        check=True,
+    )
+    installed = True
+if not _kjo_kaggle_cli_available():
+    raise RuntimeError("Kaggle CLI bootstrap completed without a usable CLI")
+print("KJO_KAGGLE_CLI_BOOTSTRAP " + json.dumps({{
+    "available": True,
+    "installed": installed,
+    "version": KJO_KAGGLE_CLI_VERSION,
+}}, sort_keys=True))'''
+
     overlay_source = f'''from pathlib import Path
 import json
 import os
@@ -178,6 +218,7 @@ print("VDT_CROSS_ACCOUNT_INPUT_OVERLAY " + json.dumps({{
 }}, sort_keys=True))'''
 
     inserted = [
+        _code_cell(cli_bootstrap_source, cell_id="cross-account-cli-bootstrap"),
         _code_cell(credential_source, cell_id="cross-account-credential"),
         _code_cell(
             cross_account_output_source.rstrip("\n"),
