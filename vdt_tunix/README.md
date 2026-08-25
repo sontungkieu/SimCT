@@ -376,6 +376,15 @@ destination account has accepted the model license. The helper writes
 metadata fingerprint. Verify that exact field in the final pre-submit audit;
 access probes alone do not prove that the batch notebook has the model attached.
 
+Treat a successful evaluation-dataset upload as accepted work, not as proof
+that Kaggle can mount every file yet. Before submitting a dependent notebook,
+run `scripts/tpu/wait_for_kaggle_dataset_ready.py` with the destination owner's
+temporary `KAGGLE_CONFIG_DIR`, all eight benchmark manifest/record paths, and
+at least two stable file-list checks. The byte threshold should cover the eight
+remote data files; Kaggle consumes `dataset-metadata.json` during publication
+and does not expose it in `datasets files`. The gate fails closed on a
+non-`ready` status, a missing file, a shrinking/incomplete listing, or timeout.
+
 The composer fails closed if the KJO cell, owner, config directory, output
 directory, or source slug drift. Its first inserted runtime cell also verifies
 that a Kaggle CLI is usable and, when the ambient image has neither the
