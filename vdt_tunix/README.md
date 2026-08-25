@@ -289,7 +289,7 @@ python /home/tung/.codex/skills/kaggle-job-ops/scripts/kaggle_job_ops.py \
   --runtime-owner <generation-owner> \
   --kaggle-config-dir /tmp/.kaggle_source_owner \
   --output-dir \
-    /kaggle/working/vdt_cross_account_inputs/kernels/<source-owner>/<completed-training-kernel> \
+    /tmp/vdt_cross_account_inputs/kernels/<source-owner>/<completed-training-kernel> \
   --file-pattern '(?i)^vdt_public_sft_screen/checkpoints/.*'
 
 python scripts/tpu/compose_cross_account_generation_notebook.py \
@@ -300,8 +300,8 @@ python scripts/tpu/compose_cross_account_generation_notebook.py \
   --evaluation-dataset-source <generation-owner>/<pinned-evaluation-bundle> \
   --source-config-dir /tmp/.kaggle_source_owner \
   --cross-account-output-dir \
-    /kaggle/working/vdt_cross_account_inputs/kernels/<source-owner>/<completed-training-kernel> \
-  --overlay-input-root /kaggle/working/vdt_cross_account_inputs \
+    /tmp/vdt_cross_account_inputs/kernels/<source-owner>/<completed-training-kernel> \
+  --overlay-input-root /tmp/vdt_cross_account_inputs \
   --source-key-placeholder __KJO_SECRET_KAGGLE_SOURCE_KEY__ \
   --out /path/to/cross_account_generation_notebook.ipynb
 ```
@@ -312,6 +312,8 @@ the private staged copy immediately before submit. KJO must scrub the staged
 and archived notebook afterward; the remote notebook remains in the
 embedded-secret retention lifecycle until its scored outputs are local and it
 is actually deleted. The checkpoint itself stays Kaggle-to-Kaggle.
+The transfer overlay lives under `/tmp`, so Kaggle does not publish a second
+copy of the checkpoint as destination-notebook output.
 
 The notebook runs generation first and then
 `scripts/evaluation/score_generated_predictions.py` before removing the

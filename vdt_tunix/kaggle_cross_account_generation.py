@@ -36,7 +36,7 @@ def compose_cross_account_generation_notebook(
     evaluation_dataset_source: str,
     source_config_dir: str = "/tmp/.kaggle_source_owner",
     cross_account_output_dir: str,
-    overlay_input_root: str = "/kaggle/working/vdt_cross_account_inputs",
+    overlay_input_root: str = "/tmp/vdt_cross_account_inputs",
     source_key_placeholder: str = "__KJO_SECRET_KAGGLE_SOURCE_KEY__",
 ) -> dict[str, Any]:
     """Insert guarded credential, download, and input-overlay cells.
