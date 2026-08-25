@@ -210,12 +210,14 @@ layout independently of the stable model handle.
 
 Training observability is optional and fail-open. A staged private notebook
 may replace `__KJO_SECRET_WANDB_API_KEY__` immediately before submission; the
-source notebook remains secret-free. When present, W&B receives finite numeric
-training metrics, elapsed time, gradient/parameter norms, and span/token
-counts. W&B import, initialization, network, logging, or finish failures are
-recorded in `VDT_WANDB_STATUS` and never alter the optimizer path or exit code.
-The staged and archived notebook copies must be scrubbed back to the
-placeholder after submission and checked with the sensitive-artifact audit.
+source notebook remains secret-free. `requirements-tpu.txt` pins the W&B
+client explicitly so observability does not depend on the ambient Kaggle image.
+When present, W&B receives finite numeric training metrics, elapsed time,
+gradient/parameter norms, and span/token counts. W&B import, initialization,
+network, logging, or finish failures are recorded in `VDT_WANDB_STATUS` and
+never alter the optimizer path or exit code. The staged and archived notebook
+copies must be scrubbed back to the placeholder after submission and checked
+with the sensitive-artifact audit.
 
 ## Shared evaluation contract
 

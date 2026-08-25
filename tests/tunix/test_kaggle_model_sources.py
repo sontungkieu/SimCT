@@ -280,6 +280,16 @@ def test_rendered_training_notebook_is_pinned_and_syntax_valid(phase):
         assert '"initialization"' in source
 
 
+def test_tpu_requirements_pin_wandb_observability_client():
+    requirements = (
+        Path(__file__).resolve().parents[2] / "requirements-tpu.txt"
+    ).read_text(encoding="utf-8").splitlines()
+
+    assert [line for line in requirements if line.startswith("wandb")] == [
+        "wandb>=0.19,<0.20"
+    ]
+
+
 def test_training_renderer_rejects_sft_warm_start():
     with pytest.raises(KaggleModelSourceError, match="may not declare"):
         render_training_notebook(
