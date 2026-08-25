@@ -575,6 +575,7 @@ def resolve_input(source, owner, slug, *, notebook_version=None):
     root = Path(os.environ.get("KJO_KAGGLE_INPUT_ROOT", "/kaggle/input"))
     legacy = root / slug
     owner_direct = root / owner / slug
+    notebook_direct = root / "notebooks" / owner / slug
     kernel_direct = root / "kernels" / owner / slug
     direct = root / "datasets" / owner / slug
 
@@ -603,6 +604,7 @@ def resolve_input(source, owner, slug, *, notebook_version=None):
     if notebook_version is None:
         static_candidates.append((direct, None))
     else:
+        static_candidates.append((notebook_direct, notebook_version))
         static_candidates.append((kernel_direct, notebook_version))
     for candidate, required_version in static_candidates:
         mounted = mounted_candidate(candidate, required_version)

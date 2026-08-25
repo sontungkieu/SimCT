@@ -340,11 +340,9 @@ def test_training_input_cell_resolves_zipped_dataset_and_kernel_source(
     if phase != "sft":
         warm_root = (
             input_root
-            / "kernels"
+            / "notebooks"
             / "testowner"
             / "public-sft-screen-v1"
-            / "versions"
-            / "1"
         )
         checkpoint = warm_root / "vdt_public_sft_screen" / "checkpoints"
         checkpoint.mkdir(parents=True)

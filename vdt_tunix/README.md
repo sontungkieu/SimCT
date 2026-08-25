@@ -191,7 +191,8 @@ For `simple_opd` or `simct`, also pass the completed same-owner SFT notebook as
 `--warm-start-kernel-source`, pin the committed output with
 `--warm-start-kernel-version`, and pass its output-relative checkpoint
 directory as `--warm-start-relative-path`. The renderer first resolves
-Kaggle's static legacy and owner/version mount layouts. If the accepted
+Kaggle's static legacy, `notebooks/<owner>/<slug>`, and owner/version mount
+layouts. If the accepted
 `kernel_sources` metadata has not materialized a mount, it uses
 `kagglehub.notebook_output_download()` with the exact versioned handle inside
 the Kaggle runtime; the checkpoint never transits through the submitting
