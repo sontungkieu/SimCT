@@ -1,0 +1,17 @@
+{
+  "contract_version": 1,
+  "policy_id": "simct-public-substitute-multiseed-v1",
+  "baseline_replication": "legacy-run-id-derived-rollout-seed",
+  "additional_training_seeds": [43, 44],
+  "minimum_replicates": 2,
+  "maximum_replicates": 3,
+  "evaluation_protocol": "configs/evaluation/simct_paper_one_seed_generation.json",
+  "evaluation_seed_is_fixed": true,
+  "strong_divergence": {
+    "absolute_score_gap_floor": 0.05,
+    "paired_standard_error_multiplier": 3.0,
+    "treatment_effect_flip_floor": 0.02,
+    "stop_before_third_seed": true
+  },
+  "paper_reproduction": false
+}

@@ -42,7 +42,7 @@ def test_generation_notebook_is_pinned_and_syntax_valid(variant):
     assert '"teacher_loaded": False' in source
     assert '__KJO_SECRET_WANDB_API_KEY__' in source
     assert '"WANDB_MODE", "online"' in source
-    assert '"WANDB_RUN_GROUP", "public-substitute-multiseed"' in source
+    assert '"WANDB_RUN_GROUP", \'public-substitute-multiseed\'' in source
     assert "resolve_model_source_mount(STUDENT_SOURCE)" in source
     assert "bind_runtime_model_mount" in source
     assert '"--training-config", str(RUNTIME_TRAINING_CONFIG)' in source
@@ -120,3 +120,28 @@ def test_generation_renderer_rejects_checkpoint_escape():
             checkpoint_relative_path="../secret",
             student_model_source=STUDENT,
         )
+
+
+def test_generation_renderer_materializes_explicit_training_seed():
+    notebook = render_generation_notebook(
+        variant="simct",
+        training_config_relative_path=(
+            "configs/reproduction/qwen25_7b_to_gemma2_2b_public_simct_screen.json"
+        ),
+        generation_protocol_relative_path=(
+            "configs/evaluation/simct_paper_one_seed_generation.json"
+        ),
+        repo_dataset_source="testowner/repo-v1",
+        evaluation_dataset_source="testowner/eval-v1",
+        checkpoint_kernel_source="testowner/checkpoint-v1",
+        checkpoint_relative_path="vdt_public_simct_seed43/checkpoints",
+        student_model_source=STUDENT,
+        expected_training_run_id="vdt-public-simct-seed43",
+        training_seed=43,
+        wandb_group="public-substitute-multiseed",
+    )
+    source = "".join(
+        "".join(cell.get("source", [])) for cell in notebook["cells"]
+    )
+    assert 'training_config["run_id"] = \'vdt-public-simct-seed43\'' in source
+    assert 'training_config["training"]["seed"] = 43' in source

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from vdt_tunix.kaggle_model_sources import (
@@ -22,6 +23,9 @@ def render_generation_notebook(
     checkpoint_kernel_source: str,
     checkpoint_relative_path: str,
     student_model_source: str,
+    expected_training_run_id: str | None = None,
+    training_seed: int | None = None,
+    wandb_group: str = "public-substitute-multiseed",
 ) -> dict[str, Any]:
     """Render generation-only evidence for one trained variant."""
 
@@ -46,6 +50,28 @@ def render_generation_notebook(
         checkpoint_kernel_source, "checkpoint_kernel_source"
     )
     student_source = validate_model_source(student_model_source)
+    if expected_training_run_id is not None and (
+        not isinstance(expected_training_run_id, str)
+        or not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9_-]*", expected_training_run_id
+        )
+    ):
+        raise KaggleModelSourceError(
+            "expected_training_run_id must be a non-empty string"
+        )
+    if (
+        training_seed is not None
+        and (
+            isinstance(training_seed, bool)
+            or not isinstance(training_seed, int)
+            or training_seed < 0
+        )
+    ):
+        raise KaggleModelSourceError("training_seed must be non-negative")
+    if not isinstance(wandb_group, str) or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9_.-]*", wandb_group
+    ):
+        raise KaggleModelSourceError("wandb_group must be a safe W&B group")
 
     copy_repo = f'''from pathlib import Path
 import json
@@ -191,7 +217,7 @@ import sys
 
 os.environ["WANDB_API_KEY"] = "__KJO_SECRET_WANDB_API_KEY__"
 os.environ.setdefault("WANDB_PROJECT", "vdt-simct-tunix-reproduction")
-os.environ.setdefault("WANDB_RUN_GROUP", "public-substitute-multiseed")
+os.environ.setdefault("WANDB_RUN_GROUP", {wandb_group!r})
 os.environ.setdefault("WANDB_MODE", "online")
 os.environ.setdefault("WANDB_INIT_TIMEOUT", "30")
 
@@ -209,6 +235,10 @@ for required in (
     if not required.exists():
         raise FileNotFoundError(f"required generation input missing: {{required}}")
 training_config = json.loads(TRAINING_CONFIG.read_text(encoding="utf-8"))
+if {expected_training_run_id!r} is not None:
+    training_config["run_id"] = {expected_training_run_id!r}
+if {training_seed!r} is not None:
+    training_config["training"]["seed"] = {training_seed!r}
 student_runtime = bind_runtime_model_mount(
     training_config["student"], STUDENT_MOUNT
 )

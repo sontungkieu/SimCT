@@ -500,6 +500,7 @@ def render_training_notebook(
     student_model_source: str,
     teacher_model_source: str,
     expected_run_id: str | None = None,
+    training_seed: int | None = None,
     wandb_group: str = "public-substitute-one-seed",
     warm_start_kernel_source: str | None = None,
     warm_start_kernel_version: int | None = None,
@@ -527,6 +528,15 @@ def render_training_notebook(
         r"[A-Za-z0-9][A-Za-z0-9_.-]*", wandb_group
     ):
         raise KaggleModelSourceError("wandb_group must be a safe W&B group")
+    if (
+        training_seed is not None
+        and (
+            isinstance(training_seed, bool)
+            or not isinstance(training_seed, int)
+            or training_seed < 0
+        )
+    ):
+        raise KaggleModelSourceError("training_seed must be non-negative")
     config_relative = _safe_relative_path(
         config_relative_path, "config_relative_path"
     )
@@ -808,10 +818,23 @@ for required in (REPO, CONFIG_PATH, TRAINING_MANIFEST, STUDENT_MOUNT, TEACHER_MO
     if not required.exists():
         raise FileNotFoundError(f"required input missing: {{required}}")
 config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+source_run_id = {('vdt-public-' + phase + '-screen')!r}
+if config["run_id"] != source_run_id:
+    raise RuntimeError(
+        f"unexpected source run_id in {{CONFIG_PATH}}: {{config['run_id']}}"
+    )
+config["run_id"] = {expected_run_id!r}
+if {training_seed!r} is not None:
+    config["training"]["seed"] = {training_seed!r}
+config["checkpoint"]["root"] = str(
+    Path("/kaggle/working")
+    / config["run_id"].replace("-", "_")
+    / "checkpoints"
+)
 student_runtime = bind_runtime_model_mount(config["student"], STUDENT_MOUNT)
 teacher_runtime = bind_runtime_model_mount(config["teacher"], TEACHER_MOUNT)
 if config["run_id"] != {expected_run_id!r}:
-    raise RuntimeError(f"unexpected run_id in {{CONFIG_PATH}}: {{config['run_id']}}")
+    raise RuntimeError(f"runtime run_id drifted: {{config['run_id']}}")
 expected_algorithm = {("simct" if phase == "sft" else phase)!r}
 if config["simct"]["algorithm"] != expected_algorithm:
     raise RuntimeError("training phase and algorithm drifted")

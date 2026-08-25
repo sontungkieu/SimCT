@@ -278,6 +278,35 @@ variation is not confounded with a second generation-sampling change. SFT is
 otherwise deterministic and therefore acts as a useful TPU determinism
 control.
 
+The executable policy is
+`configs/evaluation/simct_public_multiseed_policy.json`: the current legacy
+replicate is followed by explicit training seed 43, and seed 44 is permitted
+only after the first two pass the consistency gate. Renderers accept
+`--expected-run-id`, `--training-seed`, and `--wandb-group`; they materialize a
+content-hashed `runtime_config.json` while keeping the pinned base config
+unchanged. The evaluation seed remains 42.
+
+Before spending quota on the third replicate, compare per-instance correctness
+from the two scoring roots:
+
+```bash
+python scripts/evaluation/audit_two_seed_consistency.py \
+  --first-sft-scoring-root /path/to/seed1/sft \
+  --first-simple-opd-scoring-root /path/to/seed1/simple_opd \
+  --first-simct-scoring-root /path/to/seed1/simct \
+  --second-sft-scoring-root /path/to/seed2/sft \
+  --second-simple-opd-scoring-root /path/to/seed2/simple_opd \
+  --second-simct-scoring-root /path/to/seed2/simct \
+  --output /path/to/two_seed_consistency.json
+```
+
+The gate stops before seed 44 if any benchmark's absolute paired score gap is
+greater than `max(0.05, 3 * paired_SE)`, or if a SimCT-minus-SimpleOPD effect
+changes sign with at least two percentage points on both sides. A stopped run
+is an instruction to audit seed propagation, warm-start lineage, data order,
+runtime locks, TPU topology, and step metrics; it is not evidence that a third
+sample should average the discrepancy away.
+
 ## Shared evaluation contract
 
 `vdt_tunix.evaluation_contract` validates a machine-readable comparison before

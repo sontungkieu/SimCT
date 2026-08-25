@@ -26,6 +26,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--checkpoint-kernel-source", required=True)
     parser.add_argument("--checkpoint-relative-path", required=True)
     parser.add_argument("--student-model-source", required=True)
+    parser.add_argument("--expected-training-run-id")
+    parser.add_argument("--training-seed", type=int)
+    parser.add_argument(
+        "--wandb-group", default="public-substitute-multiseed"
+    )
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args(argv)
     try:
@@ -38,6 +43,9 @@ def main(argv: list[str] | None = None) -> int:
             checkpoint_kernel_source=args.checkpoint_kernel_source,
             checkpoint_relative_path=args.checkpoint_relative_path,
             student_model_source=args.student_model_source,
+            expected_training_run_id=args.expected_training_run_id,
+            training_seed=args.training_seed,
+            wandb_group=args.wandb_group,
         )
         args.output.parent.mkdir(parents=True, exist_ok=True)
         temporary = args.output.with_name(args.output.name + ".tmp")

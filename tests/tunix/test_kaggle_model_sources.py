@@ -328,6 +328,34 @@ def test_tpu_requirements_pin_wandb_observability_client():
     ]
 
 
+def test_training_renderer_materializes_explicit_seed_runtime_config():
+    notebook = render_training_notebook(
+        phase="simct",
+        config_relative_path=(
+            "configs/reproduction/qwen25_7b_to_gemma2_2b_public_simct_screen.json"
+        ),
+        repo_dataset_source=REPO_DATASET,
+        training_dataset_source="testowner/public-substitute-v1",
+        training_manifest_relative_path="opd/manifest.json",
+        student_model_source=STUDENT,
+        teacher_model_source=TEACHER,
+        expected_run_id="vdt-public-simct-seed43",
+        training_seed=43,
+        wandb_group="public-substitute-multiseed",
+        warm_start_kernel_source="testowner/public-sft-seed43",
+        warm_start_kernel_version=1,
+        warm_start_relative_path="vdt_public_sft_seed43/checkpoints",
+    )
+    source = "".join(
+        "".join(cell.get("source", [])) for cell in notebook["cells"]
+    )
+    assert 'config["run_id"] = \'vdt-public-simct-seed43\'' in source
+    assert 'config["training"]["seed"] = 43' in source
+    assert 'vdt_public_simct_seed43' not in source
+    assert 'config["run_id"].replace("-", "_")' in source
+    assert "'public-substitute-multiseed'" in source
+
+
 def test_training_renderer_rejects_sft_warm_start():
     with pytest.raises(KaggleModelSourceError, match="may not declare"):
         render_training_notebook(

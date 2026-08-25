@@ -29,6 +29,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--student-model-source", required=True)
     parser.add_argument("--teacher-model-source", required=True)
     parser.add_argument("--expected-run-id")
+    parser.add_argument("--training-seed", type=int)
     parser.add_argument(
         "--wandb-group", default="public-substitute-one-seed"
     )
@@ -47,6 +48,7 @@ def main(argv: list[str] | None = None) -> int:
             student_model_source=args.student_model_source,
             teacher_model_source=args.teacher_model_source,
             expected_run_id=args.expected_run_id,
+            training_seed=args.training_seed,
             wandb_group=args.wandb_group,
             warm_start_kernel_source=args.warm_start_kernel_source,
             warm_start_kernel_version=args.warm_start_kernel_version,
