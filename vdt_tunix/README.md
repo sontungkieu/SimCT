@@ -248,6 +248,37 @@ as `paper_five_run`; the latter requires five distinct seeds. Passing training
 or the one-seed screen still does not, by itself, reproduce the paper's
 five-run mean and standard deviation.
 
+After all three terminal generation jobs have produced both
+`generation_summary.json` and `scoring_summary.json`, assemble the result with
+`scripts/evaluation/assemble_one_seed_comparison.py`. The assembler also reads
+each terminal training summary/config and the pinned benchmark manifests. It
+fails closed on checkpoint lineage, config/protocol hashes, TPU shape, prompt
+preflight, evaluator identity/environment, record counts, and score arithmetic:
+
+```bash
+python scripts/evaluation/assemble_one_seed_comparison.py \
+  --comparison-id qwen25-gemma2-public-one-seed-v1 \
+  --generation-protocol configs/evaluation/simct_paper_one_seed_generation.json \
+  --evaluation-root /path/to/pinned-evaluation-bundle \
+  --output-dir /path/to/comparison \
+  --sft-training-config /path/to/sft-config.json \
+  --sft-training-summary /path/to/sft/train_summary.json \
+  --sft-generation-summary /path/to/sft/generation_summary.json \
+  --sft-scoring-summary /path/to/sft/scoring_summary.json \
+  --simple-opd-training-config /path/to/simple-opd-config.json \
+  --simple-opd-training-summary /path/to/simple-opd/train_summary.json \
+  --simple-opd-generation-summary /path/to/simple-opd/generation_summary.json \
+  --simple-opd-scoring-summary /path/to/simple-opd/scoring_summary.json \
+  --simct-training-config /path/to/simct-config.json \
+  --simct-training-summary /path/to/simct/train_summary.json \
+  --simct-generation-summary /path/to/simct/generation_summary.json \
+  --simct-scoring-summary /path/to/simct/scoring_summary.json
+```
+
+The outputs are a machine-readable `comparison_summary.json` plus a compact
+score table. A passing report is bounded one-seed public-substitute evidence
+and deliberately retains `paper_reproduction=false`.
+
 ### Native generation and paper-released scoring
 
 `configs/evaluation/simct_paper_one_seed_generation.json` pins the four
