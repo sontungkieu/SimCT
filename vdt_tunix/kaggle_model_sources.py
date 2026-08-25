@@ -662,7 +662,7 @@ student_runtime = bind_runtime_model_mount(config["student"], STUDENT_MOUNT)
 teacher_runtime = bind_runtime_model_mount(config["teacher"], TEACHER_MOUNT)
 if config["run_id"] != {('vdt-public-' + phase + '-screen')!r}:
     raise RuntimeError(f"unexpected run_id in {{CONFIG_PATH}}: {{config['run_id']}}")
-expected_algorithm = "simct" if {phase!r} == "sft" else {phase!r}
+expected_algorithm = {("simct" if phase == "sft" else phase)!r}
 if config["simct"]["algorithm"] != expected_algorithm:
     raise RuntimeError("training phase and algorithm drifted")
 WORK = Path(config["checkpoint"]["root"]).parent
@@ -723,6 +723,18 @@ print("VDT_DEPENDENCY_PROVENANCE " + json.dumps({{
         if phase == "sft"
         else "scripts/tpu/kaggle_v5e8_train.py"
     )
+    expected_phase = "sft_training" if phase == "sft" else f"{phase}_training"
+    objective_contract = (
+        "" if phase == "sft" else f'    "objective": {phase!r},\n'
+    )
+    warm_start_contract = (
+        ""
+        if phase == "sft"
+        else '''if payload.get("initialization") != "warm_start":
+    drift["initialization"] = (payload.get("initialization"), "warm_start")
+'''
+    )
+
     run = f'''import hashlib
 import shutil
 
@@ -760,13 +772,13 @@ if result is None or result.returncode:
     )
 payload = json.loads(SUMMARY.read_text(encoding="utf-8"))
 expected = {{
+    "phase": {expected_phase!r},
     "status": "complete",
     "run_id": config["run_id"],
+    "start_step": 0,
     "completed_steps": config["training"]["max_steps"],
     "scientific_evidence": False,
-}}
-if {phase!r} != "sft":
-    expected["objective"] = {phase!r}
+{objective_contract}}}
 drift = {{
     key: (payload.get(key), value)
     for key, value in expected.items()
@@ -775,9 +787,7 @@ drift = {{
 parameter_sha = payload.get("final_student_parameters_sha256")
 if not isinstance(parameter_sha, str) or len(parameter_sha) != 64:
     drift["final_student_parameters_sha256"] = (parameter_sha, "sha256")
-if {phase!r} != "sft" and payload.get("initialization") != "warm_start":
-    drift["initialization"] = (payload.get("initialization"), "warm_start")
-if drift:
+{warm_start_contract}if drift:
     raise RuntimeError(f"VDT training evidence contract mismatch: {{drift}}")
 artifact = {{
     "contract_version": 1,

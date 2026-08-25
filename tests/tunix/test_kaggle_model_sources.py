@@ -250,15 +250,25 @@ def test_rendered_training_notebook_is_pinned_and_syntax_valid(phase):
     assert "scientific_evidence" in source
     assert "shared downstream one-seed evaluation contract" in source
     assert "unsafe archive member" in source
+    assert f"if {phase!r} != \"sft\"" not in source
+    assert '"start_step": 0' in source
     for index, cell in enumerate(notebook["cells"]):
         if cell["cell_type"] == "code":
             compile("".join(cell["source"]), f"<cell-{index}>", "exec")
     if phase == "sft":
         assert "kaggle_v5e8_sft.py" in source
         assert "WARM_START_KERNEL_SOURCE = None" in source
+        assert "expected_algorithm = 'simct'" in source
+        assert '"phase": \'sft_training\'' in source
+        assert '"objective":' not in source
+        assert 'payload.get("initialization")' not in source
     else:
         assert "kaggle_v5e8_train.py" in source
         assert "testowner/public-sft-screen-v1" in source
+        assert f"expected_algorithm = {phase!r}" in source
+        assert f'"phase": {f"{phase}_training"!r}' in source
+        assert f'"objective": {phase!r}' in source
+        assert 'payload.get("initialization") != "warm_start"' in source
         assert '"initialization"' in source
 
 
