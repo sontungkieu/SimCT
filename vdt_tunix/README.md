@@ -243,17 +243,40 @@ python scripts/tpu/render_model_source_mount_probe.py \
 Its `VDT_MODEL_SOURCE_MOUNT_PROBE` marker is operational evidence only and
 always records `scientific_evidence=false`.
 
-Training observability is optional and fail-open. A staged private notebook
+Runtime observability is fail-open with respect to model updates, but the
+multi-seed orchestration treats it as a separate completion gate. A staged private notebook
 may replace `__KJO_SECRET_WANDB_API_KEY__` immediately before submission; the
 source notebook remains secret-free. The uv lock pins W&B 0.19.11 and its
 transitive dependencies, so observability does not depend on the ambient Kaggle
 image.
-When present, W&B receives finite numeric training metrics, elapsed time,
-gradient/parameter norms, and span/token counts. W&B import, initialization,
-network, logging, or finish failures are recorded in `VDT_WANDB_STATUS` and
-never alter the optimizer path or exit code. The staged and archived notebook
-copies must be scrubbed back to the placeholder after submission and checked
-with the sensitive-artifact audit.
+W&B receives finite numeric training metrics, elapsed time,
+gradient/parameter norms, and span/token counts. Generation logs one progress
+row per resumable batch, and scoring logs the final score/counts for all four
+benchmarks. W&B import, initialization, network, logging, or finish failures
+are recorded in `VDT_WANDB_STATUS` and never alter the optimizer path or exit
+code. Such a run retains its scientific artifacts but does not pass the
+monitoring gate until an audited backfill or logger retry succeeds. The staged
+and archived notebook copies must be scrubbed back to the placeholder after
+submission and checked with the sensitive-artifact audit.
+
+For a native online run, validate the three distinct W&B URLs and exact log
+counts with:
+
+```bash
+python scripts/evaluation/audit_wandb_evidence.py \
+  --training-summary /path/to/train_summary.json \
+  --generation-summary /path/to/generation_summary.json \
+  --scoring-summary /path/to/scoring_summary.json \
+  --output /path/to/wandb_evidence.json
+```
+
+Multi-seed training configs may set `training.seed` explicitly. Legacy configs
+without that field retain their original digest and run-id-derived rollout
+RNG. Explicit seeds decouple rollout randomness from the unique run id. The
+evaluation protocol seed stays fixed across training replicates so measured
+variation is not confounded with a second generation-sampling change. SFT is
+otherwise deterministic and therefore acts as a useful TPU determinism
+control.
 
 ## Shared evaluation contract
 

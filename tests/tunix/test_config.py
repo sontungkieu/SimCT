@@ -19,6 +19,21 @@ def test_config_round_trip_and_digest_are_stable(config_payload, tmp_path):
     assert len(config.digest()) == 64
 
 
+def test_explicit_training_seed_changes_identity_without_drifting_legacy(config_payload):
+    legacy = RunConfig.from_mapping(copy.deepcopy(config_payload))
+    seeded_payload = copy.deepcopy(config_payload)
+    seeded_payload["training"]["seed"] = 43
+    seeded = RunConfig.from_mapping(seeded_payload)
+    assert legacy.training.seed is None
+    assert seeded.training.seed == 43
+    assert seeded.digest() != legacy.digest()
+
+    negative = copy.deepcopy(config_payload)
+    negative["training"]["seed"] = -1
+    with pytest.raises(ConfigError, match="training.seed must be non-negative"):
+        RunConfig.from_mapping(negative)
+
+
 def test_contract_is_single_teacher_and_rejects_unknown_teachers(config_payload):
     payload = copy.deepcopy(config_payload)
     payload["teachers"] = [payload["teacher"]]

@@ -379,6 +379,14 @@ def _stable_seed(*parts: object) -> int:
     return int.from_bytes(hashlib.sha256(payload).digest()[:8], "big")
 
 
+def _rollout_seed(config: RunConfig, request: RolloutRequest, *parts: object) -> int:
+    """Return an explicit multi-seed RNG while preserving legacy parity."""
+
+    if config.training.seed is None:
+        return _stable_seed(request.run_id, request.step, *parts)
+    return _stable_seed("training-seed", config.training.seed, request.step, *parts)
+
+
 def _log_softmax(values: Any) -> Any:
     import numpy as np
 
@@ -496,7 +504,7 @@ class TunixStudentRolloutBackend:
                 max_prompt_length=self._config.rollout.max_prompt_tokens,
                 temperature=self._config.rollout.temperature,
                 top_p=top_p,
-                seed=_stable_seed(request.run_id, request.step) % (2**31 - 1),
+                seed=_rollout_seed(self._config, request) % (2**31 - 1),
                 return_logits=False,
                 return_logprobs=True,
                 echo=False,
@@ -578,7 +586,7 @@ class TunixStudentRolloutBackend:
         finished = np.zeros((len(rows),), dtype=bool)
         rngs = [
             np.random.default_rng(
-                _stable_seed(request.run_id, request.step, row[2])
+                _rollout_seed(self._config, request, row[2])
             )
             for row in rows
         ]

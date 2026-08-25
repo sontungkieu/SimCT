@@ -28,6 +28,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--training-manifest-relative-path", required=True)
     parser.add_argument("--student-model-source", required=True)
     parser.add_argument("--teacher-model-source", required=True)
+    parser.add_argument("--expected-run-id")
+    parser.add_argument(
+        "--wandb-group", default="public-substitute-one-seed"
+    )
     parser.add_argument("--warm-start-kernel-source")
     parser.add_argument("--warm-start-kernel-version", type=int)
     parser.add_argument("--warm-start-relative-path")
@@ -42,6 +46,8 @@ def main(argv: list[str] | None = None) -> int:
             training_manifest_relative_path=args.training_manifest_relative_path,
             student_model_source=args.student_model_source,
             teacher_model_source=args.teacher_model_source,
+            expected_run_id=args.expected_run_id,
+            wandb_group=args.wandb_group,
             warm_start_kernel_source=args.warm_start_kernel_source,
             warm_start_kernel_version=args.warm_start_kernel_version,
             warm_start_relative_path=args.warm_start_relative_path,

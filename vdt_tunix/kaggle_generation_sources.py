@@ -184,9 +184,16 @@ print("VDT_GENERATION_INPUT_PROVENANCE " + json.dumps({{
 }}, sort_keys=True))'''
 
     setup = f'''import json
+import os
 import platform
 import subprocess
 import sys
+
+os.environ["WANDB_API_KEY"] = "__KJO_SECRET_WANDB_API_KEY__"
+os.environ.setdefault("WANDB_PROJECT", "vdt-simct-tunix-reproduction")
+os.environ.setdefault("WANDB_RUN_GROUP", "public-substitute-multiseed")
+os.environ.setdefault("WANDB_MODE", "online")
+os.environ.setdefault("WANDB_INIT_TIMEOUT", "30")
 
 STUDENT_SOURCE = {student_source!r}
 sys.path.insert(0, str(REPO))

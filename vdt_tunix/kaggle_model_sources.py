@@ -499,6 +499,8 @@ def render_training_notebook(
     training_manifest_relative_path: str,
     student_model_source: str,
     teacher_model_source: str,
+    expected_run_id: str | None = None,
+    wandb_group: str = "public-substitute-one-seed",
     warm_start_kernel_source: str | None = None,
     warm_start_kernel_version: int | None = None,
     warm_start_relative_path: str | None = None,
@@ -515,6 +517,16 @@ def render_training_notebook(
         raise KaggleModelSourceError(
             f"phase must be one of {sorted(allowed_phases)}"
         )
+    if expected_run_id is None:
+        expected_run_id = "vdt-public-" + phase + "-screen"
+    if not isinstance(expected_run_id, str) or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9_-]*", expected_run_id
+    ):
+        raise KaggleModelSourceError("expected_run_id must be a safe run id")
+    if not isinstance(wandb_group, str) or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9_.-]*", wandb_group
+    ):
+        raise KaggleModelSourceError("wandb_group must be a safe W&B group")
     config_relative = _safe_relative_path(
         config_relative_path, "config_relative_path"
     )
@@ -779,7 +791,7 @@ import sys
 
 os.environ["WANDB_API_KEY"] = "__KJO_SECRET_WANDB_API_KEY__"
 os.environ.setdefault("WANDB_PROJECT", "vdt-simct-tunix-reproduction")
-os.environ.setdefault("WANDB_RUN_GROUP", "public-substitute-one-seed")
+os.environ.setdefault("WANDB_RUN_GROUP", {wandb_group!r})
 os.environ.setdefault("WANDB_MODE", "online")
 os.environ.setdefault("WANDB_INIT_TIMEOUT", "30")
 
@@ -798,7 +810,7 @@ for required in (REPO, CONFIG_PATH, TRAINING_MANIFEST, STUDENT_MOUNT, TEACHER_MO
 config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
 student_runtime = bind_runtime_model_mount(config["student"], STUDENT_MOUNT)
 teacher_runtime = bind_runtime_model_mount(config["teacher"], TEACHER_MOUNT)
-if config["run_id"] != {('vdt-public-' + phase + '-screen')!r}:
+if config["run_id"] != {expected_run_id!r}:
     raise RuntimeError(f"unexpected run_id in {{CONFIG_PATH}}: {{config['run_id']}}")
 expected_algorithm = {("simct" if phase == "sft" else phase)!r}
 if config["simct"]["algorithm"] != expected_algorithm:

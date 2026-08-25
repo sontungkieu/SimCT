@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +30,7 @@ from vdt_tunix.generation_contract import (
     load_generation_protocol,
     stable_batch_seed,
 )
+from vdt_tunix.observability import start_wandb_run
 
 EX_UNAVAILABLE = 69
 EX_CONFIG = 78
@@ -65,7 +67,7 @@ def _canonical_row(payload: dict[str, Any]) -> bytes:
 
 def _variant_matches(variant: str, config) -> bool:
     if variant == "sft":
-        return config.run_id == "vdt-public-sft-screen"
+        return config.run_id.startswith("vdt-public-sft-")
     return config.simct.algorithm == variant
 
 
@@ -232,6 +234,21 @@ def main(argv: list[str] | None = None) -> int:
         )
         return EX_CONFIG
 
+    observability = start_wandb_run(
+        run_id=config.run_id,
+        objective=f"{args.variant}_generation",
+        config_sha256=config.digest(),
+        dataset_manifest_sha256=protocol_sha256,
+        metadata={
+            "variant": args.variant,
+            "protocol_id": protocol.protocol_id,
+            "protocol_sha256": protocol_sha256,
+            "benchmark_count": len(protocol.benchmarks),
+            "evaluation_seed": protocol.seed,
+        },
+    )
+    generation_started = time.monotonic()
+    progress_step = 0
     try:
         restored = restore_student_for_inference(config, args.checkpoint_root)
         generator = NativeTunixGenerator(
@@ -349,6 +366,24 @@ def main(argv: list[str] | None = None) -> int:
                     int(row["completion_tokens"]) for row in rows
                 )
                 truncated_count += sum(bool(row["truncated"]) for row in rows)
+                progress_step += 1
+                observability.log_metrics(
+                    {
+                        "benchmark_index": len(benchmark_summaries),
+                        "batch_index": batch_index,
+                        "batch_count": batch_count,
+                        "records_completed": min(
+                            (batch_index + 1) * protocol.batch_size,
+                            len(examples),
+                        ),
+                        "record_count": len(examples),
+                        "completion_tokens": completion_tokens_total,
+                        "truncated_count": truncated_count,
+                        "elapsed_s": time.monotonic() - generation_started,
+                    },
+                    step=progress_step,
+                    namespace=f"generation/{benchmark.name}",
+                )
             predictions = benchmark_dir / "predictions.jsonl"
             _finalize_predictions(predictions, batch_paths)
             benchmark_summary = {
@@ -363,6 +398,7 @@ def main(argv: list[str] | None = None) -> int:
             _atomic_json(benchmark_dir / "generation_summary.json", benchmark_summary)
             benchmark_summaries.append(benchmark_summary)
     except Exception as exc:  # noqa: BLE001 - persist a fail-closed resume summary
+        observability.finish(training_status="blocked", exit_code=EX_UNAVAILABLE)
         _atomic_json(
             args.output_dir / "generation_summary.json",
             {
@@ -372,11 +408,13 @@ def main(argv: list[str] | None = None) -> int:
                 "protocol_sha256": protocol_sha256,
                 "error_type": type(exc).__name__,
                 "error": str(exc),
+                "observability": observability.summary(),
                 "scientific_evidence": False,
             },
         )
         return EX_UNAVAILABLE
 
+    observability.finish(training_status="complete", exit_code=0)
     summary = {
         "status": "complete",
         "phase": "native_tunix_generation",
@@ -392,6 +430,7 @@ def main(argv: list[str] | None = None) -> int:
         "prompt_preflight_sha256": _sha256(prompt_preflight_path),
         "prompt_preflight": prompt_preflight,
         "benchmarks": benchmark_summaries,
+        "observability": observability.summary(),
         "scientific_evidence": False,
         "remaining_gate": "official benchmark scoring and comparison contract",
     }

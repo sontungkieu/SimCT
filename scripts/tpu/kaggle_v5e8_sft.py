@@ -90,6 +90,7 @@ def main(argv: list[str] | None = None) -> int:
             "teacher_model_id": config.teacher.model_id,
             "max_steps": config.training.max_steps,
             "learning_rate": config.training.learning_rate,
+            "training_seed": config.training.seed,
         },
     )
     training_started = time.monotonic()

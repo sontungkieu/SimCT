@@ -16,6 +16,7 @@ from vdt_tunix.generation_contract import (
     GenerationContractError,
     load_generation_protocol,
 )
+from vdt_tunix.observability import start_wandb_run
 from vdt_tunix.paper_released_scoring import (
     score_generation_root,
 )
@@ -57,7 +58,38 @@ def main(argv: list[str] | None = None) -> int:
             },
         )
         return EX_CONFIG
+    observability = None
     try:
+        generation_summary = json.loads(
+            (args.generation_root / "generation_summary.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        variant = generation_summary["variant"]
+        checkpoint_run_id = generation_summary["checkpoint_run_id"]
+        training_config_sha256 = generation_summary["training_config_sha256"]
+        if not all(
+            isinstance(value, str) and value
+            for value in (variant, checkpoint_run_id, training_config_sha256)
+        ):
+            raise GenerationContractError(
+                "generation summary has incomplete W&B lineage"
+            )
+        observability = start_wandb_run(
+            run_id=checkpoint_run_id,
+            objective=f"{variant}_scoring",
+            config_sha256=training_config_sha256,
+            dataset_manifest_sha256=protocol.digest(),
+            metadata={
+                "variant": variant,
+                "protocol_id": protocol.protocol_id,
+                "protocol_sha256": protocol.digest(),
+                "student_parameters_sha256": generation_summary.get(
+                    "student_parameters_sha256", ""
+                ),
+                "evaluation_seed": protocol.seed,
+            },
+        )
         summary = score_generation_root(
             generation_root=args.generation_root,
             evaluation_root=args.evaluation_root,
@@ -67,6 +99,10 @@ def main(argv: list[str] | None = None) -> int:
             workers=args.workers,
         )
     except Exception as exc:  # noqa: BLE001 - persist a fail-closed terminal summary
+        if observability is not None:
+            observability.finish(
+                training_status="blocked", exit_code=EX_UNAVAILABLE
+            )
         _atomic_json(
             args.output_dir / "scoring_summary.json",
             {
@@ -74,10 +110,32 @@ def main(argv: list[str] | None = None) -> int:
                 "phase": "paper_released_evaluator_scoring",
                 "error_type": type(exc).__name__,
                 "error": str(exc),
+                **(
+                    {}
+                    if observability is None
+                    else {"observability": observability.summary()}
+                ),
                 "scientific_evidence": False,
             },
         )
         return EX_UNAVAILABLE
+    for step, benchmark in enumerate(summary["benchmarks"], start=1):
+        observability.log_metrics(
+            {
+                "score": benchmark["score"],
+                "correct": benchmark["correct"],
+                "total": benchmark["total"],
+                "empty_output_count": benchmark.get("empty_output_count", 0),
+                "extraction_failed_count": benchmark.get(
+                    "extraction_failed_count", 0
+                ),
+            },
+            step=step,
+            namespace=f"evaluation/{benchmark['benchmark']}",
+        )
+    observability.finish(training_status="complete", exit_code=0)
+    summary["observability"] = observability.summary()
+    _atomic_json(args.output_dir / "scoring_summary.json", summary)
     print(json.dumps(summary, sort_keys=True), flush=True)
     return 0
 

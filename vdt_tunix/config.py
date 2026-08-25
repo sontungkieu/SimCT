@@ -316,6 +316,7 @@ class TrainingConfig:
     micro_batch_size: int
     gradient_accumulation_steps: int
     learning_rate: float
+    seed: int | None = None
 
     def __post_init__(self) -> None:
         for name in ("max_steps", "micro_batch_size", "gradient_accumulation_steps"):
@@ -323,6 +324,8 @@ class TrainingConfig:
                 raise ConfigError(f"training.{name} must be positive")
         if not math.isfinite(self.learning_rate) or self.learning_rate <= 0:
             raise ConfigError("training.learning_rate must be positive and finite")
+        if self.seed is not None and self.seed < 0:
+            raise ConfigError("training.seed must be non-negative")
 
     @classmethod
     def from_mapping(cls, value: Any) -> TrainingConfig:
@@ -334,7 +337,7 @@ class TrainingConfig:
             "gradient_accumulation_steps",
             "learning_rate",
         }
-        _keys(raw, context=context, required=required)
+        _keys(raw, context=context, required=required, optional={"seed"})
         return cls(
             max_steps=_integer(raw["max_steps"], "training.max_steps"),
             micro_batch_size=_integer(
@@ -345,6 +348,11 @@ class TrainingConfig:
                 "training.gradient_accumulation_steps",
             ),
             learning_rate=_number(raw["learning_rate"], "training.learning_rate"),
+            seed=(
+                None
+                if "seed" not in raw
+                else _integer(raw["seed"], "training.seed")
+            ),
         )
 
 
@@ -558,6 +566,10 @@ class RunConfig:
         """Return training identity without environment-local storage paths."""
 
         payload = self.to_dict()
+        # Keep the identity of legacy seed-less configs byte-for-byte stable.
+        # New multi-seed configs include an explicit seed in their digest.
+        if self.training.seed is None:
+            payload["training"].pop("seed", None)
         payload["checkpoint"] = {
             "save_every_steps": self.checkpoint.save_every_steps,
         }
