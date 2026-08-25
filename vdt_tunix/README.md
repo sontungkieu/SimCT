@@ -276,6 +276,43 @@ python scripts/tpu/render_generation_notebook.py \
   --output /path/to/generation_notebook.ipynb
 ```
 
+If the completed checkpoint is private and the generation notebook runs under
+a different Kaggle owner, do not attach that private kernel as a cross-owner
+`kernel_source`. Render KJO's isolated source-owner download cell first, then
+compose it into the ordinary generation notebook:
+
+```bash
+python /home/tung/.codex/skills/kaggle-job-ops/scripts/kaggle_job_ops.py \
+  render-cross-account-output-cell \
+  --out /path/to/cross_account_checkpoint.py \
+  --kernel-id <source-owner>/<completed-training-kernel> \
+  --runtime-owner <generation-owner> \
+  --kaggle-config-dir /tmp/.kaggle_source_owner \
+  --output-dir \
+    /kaggle/working/vdt_cross_account_inputs/kernels/<source-owner>/<completed-training-kernel> \
+  --file-pattern '(?i)^vdt_public_sft_screen/checkpoints/.*'
+
+python scripts/tpu/compose_cross_account_generation_notebook.py \
+  --base-notebook /path/to/generation_notebook.ipynb \
+  --cross-account-cell /path/to/cross_account_checkpoint.py \
+  --source-kernel-id <source-owner>/<completed-training-kernel> \
+  --runtime-owner <generation-owner> \
+  --evaluation-dataset-source <generation-owner>/<pinned-evaluation-bundle> \
+  --source-config-dir /tmp/.kaggle_source_owner \
+  --cross-account-output-dir \
+    /kaggle/working/vdt_cross_account_inputs/kernels/<source-owner>/<completed-training-kernel> \
+  --overlay-input-root /kaggle/working/vdt_cross_account_inputs \
+  --source-key-placeholder __KJO_SECRET_KAGGLE_SOURCE_KEY__ \
+  --out /path/to/cross_account_generation_notebook.ipynb
+```
+
+The composer fails closed if the KJO cell, owner, config directory, output
+directory, or source slug drift. Inject only the source owner's Kaggle key into
+the private staged copy immediately before submit. KJO must scrub the staged
+and archived notebook afterward; the remote notebook remains in the
+embedded-secret retention lifecycle until its scored outputs are local and it
+is actually deleted. The checkpoint itself stays Kaggle-to-Kaggle.
+
 The notebook runs generation first and then
 `scripts/evaluation/score_generated_predictions.py` before removing the
 expanded 4.5 GB evaluation input. The scorer verifies that
