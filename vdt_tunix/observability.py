@@ -1,9 +1,10 @@
-"""Fail-open experiment observability for Kaggle TPU training.
+"""Auditable W&B observability for Kaggle TPU experiments.
 
-Weights & Biases is an operational side channel, never part of the training
-objective or the scientific-evidence contract. A missing key, unavailable
-package, or network failure must therefore degrade logging without changing a
-model update or terminating training.
+The adapter is fail-open by default so library users do not accidentally make
+logging part of an optimizer.  Scientific Kaggle packages set
+``VDT_REQUIRE_WANDB=1``: initialization or step logging then fails early, which
+prevents an expensive run from continuing without the dashboard evidence that
+the comparison contract requires.
 """
 
 from __future__ import annotations
@@ -17,6 +18,10 @@ from typing import Any, Mapping
 
 
 _SECRET_PLACEHOLDER_PREFIX = "__KJO_SECRET_"
+
+
+class WandbObservabilityError(RuntimeError):
+    """Raised when required native W&B evidence cannot be produced."""
 
 
 def _safe_error(exc: BaseException) -> str:
@@ -56,6 +61,7 @@ class BestEffortWandbRun:
     error: str = ""
     evidence_mode: str = "native"
     source_artifact_sha256: str = ""
+    required: bool = False
     _run: Any = field(default=None, repr=False)
     _logging_disabled: bool = field(default=False, repr=False)
 
@@ -67,19 +73,35 @@ class BestEffortWandbRun:
         namespace: str = "train",
     ) -> None:
         if self._run is None or self._logging_disabled:
+            if self.required:
+                raise WandbObservabilityError(
+                    f"required W&B run is unavailable: {self.reason}"
+                )
             return
         payload = _numeric_metrics(values, namespace)
         payload["trainer/global_step"] = step
         try:
             self._run.log(payload, step=step)
             self.logged_steps += 1
-        except Exception as exc:  # W&B must never change training control flow.
+        except Exception as exc:
             self.status = "degraded"
             self.reason = "log_failed"
             self.error_type = type(exc).__name__
             self.error = _safe_error(exc)
             self._logging_disabled = True
             self._emit("log_failed")
+            if self.required:
+                raise WandbObservabilityError(
+                    f"required W&B logging failed: {self.error}"
+                ) from exc
+
+    def require_active(self) -> None:
+        """Fail before model work when a required online run did not start."""
+
+        if self.required and (self._run is None or self.status != "active"):
+            raise WandbObservabilityError(
+                f"required W&B initialization failed: {self.reason}"
+            )
 
     def finish(self, *, training_status: str, exit_code: int) -> None:
         if self._run is not None:
@@ -99,7 +121,8 @@ class BestEffortWandbRun:
         return {
             "provider": "wandb",
             "requested": self.requested,
-            "fail_open": True,
+            "fail_open": not self.required,
+            "required": self.required,
             "secret_name": "WANDB_API_KEY",
             "project": self.project,
             "run_name": self.run_name,
@@ -151,6 +174,12 @@ def start_wandb_run(
     )
     if evidence_mode not in {"native", "backfill"}:
         raise ValueError("evidence_mode must be native or backfill")
+    required = os.environ.get("VDT_REQUIRE_WANDB", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
     logger = BestEffortWandbRun(
         requested=requested,
         project=project,
@@ -158,6 +187,7 @@ def start_wandb_run(
         group=group,
         evidence_mode=evidence_mode,
         source_artifact_sha256=source_artifact_sha256,
+        required=required,
     )
     if not requested:
         logger._emit("disabled")

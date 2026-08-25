@@ -17,6 +17,9 @@ class _FakeWandbRun:
     def log_metrics(self, values, *, step, namespace="train"):
         self.logs.append((dict(values), step, namespace))
 
+    def require_active(self):
+        return None
+
     def finish(self, *, training_status, exit_code):
         assert training_status == "complete"
         assert exit_code == 0

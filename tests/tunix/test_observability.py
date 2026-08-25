@@ -3,7 +3,12 @@ from __future__ import annotations
 import sys
 from types import SimpleNamespace
 
-from vdt_tunix.observability import start_wandb_run
+import pytest
+
+from vdt_tunix.observability import (
+    WandbObservabilityError,
+    start_wandb_run,
+)
 
 
 def _start():
@@ -129,3 +134,44 @@ def test_wandb_init_failure_is_fail_open_and_redacted(monkeypatch):
     assert summary["reason"] == "init_failed"
     assert redaction_marker not in summary["error"]
     assert "<redacted>" in summary["error"]
+
+
+def test_required_wandb_fails_before_model_work_when_init_is_unavailable(
+    monkeypatch,
+):
+    monkeypatch.delenv("WANDB_API_KEY", raising=False)
+    monkeypatch.setenv("VDT_REQUIRE_WANDB", "1")
+
+    logger = _start()
+
+    assert logger.summary()["required"] is True
+    assert logger.summary()["fail_open"] is False
+    with pytest.raises(WandbObservabilityError, match="initialization failed"):
+        logger.require_active()
+
+
+def test_required_wandb_fails_on_step_logging_error(monkeypatch):
+    class FakeRun:
+        def log(self, payload, *, step):
+            del payload, step
+            raise RuntimeError("network unavailable")
+
+        def get_url(self):
+            return "https://wandb.ai/fixture/project/runs/required"
+
+    monkeypatch.setitem(
+        sys.modules,
+        "wandb",
+        SimpleNamespace(
+            Settings=lambda **kwargs: kwargs,
+            init=lambda **kwargs: FakeRun(),
+        ),
+    )
+    monkeypatch.setenv("WANDB_API_KEY", "fixture-secret")
+    monkeypatch.setenv("VDT_REQUIRE_WANDB", "true")
+    logger = _start()
+    logger.require_active()
+
+    with pytest.raises(WandbObservabilityError, match="logging failed"):
+        logger.log_metrics({"loss": 1.0}, step=1)
+    assert logger.summary()["status"] == "degraded"

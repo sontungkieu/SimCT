@@ -250,6 +250,7 @@ def main(argv: list[str] | None = None) -> int:
     generation_started = time.monotonic()
     progress_step = 0
     try:
+        observability.require_active()
         restored = restore_student_for_inference(config, args.checkpoint_root)
         generator = NativeTunixGenerator(
             restored,

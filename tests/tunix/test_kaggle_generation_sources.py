@@ -43,6 +43,7 @@ def test_generation_notebook_is_pinned_and_syntax_valid(variant):
     assert '__KJO_SECRET_WANDB_API_KEY__' in source
     assert '"WANDB_MODE", "online"' in source
     assert '"WANDB_RUN_GROUP", \'public-substitute-multiseed\'' in source
+    assert '"VDT_REQUIRE_WANDB", "1"' in source
     assert "resolve_model_source_mount(STUDENT_SOURCE)" in source
     assert "bind_runtime_model_mount" in source
     assert '"--training-config", str(RUNTIME_TRAINING_CONFIG)' in source

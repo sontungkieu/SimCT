@@ -243,8 +243,12 @@ python scripts/tpu/render_model_source_mount_probe.py \
 Its `VDT_MODEL_SOURCE_MOUNT_PROBE` marker is operational evidence only and
 always records `scientific_evidence=false`.
 
-Runtime observability is fail-open with respect to model updates, but the
-multi-seed orchestration treats it as a separate completion gate. A staged private notebook
+The library observability adapter is fail-open by default, but staged
+scientific Kaggle notebooks set `VDT_REQUIRE_WANDB=1`. They fail before model
+loading if the native online run cannot start and stop at the first logging
+failure instead of spending the remaining TPU session without a dashboard.
+The multi-seed orchestration also treats terminal W&B evidence as a separate
+completion gate. A staged private notebook
 may replace `__KJO_SECRET_WANDB_API_KEY__` immediately before submission; the
 source notebook remains secret-free. The uv lock pins W&B 0.19.11 and its
 transitive dependencies, so observability does not depend on the ambient Kaggle
@@ -253,9 +257,10 @@ W&B receives finite numeric training metrics, elapsed time,
 gradient/parameter norms, and span/token counts. Generation logs one progress
 row per resumable batch, and scoring logs the final score/counts for all four
 benchmarks. W&B import, initialization, network, logging, or finish failures
-are recorded in `VDT_WANDB_STATUS` and never alter the optimizer path or exit
-code. Such a run retains its scientific artifacts but does not pass the
-monitoring gate until an audited backfill or logger retry succeeds. The staged
+are recorded in `VDT_WANDB_STATUS`. In required native runs, initialization
+and step-log failures block the run; generic local callers remain fail-open.
+A run with incomplete terminal evidence does not pass the monitoring gate
+until an audited backfill or logger retry succeeds. The staged
 and archived notebook copies must be scrubbed back to the placeholder after
 submission and checked with the sensitive-artifact audit.
 

@@ -293,6 +293,7 @@ def test_rendered_training_notebook_is_pinned_and_syntax_valid(phase):
     assert '__KJO_SECRET_WANDB_API_KEY__' in source
     assert 'WANDB_PROJECT' in source
     assert 'WANDB_RUN_GROUP' in source
+    assert '"VDT_REQUIRE_WANDB", "1"' in source
     assert "unsafe archive member" in source
     assert f"if {phase!r} != \"sft\"" not in source
     assert '"start_step": 0' in source

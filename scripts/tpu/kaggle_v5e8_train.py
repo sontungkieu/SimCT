@@ -102,6 +102,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     training_started = time.monotonic()
     try:
+        observability.require_active()
         backends = load_real_backend_bundle(config)
         _, hardware = require_tpu_v5e8(
             expected_device_count=config.tpu.expected_device_count

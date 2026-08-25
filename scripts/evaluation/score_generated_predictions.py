@@ -90,6 +90,7 @@ def main(argv: list[str] | None = None) -> int:
                 "evaluation_seed": protocol.seed,
             },
         )
+        observability.require_active()
         summary = score_generation_root(
             generation_root=args.generation_root,
             evaluation_root=args.evaluation_root,

@@ -220,6 +220,7 @@ os.environ.setdefault("WANDB_PROJECT", "vdt-simct-tunix-reproduction")
 os.environ.setdefault("WANDB_RUN_GROUP", {wandb_group!r})
 os.environ.setdefault("WANDB_MODE", "online")
 os.environ.setdefault("WANDB_INIT_TIMEOUT", "30")
+os.environ.setdefault("VDT_REQUIRE_WANDB", "1")
 
 STUDENT_SOURCE = {student_source!r}
 sys.path.insert(0, str(REPO))
