@@ -270,6 +270,32 @@ python scripts/evaluation/audit_wandb_evidence.py \
   --output /path/to/wandb_evidence.json
 ```
 
+Runs produced before native logging was enabled must not be relabeled as live
+observability. After their training, generation, and scoring artifacts pass the
+normal lineage audits, replay those immutable metrics into three explicitly
+tagged historical W&B runs:
+
+```bash
+python scripts/evaluation/backfill_wandb_evidence.py \
+  --training-summary /path/to/original/train_summary.json \
+  --training-metrics /path/to/original/train_metrics.jsonl \
+  --generation-summary /path/to/original/generation_summary.json \
+  --scoring-summary /path/to/original/scoring_summary.json \
+  --output-dir /path/to/derived/wandb_backfill
+
+python scripts/evaluation/audit_wandb_evidence.py \
+  --training-summary /path/to/derived/wandb_backfill/training_summary.json \
+  --generation-summary /path/to/derived/wandb_backfill/generation_summary.json \
+  --scoring-summary /path/to/derived/wandb_backfill/scoring_summary.json \
+  --allow-backfill \
+  --output /path/to/derived/wandb_backfill/wandb_evidence.json
+```
+
+The backfill never edits source summaries. Its manifest hashes all four source
+artifacts and all three derived summaries. The default audit continues to
+reject backfill evidence unless `--allow-backfill` is explicit; this prevents a
+historical replay from being mistaken for live monitoring.
+
 Multi-seed training configs may set `training.seed` explicitly. Legacy configs
 without that field retain their original digest and run-id-derived rollout
 RNG. Explicit seeds decouple rollout randomness from the unique run id. The

@@ -31,12 +31,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--generation-summary", required=True, type=Path)
     parser.add_argument("--scoring-summary", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument(
+        "--allow-backfill",
+        action="store_true",
+        help="Accept a complete, provenance-hashed historical W&B backfill.",
+    )
     args = parser.parse_args(argv)
     try:
         report = validate_native_wandb_evidence(
             training_summary=_load(args.training_summary),
             generation_summary=_load(args.generation_summary),
             scoring_summary=_load(args.scoring_summary),
+            allow_backfill=args.allow_backfill,
         )
     except (OSError, json.JSONDecodeError, WandbEvidenceError) as exc:
         report = {

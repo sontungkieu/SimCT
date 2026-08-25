@@ -21,9 +21,10 @@ _SECRET_PLACEHOLDER_PREFIX = "__KJO_SECRET_"
 
 def _safe_error(exc: BaseException) -> str:
     message = str(exc)
-    secret = os.environ.get("WANDB_API_KEY", "")
-    if secret:
-        message = message.replace(secret, "<redacted>")
+    if os.environ.get("WANDB_API_KEY", ""):
+        message = message.replace(
+            os.environ["WANDB_API_KEY"], "<redacted>"
+        )
     return message[-1000:]
 
 
@@ -53,6 +54,8 @@ class BestEffortWandbRun:
     logged_steps: int = 0
     error_type: str = ""
     error: str = ""
+    evidence_mode: str = "native"
+    source_artifact_sha256: str = ""
     _run: Any = field(default=None, repr=False)
     _logging_disabled: bool = field(default=False, repr=False)
 
@@ -107,6 +110,8 @@ class BestEffortWandbRun:
             "logged_steps": self.logged_steps,
             "error_type": self.error_type,
             "error": self.error,
+            "evidence_mode": self.evidence_mode,
+            "source_artifact_sha256": self.source_artifact_sha256,
         }
 
     def _emit(self, event: str, **extra: Any) -> None:
@@ -121,6 +126,11 @@ def start_wandb_run(
     config_sha256: str,
     dataset_manifest_sha256: str,
     metadata: Mapping[str, Any],
+    project: str | None = None,
+    run_name: str | None = None,
+    group: str | None = None,
+    evidence_mode: str = "native",
+    source_artifact_sha256: str = "",
 ) -> BestEffortWandbRun:
     """Start one online W&B run when the staged key was injected.
 
@@ -130,14 +140,24 @@ def start_wandb_run(
 
     key = os.environ.get("WANDB_API_KEY", "")
     requested = bool(key) and not key.startswith(_SECRET_PLACEHOLDER_PREFIX)
-    project = os.environ.get("WANDB_PROJECT", "vdt-simct-tunix-reproduction")
-    run_name = os.environ.get("WANDB_RUN_NAME", f"{run_id}-{objective}")
-    group = os.environ.get("WANDB_RUN_GROUP", "public-substitute-one-seed")
+    project = project or os.environ.get(
+        "WANDB_PROJECT", "vdt-simct-tunix-reproduction"
+    )
+    run_name = run_name or os.environ.get(
+        "WANDB_RUN_NAME", f"{run_id}-{objective}"
+    )
+    group = group or os.environ.get(
+        "WANDB_RUN_GROUP", "public-substitute-one-seed"
+    )
+    if evidence_mode not in {"native", "backfill"}:
+        raise ValueError("evidence_mode must be native or backfill")
     logger = BestEffortWandbRun(
         requested=requested,
         project=project,
         run_name=run_name,
         group=group,
+        evidence_mode=evidence_mode,
+        source_artifact_sha256=source_artifact_sha256,
     )
     if not requested:
         logger._emit("disabled")
@@ -156,9 +176,15 @@ def start_wandb_run(
                 "objective": objective,
                 "config_sha256": config_sha256,
                 "dataset_manifest_sha256": dataset_manifest_sha256,
+                "evidence_mode": evidence_mode,
+                "source_artifact_sha256": source_artifact_sha256,
                 **dict(metadata),
             },
-            "tags": ["kaggle", "tpu-v5e8", objective, "public-substitute"],
+            "tags": (
+                ["kaggle", "tpu-v5e8", objective, "public-substitute"]
+                if evidence_mode == "native"
+                else ["historical-backfill", objective, "public-substitute"]
+            ),
         }
         entity = os.environ.get("WANDB_ENTITY", "")
         if entity:

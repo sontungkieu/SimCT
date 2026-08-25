@@ -27,6 +27,7 @@ def _validate_observability(
     *,
     context: str,
     expected_logged_steps: int,
+    allow_backfill: bool,
 ) -> dict[str, Any]:
     observability = summary.get("observability")
     if not isinstance(observability, Mapping):
@@ -61,6 +62,21 @@ def _validate_observability(
             raise WandbEvidenceError(f"{context}.{field} is missing")
     if observability.get("error_type") or observability.get("error"):
         raise WandbEvidenceError(f"{context} W&B summary contains an error")
+    evidence_mode = observability.get("evidence_mode", "native")
+    if evidence_mode not in {"native", "backfill"}:
+        raise WandbEvidenceError(
+            f"{context}.evidence_mode must be native or backfill"
+        )
+    if evidence_mode == "backfill":
+        if not allow_backfill:
+            raise WandbEvidenceError(
+                f"{context} contains backfilled rather than native W&B evidence"
+            )
+        source_sha256 = observability.get("source_artifact_sha256")
+        if not isinstance(source_sha256, str) or len(source_sha256) != 64:
+            raise WandbEvidenceError(
+                f"{context}.source_artifact_sha256 is missing"
+            )
     return dict(observability)
 
 
@@ -69,6 +85,7 @@ def validate_native_wandb_evidence(
     training_summary: Mapping[str, Any],
     generation_summary: Mapping[str, Any],
     scoring_summary: Mapping[str, Any],
+    allow_backfill: bool = False,
 ) -> dict[str, Any]:
     """Validate online training, generation, and scoring runs for one variant."""
 
@@ -100,16 +117,19 @@ def validate_native_wandb_evidence(
             training_summary,
             context="training",
             expected_logged_steps=completed_steps,
+            allow_backfill=allow_backfill,
         ),
         "generation": _validate_observability(
             generation_summary,
             context="generation",
             expected_logged_steps=generation_steps,
+            allow_backfill=allow_backfill,
         ),
         "scoring": _validate_observability(
             scoring_summary,
             context="scoring",
             expected_logged_steps=len(scoring_benchmarks),
+            allow_backfill=allow_backfill,
         ),
     }
     projects = {item["project"] for item in phases.values()}
@@ -121,9 +141,17 @@ def validate_native_wandb_evidence(
         raise WandbEvidenceError(f"W&B group drifted across phases: {groups}")
     if len(urls) != len(phases):
         raise WandbEvidenceError("training/generation/scoring reused a W&B run URL")
+    evidence_modes = {
+        item.get("evidence_mode", "native") for item in phases.values()
+    }
+    if len(evidence_modes) != 1:
+        raise WandbEvidenceError(
+            f"W&B evidence mode drifted across phases: {evidence_modes}"
+        )
     return {
         "status": "passed",
         "project": next(iter(projects)),
         "group": next(iter(groups)),
+        "evidence_mode": next(iter(evidence_modes)),
         "phases": phases,
     }

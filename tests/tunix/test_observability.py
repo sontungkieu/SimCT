@@ -54,6 +54,8 @@ def test_wandb_logs_numeric_metrics_and_finishes(monkeypatch):
     assert logger.summary()["run_url"].endswith("/abc")
     init = next(item for item in calls if item[0] == "init")[1]
     assert "WANDB_API_KEY" not in init["config"]
+    assert init["config"]["evidence_mode"] == "native"
+    assert init["config"]["source_artifact_sha256"] == ""
     logged = next(item for item in calls if item[0] == "log")
     assert logged[1] == {
         "train/loss": 1.5,
@@ -62,19 +64,62 @@ def test_wandb_logs_numeric_metrics_and_finishes(monkeypatch):
     }
 
 
+def test_backfill_metadata_is_explicit(monkeypatch):
+    calls = []
+
+    class FakeRun:
+        def finish(self, *, exit_code):
+            calls.append(("finish", exit_code))
+
+        def get_url(self):
+            return "https://wandb.ai/fixture/project/runs/backfill"
+
+    monkeypatch.setitem(
+        sys.modules,
+        "wandb",
+        SimpleNamespace(
+            Settings=lambda **kwargs: kwargs,
+            init=lambda **kwargs: calls.append(("init", kwargs)) or FakeRun(),
+        ),
+    )
+    monkeypatch.setenv("WANDB_API_KEY", "fixture-secret")
+    logger = start_wandb_run(
+        run_id="fixture-run",
+        objective="sft_training_backfill",
+        config_sha256="a" * 64,
+        dataset_manifest_sha256="b" * 64,
+        metadata={"historical_backfill": True},
+        project="project",
+        run_name="backfill",
+        group="multiseed",
+        evidence_mode="backfill",
+        source_artifact_sha256="c" * 64,
+    )
+    logger.finish(training_status="complete", exit_code=0)
+
+    summary = logger.summary()
+    assert summary["evidence_mode"] == "backfill"
+    assert summary["source_artifact_sha256"] == "c" * 64
+    init = next(item for item in calls if item[0] == "init")[1]
+    assert init["config"]["evidence_mode"] == "backfill"
+    assert init["config"]["source_artifact_sha256"] == "c" * 64
+    assert init["tags"][0] == "historical-backfill"
+    assert "tpu-v5e8" not in init["tags"]
+
+
 def test_wandb_init_failure_is_fail_open_and_redacted(monkeypatch):
-    secret = "fixture-secret"
+    redaction_marker = "fixture-secret"
 
     def fail(**kwargs):
         del kwargs
-        raise RuntimeError(f"network rejected {secret}")
+        raise RuntimeError(f"network rejected {redaction_marker}")
 
     monkeypatch.setitem(
         sys.modules,
         "wandb",
         SimpleNamespace(Settings=lambda **kwargs: kwargs, init=fail),
     )
-    monkeypatch.setenv("WANDB_API_KEY", secret)
+    monkeypatch.setenv("WANDB_API_KEY", redaction_marker)
     logger = _start()
     logger.log_metrics({"loss": 1.0}, step=1)
     logger.finish(training_status="blocked", exit_code=69)
@@ -82,5 +127,5 @@ def test_wandb_init_failure_is_fail_open_and_redacted(monkeypatch):
     summary = logger.summary()
     assert summary["status"] == "degraded"
     assert summary["reason"] == "init_failed"
-    assert secret not in summary["error"]
+    assert redaction_marker not in summary["error"]
     assert "<redacted>" in summary["error"]

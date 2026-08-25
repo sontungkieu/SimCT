@@ -70,3 +70,23 @@ def test_native_wandb_evidence_fails_closed(phase, field, value, match):
             generation_summary=summaries[1],
             scoring_summary=summaries[2],
         )
+
+
+def test_backfilled_wandb_evidence_requires_explicit_opt_in():
+    training, generation, scoring = _summaries()
+    for summary in (training, generation, scoring):
+        summary["observability"]["evidence_mode"] = "backfill"
+        summary["observability"]["source_artifact_sha256"] = "a" * 64
+    with pytest.raises(WandbEvidenceError, match="backfilled rather than native"):
+        validate_native_wandb_evidence(
+            training_summary=training,
+            generation_summary=generation,
+            scoring_summary=scoring,
+        )
+    report = validate_native_wandb_evidence(
+        training_summary=training,
+        generation_summary=generation,
+        scoring_summary=scoring,
+        allow_backfill=True,
+    )
+    assert report["evidence_mode"] == "backfill"
