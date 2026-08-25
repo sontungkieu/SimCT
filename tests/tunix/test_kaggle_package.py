@@ -135,6 +135,11 @@ def test_valid_spec_pins_tpu_and_provenance(package_fixture):
     assert summary["expected_device_count"] == 8
     assert summary["upstream_simct_commit"] == package.SIMCT_COMMIT
     assert summary["tunix_commit"] == package.TUNIX_COMMIT
+    assert summary["uv_project_sha256"] == loaded.uv_project_sha256
+    assert summary["provider_constraints_sha256"] == (
+        loaded.provider_constraints_sha256
+    )
+    assert summary["uv_lock_sha256"] == loaded.uv_lock_sha256
     assert summary["remote_submit_performed"] is False
 
 
@@ -215,6 +220,12 @@ def test_rendered_notebook_is_bounded_and_records_evidence(package_fixture):
     assert len(notebook["cells"]) == 4
     assert package.SIMCT_COMMIT in source
     assert package.TUNIX_COMMIT in source
+    assert loaded.uv_project_sha256 in source
+    assert loaded.provider_constraints_sha256 in source
+    assert loaded.uv_lock_sha256 in source
+    assert "bootstrap_locked_kaggle_environment" in source
+    assert "str(RUNTIME_PYTHON)" in source
+    assert "env=RUNTIME_SUBPROCESS_ENV" in source
     assert "kaggle_v5e8_canary.py" in source
     assert '"scientific_evidence": False' in source
     assert '"simct_update_executed": True' in source
@@ -268,6 +279,9 @@ def test_stage_materializes_metadata_manifest_and_future_command(
     assert manifest["remote_submit_performed"] is False
     assert manifest["scientific_evidence"] is False
     assert manifest["accelerator"]["submit_shape"] == "TpuV5E8"
+    assert manifest["provenance"]["uv_project_sha256"]
+    assert manifest["provenance"]["provider_constraints_sha256"]
+    assert manifest["provenance"]["uv_lock_sha256"]
     assert "submit-kernel" in command
     assert "--require-repo-dataset-push" in command
     assert "--reservation-token" in command

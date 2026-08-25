@@ -43,7 +43,10 @@ def test_generation_notebook_is_pinned_and_syntax_valid(variant):
     assert "resolve_model_source_mount(STUDENT_SOURCE)" in source
     assert "bind_runtime_model_mount" in source
     assert '"--training-config", str(RUNTIME_TRAINING_CONFIG)' in source
-    assert "--no-deps" in source
+    assert "bootstrap_locked_kaggle_environment" in source
+    assert "runtime_subprocess_environment" in source
+    assert source.count("str(RUNTIME_PYTHON)") == 2
+    assert source.count("env=RUNTIME_SUBPROCESS_ENV") == 2
     assert "kaggle_v5e8_generate.py" in source
     assert "score_generated_predictions.py" in source
     assert "paper-released scorer" in source

@@ -1,0 +1,8 @@
+{
+  "accelerator": "TpuV5E8",
+  "contract_version": 1,
+  "device_count": 8,
+  "jax": "0.10.2",
+  "jaxlib": "0.10.2",
+  "python": "3.12.13"
+}

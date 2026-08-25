@@ -169,9 +169,10 @@ def test_rendered_canary_is_pinned_bounded_and_preserves_jax():
     assert "resolve_model_source_mount(TEACHER_SOURCE)" in source
     assert "bind_runtime_model_mount" in source
     assert '"--config", str(RUNTIME_CONFIG)' in source
-    assert "--no-deps" in source
-    assert "provider-managed JAX stack changed" in source
-    assert 'importlib.metadata.version("huggingface-hub")' in source
+    assert "bootstrap_locked_kaggle_environment" in source
+    assert "runtime_subprocess_environment" in source
+    assert "str(RUNTIME_PYTHON)" in source
+    assert "RUNTIME_SUBPROCESS_ENV" in source
     assert "scientific_evidence" in source
     assert "shutil.rmtree(cache)" in source
 
@@ -204,6 +205,14 @@ def test_rendered_repo_copy_supports_direct_owner_slug_mount(
     config.parent.mkdir(parents=True)
     config.write_text("{}", encoding="utf-8")
     (mounted / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    locked = mounted / "environments" / "kaggle-tpu"
+    locked.mkdir(parents=True)
+    (locked / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
+    (locked / "provider-constraints.json").write_text("{}\n", encoding="utf-8")
+    (locked / "uv.lock").write_text("version = 1\n", encoding="utf-8")
+    (mounted / "vdt_tunix" / "kaggle_uv.py").write_text(
+        "# locked environment bootstrap\n", encoding="utf-8"
+    )
     (mounted / "vdt_tunix" / "marker.py").write_text("VALUE = 1\n", encoding="utf-8")
     working = tmp_path / "working" / "repo"
     copy_source = copy_source.replace(
@@ -275,9 +284,10 @@ def test_rendered_training_notebook_is_pinned_and_syntax_valid(phase):
     assert "resolve_model_source_mount(STUDENT_SOURCE)" in source
     assert "resolve_model_source_mount(TEACHER_SOURCE)" in source
     assert "bind_runtime_model_mount" in source
-    assert "--no-deps" in source
-    assert 'importlib.metadata.version("huggingface-hub")' in source
-    assert "provider-managed JAX stack changed" in source
+    assert "bootstrap_locked_kaggle_environment" in source
+    assert "runtime_subprocess_environment" in source
+    assert "str(RUNTIME_PYTHON)" in source
+    assert "RUNTIME_SUBPROCESS_ENV" in source
     assert "scientific_evidence" in source
     assert "shared downstream one-seed evaluation contract" in source
     assert '__KJO_SECRET_WANDB_API_KEY__' in source

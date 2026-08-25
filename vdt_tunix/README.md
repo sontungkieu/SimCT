@@ -94,11 +94,29 @@ snapshot, owner/slug, `TpuV5E8` metadata, and provenance before generating a
 staged notebook below `/mnt/d/dev/codex/vdt-dynamic-span`. It has no submit
 subcommand and the checked-in example spec is intentionally fail-closed.
 
-`requirements-tpu.txt` mirrors the pinned Tunix/MaxText infrastructure versions
-from the read-only reference. It deliberately does not pin or install JAX.
-Because Kaggle installs this file with `--no-deps`, compatibility-sensitive
-leaf dependencies such as `huggingface-hub` are pinned explicitly and reported
-by the canary provenance cell.
+The executable Kaggle userspace dependency contract lives in
+`environments/kaggle-tpu/uv.lock`; `requirements-tpu.txt` is only a readable
+list of direct inputs. The notebook installs pinned `uv==0.10.2`, verifies the
+lock, exports the complete transitive graph, and installs that export with
+`--no-deps` into a fresh `--system-site-packages` virtual environment. JAX,
+JAXLIB, and libtpu are excluded from the export because Kaggle owns that
+accelerator-coupled stack. Their exact versions, plus the Kaggle Python patch
+version and TPU topology, are fail-closed in
+`environments/kaggle-tpu/provider-constraints.json`.
+
+All training, generation, and scoring subprocesses use the virtual
+environment's Python. The bootstrap runs `uv pip check`, verifies that the
+provider packages were not copied into the virtual environment, and emits
+`VDT_LOCKED_ENVIRONMENT_PROVENANCE` plus
+`locked_environment_summary.json`. Refresh the lock deliberately with:
+
+```bash
+uv lock --project environments/kaggle-tpu --python 3.12
+uv lock --check --project environments/kaggle-tpu
+```
+
+Do not update the provider constraints from dependency resolution; update them
+only after observing and approving a new Kaggle TPU image.
 The project package discovery includes `vdt_tunix`; the CPU canaries can also be
 executed directly from the repository checkout.
 
@@ -224,8 +242,9 @@ always records `scientific_evidence=false`.
 
 Training observability is optional and fail-open. A staged private notebook
 may replace `__KJO_SECRET_WANDB_API_KEY__` immediately before submission; the
-source notebook remains secret-free. `requirements-tpu.txt` pins the W&B
-client explicitly so observability does not depend on the ambient Kaggle image.
+source notebook remains secret-free. The uv lock pins W&B 0.19.11 and its
+transitive dependencies, so observability does not depend on the ambient Kaggle
+image.
 When present, W&B receives finite numeric training metrics, elapsed time,
 gradient/parameter norms, and span/token counts. W&B import, initialization,
 network, logging, or finish failures are recorded in `VDT_WANDB_STATUS` and

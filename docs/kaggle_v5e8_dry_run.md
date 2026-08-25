@@ -15,14 +15,17 @@ Kaggle operation unless all of these are present and consistent:
   checked later by the KJO capacity reservation rather than hard-coded here;
 - a KJO `repo_dataset_manifest.json` snapshot whose Git commit is
   `cf0f33a0e6c967d4b74ea32b2dba12be01b73b9e` and whose payload contains the
-  canary, `vdt_tunix`, and `requirements-tpu.txt`;
+  canary, `vdt_tunix`, `requirements-tpu.txt`, and the complete
+  `environments/kaggle-tpu` uv contract;
 - one local student checkpoint and one local teacher checkpoint below
   `/mnt/d/dev/codex/vdt-dynamic-span`, each with a caller-supplied manifest and
   exact manifest SHA-256;
 - 40-hex immutable model and tokenizer revisions plus both exact tokenizer
   snapshots in a local HF cache below the same D-drive boundary;
-- `requirements-tpu.txt` pinning Tunix commit
-  `50f5752a17edec56e2aa30aabfc03859949adf6f`.
+- `environments/kaggle-tpu/uv.lock` pinning the complete Linux/Python 3.12
+  userspace graph, including Tunix commit
+  `50f5752a17edec56e2aa30aabfc03859949adf6f`, plus an exact
+  `provider-constraints.json` for the Kaggle-owned Python/JAX/JAXLIB stack.
 
 The spec contains paths and public provenance only. Do not put Kaggle tokens,
 API keys, `.env` paths, or credential filenames in it.
@@ -89,8 +92,9 @@ A future remote canary is operationally successful only when all gates pass:
    devices, and `runtime_matches_requested=true`.
 4. `KJO_REPO_DATASET_COPY_SUMMARY` matches the staged source dataset and tree
    hash.
-5. `VDT_DEPENDENCY_PROVENANCE` reports the exact Tunix commit and MaxText
-   `0.2.3`.
+5. `VDT_LOCKED_ENVIRONMENT_PROVENANCE` reports a checked `uv.lock`, successful
+   `uv pip check`, exact Tunix commit, W&B 0.19.11, and unchanged provider JAX
+   and JAXLIB outside the uv virtual environment.
 6. `VDT_CANARY_SUMMARY` reports `status=passed`, real student and teacher model
    integration, and observed cross-tokenization.
 7. The same summary must still report `scientific_evidence=false` and

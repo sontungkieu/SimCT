@@ -36,8 +36,12 @@ _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _PLACEHOLDER = re.compile(r"replace|placeholder|changeme|todo", re.I)
 _REQUIRED_SOURCE_FILES = (
     "requirements-tpu.txt",
+    "environments/kaggle-tpu/pyproject.toml",
+    "environments/kaggle-tpu/provider-constraints.json",
+    "environments/kaggle-tpu/uv.lock",
     "scripts/tpu/kaggle_v5e8_canary.py",
     "vdt_tunix/config.py",
+    "vdt_tunix/kaggle_uv.py",
     "vdt_tunix/real_backend.py",
     "vdt_tunix/runtime.py",
 )
@@ -149,6 +153,9 @@ class PackageSpec:
     source_dataset: str
     source_tree_sha256: str
     requirements_sha256: str
+    uv_project_sha256: str
+    provider_constraints_sha256: str
+    uv_lock_sha256: str
     tokenizer_root: Path
     tokenizer_dataset: str
     hf_home_subpath: Path
@@ -237,7 +244,9 @@ def _validate_tokenizer_cache(config: RunConfig, hf_home: Path) -> None:
             )
 
 
-def _source_snapshot(path: Path, owner: str) -> tuple[str, str, str]:
+def _source_snapshot(
+    path: Path, owner: str
+) -> tuple[str, str, str, str, str, str]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except OSError as exc:
@@ -262,7 +271,17 @@ def _source_snapshot(path: Path, owner: str) -> tuple[str, str, str]:
     requirements = repo / "requirements-tpu.txt"
     if TUNIX_COMMIT not in requirements.read_text(encoding="utf-8"):
         raise KagglePackageError("source requirements do not pin the Tunix commit")
-    return source, tree, _sha256(requirements)
+    uv_project = repo / "environments/kaggle-tpu/pyproject.toml"
+    provider_constraints = repo / "environments/kaggle-tpu/provider-constraints.json"
+    uv_lock = repo / "environments/kaggle-tpu/uv.lock"
+    return (
+        source,
+        tree,
+        _sha256(requirements),
+        _sha256(uv_project),
+        _sha256(provider_constraints),
+        _sha256(uv_lock),
+    )
 
 
 def load_package_spec(
@@ -364,7 +383,14 @@ def load_package_spec(
     source_manifest = _path(
         raw["source_snapshot_manifest"], "source_snapshot_manifest", boundary
     )
-    source_dataset, source_tree, requirements_sha = _source_snapshot(
+    (
+        source_dataset,
+        source_tree,
+        requirements_sha,
+        uv_project_sha,
+        provider_constraints_sha,
+        uv_lock_sha,
+    ) = _source_snapshot(
         source_manifest, owner
     )
     return PackageSpec(
@@ -378,6 +404,9 @@ def load_package_spec(
         source_dataset=source_dataset,
         source_tree_sha256=source_tree,
         requirements_sha256=requirements_sha,
+        uv_project_sha256=uv_project_sha,
+        provider_constraints_sha256=provider_constraints_sha,
+        uv_lock_sha256=uv_lock_sha,
         tokenizer_root=tokenizer_root,
         tokenizer_dataset=_dataset_source(
             tokenizer["dataset_source"], "tokenizer_cache.dataset_source", owner
@@ -406,6 +435,9 @@ def render_source_notebook(spec: PackageSpec) -> dict[str, Any]:
             "tunix_commit": TUNIX_COMMIT,
             "source_tree_sha256": spec.source_tree_sha256,
             "requirements_tpu_sha256": spec.requirements_sha256,
+            "uv_project_sha256": spec.uv_project_sha256,
+            "provider_constraints_sha256": spec.provider_constraints_sha256,
+            "uv_lock_sha256": spec.uv_lock_sha256,
             "submit_accelerator": SUBMIT_ACCELERATOR,
         },
         "tokenizer": {
@@ -455,6 +487,15 @@ def render_source_notebook(spec: PackageSpec) -> dict[str, Any]:
         requirements = repo / "requirements-tpu.txt"
         if sha256(requirements) != RUNTIME["provenance"]["requirements_tpu_sha256"]:
             raise RuntimeError("requirements-tpu.txt hash mismatch")
+        uv_project = repo / "environments/kaggle-tpu/pyproject.toml"
+        provider_constraints = repo / "environments/kaggle-tpu/provider-constraints.json"
+        uv_lock = repo / "environments/kaggle-tpu/uv.lock"
+        if sha256(uv_project) != RUNTIME["provenance"]["uv_project_sha256"]:
+            raise RuntimeError("Kaggle TPU uv project hash mismatch")
+        if sha256(provider_constraints) != RUNTIME["provenance"]["provider_constraints_sha256"]:
+            raise RuntimeError("Kaggle TPU provider constraints hash mismatch")
+        if sha256(uv_lock) != RUNTIME["provenance"]["uv_lock_sha256"]:
+            raise RuntimeError("Kaggle TPU uv.lock hash mismatch")
         hf_home = mount(RUNTIME["tokenizer"]["dataset_source"]) / RUNTIME["tokenizer"]["hf_home_subpath"]
         if not hf_home.is_dir():
             raise RuntimeError("tokenizer cache is not mounted")
@@ -471,23 +512,26 @@ def render_source_notebook(spec: PackageSpec) -> dict[str, Any]:
         """
     ).strip()
     dependencies = textwrap.dedent(
-        f"""
-        import importlib.metadata, json, subprocess, sys
-        subprocess.run([sys.executable, "-m", "pip", "install", "--no-input", "--no-deps", "-r", str(requirements)], check=True, cwd=repo)
-        direct = json.loads(importlib.metadata.distribution("google-tunix").read_text("direct_url.json") or "{{}}")
-        observed = direct.get("vcs_info", {{}}).get("commit_id")
-        if observed != "{TUNIX_COMMIT}":
-            raise RuntimeError("installed Tunix commit mismatch")
-        if importlib.metadata.version("maxtext") != "0.2.3":
-            raise RuntimeError("installed MaxText version mismatch")
-        print("VDT_DEPENDENCY_PROVENANCE " + json.dumps({{"tunix_commit": observed, "maxtext_version": "0.2.3"}}, sort_keys=True))
+        """
+        from vdt_tunix.kaggle_uv import (
+            bootstrap_locked_kaggle_environment,
+            runtime_subprocess_environment,
+        )
+
+        LOCKED_ENVIRONMENT = bootstrap_locked_kaggle_environment(
+            repo, work / "environment"
+        )
+        RUNTIME_PYTHON = Path(LOCKED_ENVIRONMENT["runtime_python"])
+        RUNTIME_SUBPROCESS_ENV = runtime_subprocess_environment(
+            repo, LOCKED_ENVIRONMENT
+        )
         """
     ).strip()
     run = textwrap.dedent(
         """
         import json, subprocess, sys
         output = work / "canary.json"
-        result = subprocess.run([sys.executable, str(repo / "scripts/tpu/kaggle_v5e8_canary.py"), "--config", str(config_path), "--output", str(output)], cwd=repo, capture_output=True, text=True)
+        result = subprocess.run([str(RUNTIME_PYTHON), str(repo / "scripts/tpu/kaggle_v5e8_canary.py"), "--config", str(config_path), "--output", str(output)], cwd=repo, capture_output=True, text=True, env=RUNTIME_SUBPROCESS_ENV)
         print(result.stdout, end="")
         print(result.stderr, end="", file=sys.stderr)
         if result.returncode:
@@ -713,6 +757,9 @@ def stage_package(
                 "upstream_simct_commit": SIMCT_COMMIT,
                 "tunix_commit": TUNIX_COMMIT,
                 "source_tree_sha256": spec.source_tree_sha256,
+                "uv_project_sha256": spec.uv_project_sha256,
+                "provider_constraints_sha256": spec.provider_constraints_sha256,
+                "uv_lock_sha256": spec.uv_lock_sha256,
                 "canary_config_sha256": spec.config.digest(),
                 "student_checkpoint_manifest_sha256": (
                     spec.student_checkpoint.manifest_sha256
@@ -754,5 +801,8 @@ def safe_summary(spec: PackageSpec) -> dict[str, Any]:
         "dataset_sources": list(spec.dataset_sources),
         "upstream_simct_commit": SIMCT_COMMIT,
         "tunix_commit": TUNIX_COMMIT,
+        "uv_project_sha256": spec.uv_project_sha256,
+        "provider_constraints_sha256": spec.provider_constraints_sha256,
+        "uv_lock_sha256": spec.uv_lock_sha256,
         "remote_submit_performed": False,
     }

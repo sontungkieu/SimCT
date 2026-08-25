@@ -1,6 +1,8 @@
-# Preserve Kaggle's provider-managed JAX/libtpu stack.  The notebook installs
-# this file with --no-deps and verifies that the jax and jaxlib versions did
-# not change.  Native Gemma/Qwen loading does not require the MaxText package.
+# Human-readable direct inputs for the Kaggle TPU environment.  The executable
+# source of truth is environments/kaggle-tpu/uv.lock.  Kaggle notebooks export
+# that lock without jax, jaxlib, or libtpu into a uv --system-site-packages
+# venv, then attest that the provider-managed accelerator stack did not change.
+# Native Gemma/Qwen loading does not require the MaxText package.
 google-tunix @ git+https://github.com/sontungkieu/tunix.git@50f5752a17edec56e2aa30aabfc03859949adf6f
 flax>=0.12.5,<0.13
 google-metrax>=0.2.3,<0.3

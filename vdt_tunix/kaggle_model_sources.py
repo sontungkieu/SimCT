@@ -16,9 +16,6 @@ _MODEL_SOURCE = re.compile(
     r"[A-Za-z0-9][A-Za-z0-9._-]*/"
     r"[1-9][0-9]*$"
 )
-TUNIX_COMMIT = "50f5752a17edec56e2aa30aabfc03859949adf6f"
-
-
 class KaggleModelSourceError(ValueError):
     """Raised when a generated Kaggle package would have ambiguous inputs."""
 
@@ -318,7 +315,11 @@ if not source_repo.is_dir():
     source_repo = dataset_root
 required_repo_paths = (
     source_repo / "pyproject.toml",
+    source_repo / "environments/kaggle-tpu/pyproject.toml",
+    source_repo / "environments/kaggle-tpu/provider-constraints.json",
+    source_repo / "environments/kaggle-tpu/uv.lock",
     source_repo / "vdt_tunix",
+    source_repo / "vdt_tunix/kaggle_uv.py",
     source_repo / {config_relative.as_posix()!r},
 )
 if any(not path.exists() for path in required_repo_paths):
@@ -339,7 +340,6 @@ summary = {{
 print("KJO_REPO_DATASET_COPY_SUMMARY " + json.dumps(summary, sort_keys=True))'''
 
     setup = f'''from pathlib import Path
-import importlib.metadata
 import json
 import os
 import platform
@@ -379,36 +379,16 @@ print("VDT_MODEL_SOURCE_PROVENANCE " + json.dumps({{
     "python": platform.python_version(),
 }}, sort_keys=True))'''
 
-    dependencies = f'''requirements = REPO / "requirements-tpu.txt"
-before = {{name: importlib.metadata.version(name) for name in ("jax", "jaxlib")}}
-subprocess.run([
-    sys.executable, "-m", "pip", "install", "--no-input", "--no-deps",
-    "-r", str(requirements),
-], check=True, cwd=REPO)
-after = {{name: importlib.metadata.version(name) for name in ("jax", "jaxlib")}}
-if before != after:
-    raise RuntimeError(f"provider-managed JAX stack changed: {{before}} -> {{after}}")
-direct = json.loads(
-    importlib.metadata.distribution("google-tunix").read_text("direct_url.json") or "{{}}"
+    dependencies = '''from vdt_tunix.kaggle_uv import (
+    bootstrap_locked_kaggle_environment,
+    runtime_subprocess_environment,
 )
-observed_tunix_commit = direct.get("vcs_info", {{}}).get("commit_id")
-if observed_tunix_commit != {TUNIX_COMMIT!r}:
-    raise RuntimeError(f"installed Tunix commit drifted: {{observed_tunix_commit}}")
-import flax
-import orbax.checkpoint
-import optax
-import sentencepiece
-import transformers
-import tunix.models.automodel
-import tunix.generate.sampler
-print("VDT_DEPENDENCY_PROVENANCE " + json.dumps({{
-    "jax_before": before,
-    "jax_after": after,
-    "flax": flax.__version__,
-    "huggingface_hub": importlib.metadata.version("huggingface-hub"),
-    "transformers": transformers.__version__,
-    "tunix_commit": observed_tunix_commit,
-}}, sort_keys=True))'''
+
+LOCKED_ENVIRONMENT = bootstrap_locked_kaggle_environment(
+    REPO, Path("/kaggle/working/vdt_simct_canary/environment")
+)
+RUNTIME_PYTHON = Path(LOCKED_ENVIRONMENT["runtime_python"])
+RUNTIME_SUBPROCESS_ENV = runtime_subprocess_environment(REPO, LOCKED_ENVIRONMENT)'''
 
     run = '''import shutil
 
@@ -416,7 +396,7 @@ work = Path("/kaggle/working/vdt_simct_canary")
 output = work / "canary.json"
 cache = work / "base-model-cache"
 command = [
-    sys.executable,
+    str(RUNTIME_PYTHON),
     str(REPO / "scripts/tpu/kaggle_v5e8_canary.py"),
     "--config", str(RUNTIME_CONFIG),
     "--output", str(output),
@@ -428,7 +408,7 @@ try:
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        env={**os.environ, "PYTHONPATH": str(REPO)},
+        env=RUNTIME_SUBPROCESS_ENV,
     )
     print(result.stdout, end="")
     print(result.stderr, end="", file=sys.stderr)
@@ -612,7 +592,11 @@ if not source_repo.is_dir():
     source_repo = dataset_root
 required_repo_paths = (
     source_repo / "pyproject.toml",
+    source_repo / "environments/kaggle-tpu/pyproject.toml",
+    source_repo / "environments/kaggle-tpu/provider-constraints.json",
+    source_repo / "environments/kaggle-tpu/uv.lock",
     source_repo / "vdt_tunix",
+    source_repo / "vdt_tunix/kaggle_uv.py",
     source_repo / {config_relative.as_posix()!r},
 )
 if any(not path.exists() for path in required_repo_paths):
@@ -783,7 +767,6 @@ print("VDT_TRAINING_INPUT_PROVENANCE " + json.dumps({{
 }}, sort_keys=True))'''
 
     setup = f'''import hashlib
-import importlib.metadata
 import json
 import os
 import platform
@@ -838,36 +821,16 @@ print("VDT_MODEL_SOURCE_PROVENANCE " + json.dumps({{
     "runtime_config_sha256": hashlib.sha256(RUNTIME_CONFIG.read_bytes()).hexdigest(),
 }}, sort_keys=True))'''
 
-    dependencies = f'''requirements = REPO / "requirements-tpu.txt"
-before = {{name: importlib.metadata.version(name) for name in ("jax", "jaxlib")}}
-subprocess.run([
-    sys.executable, "-m", "pip", "install", "--no-input", "--no-deps",
-    "-r", str(requirements),
-], check=True, cwd=REPO)
-after = {{name: importlib.metadata.version(name) for name in ("jax", "jaxlib")}}
-if before != after:
-    raise RuntimeError(f"provider-managed JAX stack changed: {{before}} -> {{after}}")
-direct = json.loads(
-    importlib.metadata.distribution("google-tunix").read_text("direct_url.json") or "{{}}"
+    dependencies = '''from vdt_tunix.kaggle_uv import (
+    bootstrap_locked_kaggle_environment,
+    runtime_subprocess_environment,
 )
-observed_tunix_commit = direct.get("vcs_info", {{}}).get("commit_id")
-if observed_tunix_commit != {TUNIX_COMMIT!r}:
-    raise RuntimeError(f"installed Tunix commit drifted: {{observed_tunix_commit}}")
-import flax
-import orbax.checkpoint
-import optax
-import sentencepiece
-import transformers
-import tunix.models.automodel
-import tunix.generate.sampler
-print("VDT_DEPENDENCY_PROVENANCE " + json.dumps({{
-    "jax_before": before,
-    "jax_after": after,
-    "flax": flax.__version__,
-    "huggingface_hub": importlib.metadata.version("huggingface-hub"),
-    "transformers": transformers.__version__,
-    "tunix_commit": observed_tunix_commit,
-}}, sort_keys=True))'''
+
+LOCKED_ENVIRONMENT = bootstrap_locked_kaggle_environment(
+    REPO, WORK / "environment"
+)
+RUNTIME_PYTHON = Path(LOCKED_ENVIRONMENT["runtime_python"])
+RUNTIME_SUBPROCESS_ENV = runtime_subprocess_environment(REPO, LOCKED_ENVIRONMENT)'''
 
     entrypoint = (
         "scripts/tpu/kaggle_v5e8_sft.py"
@@ -893,7 +856,7 @@ SUMMARY = WORK / "train_summary.json"
 METRICS = WORK / "train_metrics.jsonl"
 ARTIFACT_MANIFEST = WORK / "artifact_manifest.json"
 command = [
-    sys.executable,
+    str(RUNTIME_PYTHON),
     str(REPO / {entrypoint!r}),
     "--config", str(RUNTIME_CONFIG),
     "--dataset-manifest", str(TRAINING_MANIFEST),
@@ -908,7 +871,7 @@ try:
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        env={{**os.environ, "PYTHONPATH": str(REPO)}},
+        env=RUNTIME_SUBPROCESS_ENV,
     )
     print(result.stdout, end="")
     print(result.stderr, end="", file=sys.stderr)
