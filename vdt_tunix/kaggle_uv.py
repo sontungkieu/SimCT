@@ -226,9 +226,96 @@ print(json.dumps({
     return payload
 
 
+def _check_hybrid_dependencies(
+    runtime_python: Path,
+    repo: Path,
+    package_names: Sequence[str],
+) -> dict[str, Any]:
+    """Check locked packages against the venv plus inherited provider stack.
+
+    ``uv pip check --python`` only inspects distributions installed directly in
+    the virtual environment.  That produces false missing-dependency failures
+    for JAX and JAXLIB, which deliberately remain in Kaggle's system site.
+    Execute the check with the runtime interpreter instead so distribution
+    lookup follows the same ``--system-site-packages`` path used by training.
+    Only the locked export's dependency closure is checked; unrelated packages
+    from Kaggle's broad provider image cannot make this project fail.
+    """
+
+    script = r'''
+import importlib.metadata
+import json
+import sys
+
+from packaging.markers import default_environment
+from packaging.requirements import Requirement
+
+names = json.loads(sys.argv[1])
+environment = default_environment()
+environment["extra"] = ""
+failures = []
+checked_requirements = 0
+for name in names:
+    try:
+        distribution = importlib.metadata.distribution(name)
+    except importlib.metadata.PackageNotFoundError:
+        failures.append(f"locked package {name!r} is not installed")
+        continue
+    for raw_requirement in distribution.requires or ():
+        requirement = Requirement(raw_requirement)
+        if requirement.marker and not requirement.marker.evaluate(environment):
+            continue
+        checked_requirements += 1
+        try:
+            dependency = importlib.metadata.distribution(requirement.name)
+        except importlib.metadata.PackageNotFoundError:
+            failures.append(
+                f"{distribution.metadata['Name']} requires {requirement}, "
+                "but it is not installed"
+            )
+            continue
+        if requirement.specifier and dependency.version not in requirement.specifier:
+            failures.append(
+                f"{distribution.metadata['Name']} requires {requirement}, "
+                f"but {dependency.version} is installed"
+            )
+if failures:
+    raise SystemExit("\n".join(sorted(set(failures))))
+print(json.dumps({
+    "checked_package_count": len(names),
+    "checked_requirement_count": checked_requirements,
+    "status": "passed",
+}, sort_keys=True))
+'''
+    environment = {
+        **os.environ,
+        "PYTHONPATH": str(repo),
+        "VIRTUAL_ENV": str(runtime_python.parent.parent),
+        "PATH": str(runtime_python.parent) + os.pathsep + os.environ.get("PATH", ""),
+    }
+    result = _run(
+        [runtime_python, "-c", script, json.dumps(list(package_names))],
+        cwd=repo,
+        env=environment,
+    )
+    try:
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+    except (IndexError, json.JSONDecodeError) as exc:
+        raise KaggleUvEnvironmentError(
+            "hybrid dependency check did not emit JSON"
+        ) from exc
+    if payload.get("status") != "passed":
+        raise KaggleUvEnvironmentError(
+            f"hybrid dependency check failed: {payload}"
+        )
+    return payload
+
+
 def bootstrap_locked_kaggle_environment(
     repo: str | Path,
     working_dir: str | Path,
+    *,
+    summary_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Create and attest the locked hybrid uv environment used by TPU jobs."""
 
@@ -318,7 +405,7 @@ def bootstrap_locked_kaggle_environment(
         ],
         cwd=repo,
     )
-    _run([uv, "pip", "check", "--python", runtime_python], cwd=repo)
+    dependency_check = _check_hybrid_dependencies(runtime_python, repo, packages)
 
     provider_after = _distribution_versions(PROVIDER_PACKAGES)
     if provider_before != provider_after:
@@ -365,9 +452,14 @@ def bootstrap_locked_kaggle_environment(
         "resolved_package_count": len(packages),
         "runtime_python": str(runtime_python),
         "runtime": runtime,
-        "pip_check": "passed",
+        "dependency_check": dependency_check,
     }
-    output = working_dir / "locked_environment_summary.json"
+    output = (
+        Path(summary_path).resolve()
+        if summary_path is not None
+        else working_dir / "locked_environment_summary.json"
+    )
+    output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print("VDT_LOCKED_ENVIRONMENT_PROVENANCE " + json.dumps(summary, sort_keys=True))
     return summary

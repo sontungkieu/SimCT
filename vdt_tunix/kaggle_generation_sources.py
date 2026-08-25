@@ -227,7 +227,11 @@ print("VDT_MODEL_SOURCE_PROVENANCE " + json.dumps({{
 )
 
 LOCKED_ENVIRONMENT = bootstrap_locked_kaggle_environment(
-    REPO, Path("/kaggle/working/vdt_generation_{variant}/environment")
+    REPO,
+    Path("/tmp/vdt_generation_{variant}_environment"),
+    summary_path=Path(
+        "/kaggle/working/vdt_generation_{variant}/locked_environment_summary.json"
+    ),
 )
 RUNTIME_PYTHON = Path(LOCKED_ENVIRONMENT["runtime_python"])
 RUNTIME_SUBPROCESS_ENV = runtime_subprocess_environment(REPO, LOCKED_ENVIRONMENT)'''

@@ -105,10 +105,13 @@ version and TPU topology, are fail-closed in
 `environments/kaggle-tpu/provider-constraints.json`.
 
 All training, generation, and scoring subprocesses use the virtual
-environment's Python. The bootstrap runs `uv pip check`, verifies that the
-provider packages were not copied into the virtual environment, and emits
-`VDT_LOCKED_ENVIRONMENT_PROVENANCE` plus
-`locked_environment_summary.json`. Refresh the lock deliberately with:
+environment's Python. The bootstrap checks the locked dependency closure from
+that interpreter so inherited provider packages such as JAX are visible,
+verifies that provider packages were not copied into the virtual environment,
+and emits `VDT_LOCKED_ENVIRONMENT_PROVENANCE` plus
+`locked_environment_summary.json`. The virtual environment itself lives under
+`/tmp` on Kaggle, while only its attestation is retained as a run artifact.
+Refresh the lock deliberately with:
 
 ```bash
 uv lock --project environments/kaggle-tpu --python 3.12

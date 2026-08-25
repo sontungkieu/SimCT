@@ -519,7 +519,9 @@ def render_source_notebook(spec: PackageSpec) -> dict[str, Any]:
         )
 
         LOCKED_ENVIRONMENT = bootstrap_locked_kaggle_environment(
-            repo, work / "environment"
+            repo,
+            Path("/tmp/vdt_simct_canary_environment"),
+            summary_path=work / "locked_environment_summary.json",
         )
         RUNTIME_PYTHON = Path(LOCKED_ENVIRONMENT["runtime_python"])
         RUNTIME_SUBPROCESS_ENV = runtime_subprocess_environment(

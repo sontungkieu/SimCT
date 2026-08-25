@@ -385,7 +385,11 @@ print("VDT_MODEL_SOURCE_PROVENANCE " + json.dumps({{
 )
 
 LOCKED_ENVIRONMENT = bootstrap_locked_kaggle_environment(
-    REPO, Path("/kaggle/working/vdt_simct_canary/environment")
+    REPO,
+    Path("/tmp/vdt_simct_canary_environment"),
+    summary_path=Path(
+        "/kaggle/working/vdt_simct_canary/locked_environment_summary.json"
+    ),
 )
 RUNTIME_PYTHON = Path(LOCKED_ENVIRONMENT["runtime_python"])
 RUNTIME_SUBPROCESS_ENV = runtime_subprocess_environment(REPO, LOCKED_ENVIRONMENT)'''
@@ -821,13 +825,15 @@ print("VDT_MODEL_SOURCE_PROVENANCE " + json.dumps({{
     "runtime_config_sha256": hashlib.sha256(RUNTIME_CONFIG.read_bytes()).hexdigest(),
 }}, sort_keys=True))'''
 
-    dependencies = '''from vdt_tunix.kaggle_uv import (
+    dependencies = f'''from vdt_tunix.kaggle_uv import (
     bootstrap_locked_kaggle_environment,
     runtime_subprocess_environment,
 )
 
 LOCKED_ENVIRONMENT = bootstrap_locked_kaggle_environment(
-    REPO, WORK / "environment"
+    REPO,
+    Path("/tmp/vdt_{phase}_training_environment"),
+    summary_path=WORK / "locked_environment_summary.json",
 )
 RUNTIME_PYTHON = Path(LOCKED_ENVIRONMENT["runtime_python"])
 RUNTIME_SUBPROCESS_ENV = runtime_subprocess_environment(REPO, LOCKED_ENVIRONMENT)'''

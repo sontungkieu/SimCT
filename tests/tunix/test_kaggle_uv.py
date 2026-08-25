@@ -12,6 +12,7 @@ from vdt_tunix.kaggle_uv import (
     TUNIX_COMMIT,
     UV_VERSION,
     KaggleUvEnvironmentError,
+    _check_hybrid_dependencies,
     load_provider_constraints,
     runtime_subprocess_environment,
     validate_exported_requirements,
@@ -95,6 +96,39 @@ def test_runtime_subprocess_environment_selects_locked_interpreter(tmp_path: Pat
     assert environment["PATH"].split(":", 1)[0] == str(runtime_python.parent)
     assert environment["PYTHONPATH"] == str(REPO_ROOT)
     assert UV_VERSION == "0.10.2"
+
+
+def test_hybrid_dependency_check_uses_runtime_interpreter_and_locked_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    runtime_python = tmp_path / ".venv" / "bin" / "python"
+    runtime_python.parent.mkdir(parents=True)
+    runtime_python.touch()
+    observed: dict[str, object] = {}
+
+    class Result:
+        stdout = json.dumps(
+            {
+                "checked_package_count": 2,
+                "checked_requirement_count": 3,
+                "status": "passed",
+            }
+        )
+
+    def fake_run(command, *, cwd=None, env=None):
+        observed.update(command=command, cwd=cwd, env=env)
+        return Result()
+
+    monkeypatch.setattr("vdt_tunix.kaggle_uv._run", fake_run)
+
+    result = _check_hybrid_dependencies(
+        runtime_python, REPO_ROOT, ("google-tunix", "qwix")
+    )
+
+    assert observed["command"][0] == runtime_python
+    assert json.loads(observed["command"][3]) == ["google-tunix", "qwix"]
+    assert observed["env"]["VIRTUAL_ENV"] == str(runtime_python.parent.parent)
+    assert result["status"] == "passed"
 
 
 def test_provider_contract_loader_requires_exact_versions(tmp_path: Path):
