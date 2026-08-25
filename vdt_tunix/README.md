@@ -306,6 +306,23 @@ python scripts/tpu/compose_cross_account_generation_notebook.py \
   --out /path/to/cross_account_generation_notebook.ipynb
 ```
 
+After KJO stages the composed notebook, attach the exact student model to the
+staged Kaggle metadata before secret injection or submission:
+
+```bash
+python scripts/tpu/attach_model_sources.py \
+  --metadata <run-dir>/stage/kernel-metadata.json \
+  --stage-manifest <run-dir>/stage/stage_package_manifest.json \
+  --model-source google/gemma-2/flax/gemma2-2b-it/1
+```
+
+This step is mandatory for batch generation. Kaggle does not allow a
+non-interactive session to attach a new model dynamically, even when the
+destination account has accepted the model license. The helper writes
+`model_sources` into both the metadata and stage manifest and refreshes the
+metadata fingerprint. Verify that exact field in the final pre-submit audit;
+access probes alone do not prove that the batch notebook has the model attached.
+
 The composer fails closed if the KJO cell, owner, config directory, output
 directory, or source slug drift. Its first inserted runtime cell also verifies
 that a Kaggle CLI is usable and, when the ambient image has neither the
