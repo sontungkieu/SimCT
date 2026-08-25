@@ -208,6 +208,20 @@ runtime-only config. Do not derive model locations from a presumed
 `/kaggle/input` directory layout: Kaggle may change or normalize that mount
 layout independently of the stable model handle.
 
+Before spending an accelerator session on an unverified Kaggle account, a
+CPU-only private probe can test whether the exact attached model licenses are
+available without loading model tensors:
+
+```bash
+python scripts/tpu/render_model_source_mount_probe.py \
+  --out /path/to/model_source_probe.ipynb \
+  --model-source google/gemma-2/flax/gemma2-2b-it/1 \
+  --model-source qwen-lm/qwen2.5/transformers/7b-instruct/1
+```
+
+Its `VDT_MODEL_SOURCE_MOUNT_PROBE` marker is operational evidence only and
+always records `scientific_evidence=false`.
+
 Training observability is optional and fail-open. A staged private notebook
 may replace `__KJO_SECRET_WANDB_API_KEY__` immediately before submission; the
 source notebook remains secret-free. `requirements-tpu.txt` pins the W&B

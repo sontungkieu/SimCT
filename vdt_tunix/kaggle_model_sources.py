@@ -183,6 +183,85 @@ def attach_model_sources(
     }
 
 
+def render_model_source_mount_probe_notebook(
+    *, model_sources: Sequence[str]
+) -> dict[str, Any]:
+    """Render a CPU-safe probe for exact Kaggle model-source accessibility.
+
+    The probe resolves attached sources through Kaggle's supported
+    ``kagglehub.model_download`` interface, records only bounded path metadata,
+    and deliberately does not load model tensors.  Its output is operational
+    evidence, never scientific evidence.
+    """
+
+    normalized = [validate_model_source(source) for source in model_sources]
+    if not normalized:
+        raise KaggleModelSourceError("at least one model source is required")
+    if len(set(normalized)) != len(normalized):
+        raise KaggleModelSourceError("model sources must be unique")
+
+    probe = f'''from pathlib import Path
+import json
+import kagglehub
+
+MODEL_SOURCES = {normalized!r}
+records = []
+for source in MODEL_SOURCES:
+    mount = Path(kagglehub.model_download(source))
+    if not mount.is_dir():
+        raise FileNotFoundError(f"model source did not resolve to a directory: {{source}} -> {{mount}}")
+    top_level = sorted(path.name for path in mount.iterdir())
+    records.append({{
+        "source": source,
+        "mount": str(mount),
+        "mount_exists": True,
+        "top_level_count": len(top_level),
+        "top_level_head": top_level[:100],
+    }})
+
+summary = {{
+    "status": "passed",
+    "model_sources": records,
+    "scientific_evidence": False,
+}}
+output = Path("/kaggle/working/model_source_mount_probe.json")
+output.write_text(json.dumps(summary, indent=2, sort_keys=True) + "\\n", encoding="utf-8")
+print("VDT_MODEL_SOURCE_MOUNT_PROBE " + json.dumps(summary, sort_keys=True))'''
+
+    return {
+        "cells": [
+            {
+                "cell_type": "markdown",
+                "id": "model-source-probe-intro",
+                "metadata": {},
+                "source": [
+                    "# Kaggle model-source mount probe\n",
+                    "\n",
+                    "Operational access check only; no model tensors are loaded.\n",
+                ],
+            },
+            {
+                "cell_type": "code",
+                "id": "model-source-probe",
+                "execution_count": None,
+                "metadata": {},
+                "outputs": [],
+                "source": [line + "\n" for line in probe.splitlines()],
+            },
+        ],
+        "metadata": {
+            "kernelspec": {
+                "display_name": "Python 3",
+                "language": "python",
+                "name": "python3",
+            },
+            "language_info": {"name": "python", "version": "3"},
+        },
+        "nbformat": 4,
+        "nbformat_minor": 5,
+    }
+
+
 def render_canary_notebook(
     *,
     config_relative_path: str,

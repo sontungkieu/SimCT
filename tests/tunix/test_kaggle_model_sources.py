@@ -16,6 +16,7 @@ from vdt_tunix.kaggle_model_sources import (
     model_source_mount,
     resolve_model_source_mount,
     render_canary_notebook,
+    render_model_source_mount_probe_notebook,
     render_training_notebook,
 )
 
@@ -116,6 +117,33 @@ def test_attach_model_sources_rejects_existing_drift(tmp_path: Path):
     )
     with pytest.raises(KaggleModelSourceError, match="drifted"):
         attach_model_sources(metadata, manifest, [STUDENT, TEACHER])
+
+
+def test_rendered_model_source_mount_probe_is_bounded_and_operational():
+    notebook = render_model_source_mount_probe_notebook(
+        model_sources=[STUDENT, TEACHER]
+    )
+    source = "".join(
+        "".join(cell.get("source", [])) for cell in notebook["cells"]
+    )
+    assert len(notebook["cells"]) == 2
+    assert [cell["id"] for cell in notebook["cells"]] == [
+        "model-source-probe-intro",
+        "model-source-probe",
+    ]
+    assert STUDENT in source
+    assert TEACHER in source
+    assert "kagglehub.model_download(source)" in source
+    assert "top_level_head" in source
+    assert '"scientific_evidence": False' in source
+    assert "model tensors are loaded" in source
+
+
+def test_rendered_model_source_mount_probe_rejects_duplicates():
+    with pytest.raises(KaggleModelSourceError, match="unique"):
+        render_model_source_mount_probe_notebook(
+            model_sources=[STUDENT, STUDENT]
+        )
 
 
 def test_rendered_canary_is_pinned_bounded_and_preserves_jax():
