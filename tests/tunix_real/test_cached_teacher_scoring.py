@@ -35,11 +35,12 @@ def test_cached_teacher_forcing_matches_dense_causal_statistics():
         return logits_from_state(updated), updated
 
     shared, selected = _cached_teacher_forcing_scan(
-        logits_from_state(prompt_state),
+        prompt_state,
         prompt_state,
         completion_ids,
         overlap_ids,
         decode_one,
+        logits_from_state,
         jax_module=jax,
         jnp_module=jnp,
     )

@@ -119,19 +119,27 @@ evidence only; a fresh remote canary must still verify peak HBM and throughput.
 For both protocols, `training.teacher_scoring_mode=cached_teacher_forcing`
 replaces the dense teacher call with exact Qwen prefill plus teacher-forced
 KV-cache decoding. Prompt prefill skips the vocabulary head and projects only
-the final prompt state. A `jax.lax.scan` then scores each realized completion
-token from one-step `B x 1 x V` logits, immediately reducing them to
-shared-token and selected-token log-probabilities. This avoids retained
-`B x L x V` logits and dense completion-length attention while preserving the
-dense causal objective. The small-tensor test compares every cached token score
-with dense causal log-softmax. This remains local design/parity evidence until
-fresh remote canaries verify HBM, finite metrics, lineage and native W&B
-evidence.
+the final prompt state. A `jax.lax.scan` carries hidden state and scores each
+realized completion token from a barrier-bracketed one-step `B x 1 x V`
+projection, immediately reducing it to shared-token and selected-token
+log-probabilities. The barriers keep XLA from lifting the LM head out of the
+loop and recreating a retained `T x B x V` tensor. This also avoids dense
+completion-length attention while preserving the dense causal objective. The
+small-tensor test compares every cached token score with dense causal
+log-softmax. This remains local design/parity evidence until fresh remote
+canaries verify HBM, finite metrics, lineage and native W&B evidence.
 
 The dense BF16 `paper4k` B2 canary reached teacher scoring but failed while XLA
 tried to reserve 13.95 GiB with only 6.21 GiB reservable. That terminal evidence
 is the reason the 4K ladder now uses the already parity-tested exact cached
 path; it is not a scientific or W&B pass.
+
+The first cached `paper4k` B2 canary then exposed an independent compiler
+failure: XLA lifted the one-step LM head across all 5,888 teacher completion
+positions and attempted an FP32 `[5888, 2, 64272]` allocation (about 193.8 GB).
+The hidden-state carry and optimization barriers above address that exact
+failure; this failed canary also logged zero optimizer steps and is not a
+scientific or W&B pass.
 
 The allowed optimization order is:
 

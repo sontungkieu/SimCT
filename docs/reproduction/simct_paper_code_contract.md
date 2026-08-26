@@ -223,8 +223,11 @@ not be pooled. The Tunix port records
 `training.teacher_scoring_mode=cached_teacher_forcing` for both protocols: Qwen
 prompt prefill plus exact token-by-token KV-cache forcing is mathematically
 equivalent to dense causal teacher scoring but avoids infeasible dense 4K/8K
-completion-attention allocations. Remote canaries, rather than the local parity
-test alone, determine whether that runtime path is operationally sufficient.
+completion-attention allocations. The scan carries hidden states; each
+barrier-bracketed one-step LM-head projection is reduced immediately so XLA
+cannot recreate a completion-wide `T x B x V` tensor. Remote canaries, rather
+than the local parity test alone, determine whether that runtime path is
+operationally sufficient.
 
 `tests/upstream_parity/test_public_training_contract.py` checks these public
 values and the unresolved wrapper paths without launching a process.

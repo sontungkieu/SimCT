@@ -92,28 +92,32 @@ def _configure_qwen_compute_dtype(
 
 
 def _cached_teacher_forcing_scan(
-    initial_logits: Any,
+    initial_state: Any,
     initial_cache: Any,
     completion_token_ids: Any,
     overlap_ids: Any,
     decode_one: Any,
+    project_logits: Any,
     *,
     jax_module: Any,
     jnp_module: Any,
 ) -> tuple[Any, Any]:
-    """Score a fixed completion exactly while retaining only one-step logits.
+    """Score a fixed completion exactly without carrying vocabulary logits.
 
-    ``initial_logits`` predicts completion token zero from the prompt prefill.
-    Each scan iteration records that token's sufficient statistics, then feeds
-    the realized token through the KV cache to obtain the next distribution.
+    ``initial_state`` predicts completion token zero after projection.  Each
+    scan iteration projects and reduces that state before feeding the realized
+    token through the KV cache.  Keeping hidden state, rather than logits, in
+    the loop carry prevents XLA from materializing a completion-wide ``T x B x
+    V`` vocabulary tensor.
     """
 
     token_steps = jnp_module.swapaxes(completion_token_ids, 0, 1)
     step_ids = jnp_module.arange(token_steps.shape[0], dtype=jnp_module.int32)
 
     def scan_step(carry: tuple[Any, Any], inputs: tuple[Any, Any]):
-        current_logits, cache = carry
+        current_state, cache = carry
         token_ids, step = inputs
+        current_logits = project_logits(current_state)
         shared, selected = _reduce_teacher_step_statistics(
             current_logits,
             token_ids,
@@ -121,12 +125,12 @@ def _cached_teacher_forcing_scan(
             jax_module=jax_module,
             jnp_module=jnp_module,
         )
-        next_logits, next_cache = decode_one(cache, token_ids, step)
-        return (next_logits, next_cache), (shared, selected)
+        next_state, next_cache = decode_one(cache, token_ids, step)
+        return (next_state, next_cache), (shared, selected)
 
     (_, _), (shared_steps, selected_steps) = jax_module.lax.scan(
         scan_step,
-        (initial_logits, initial_cache),
+        (initial_state, initial_cache),
         (token_steps, step_ids),
     )
     return (
@@ -188,7 +192,7 @@ def _qwen_cached_teacher_statistics(
         prefill_attention,
         skip_lm_head=True,
     )
-    initial_logits = module.compute_final_logits(prompt_hidden[:, -1:, :])[:, 0, :]
+    initial_hidden = prompt_hidden[:, -1, :]
 
     trailing_width = cache_size - prompt_width - completion_width
     padding_mask = jnp_module.concatenate(
@@ -215,20 +219,32 @@ def _qwen_cached_teacher_statistics(
             cache_size,
             padding_mask,
         )
-        logits, updated_cache = module(
+        hidden, updated_cache = module(
             token_ids[:, None],
             decode_position[:, None],
             current_cache,
             attention_mask,
+            skip_lm_head=True,
         )
-        return logits[:, 0, :], updated_cache
+        return hidden[:, 0, :], updated_cache
+
+    def project_logits(hidden_state: Any):
+        # XLA can otherwise lift the linear vocabulary projection out of the
+        # scan and batch it over the complete teacher-token axis.  That is
+        # mathematically valid but recreates the infeasible T x B x V tensor
+        # that cached scoring is meant to avoid.  Bracket the one-step head so
+        # projection and sufficient-statistic reduction remain loop-local.
+        hidden_state = jax_module.lax.optimization_barrier(hidden_state)
+        logits = module.compute_final_logits(hidden_state[:, None, :])[:, 0, :]
+        return jax_module.lax.optimization_barrier(logits)
 
     return _cached_teacher_forcing_scan(
-        initial_logits,
+        initial_hidden,
         cache,
         completion_token_ids,
         overlap_ids,
         decode_one,
+        project_logits,
         jax_module=jax_module,
         jnp_module=jnp_module,
     )
