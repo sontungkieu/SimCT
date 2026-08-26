@@ -388,6 +388,31 @@ def test_training_renderer_materializes_explicit_seed_runtime_config():
     assert "'public-substitute-multiseed'" in source
 
 
+def test_training_renderer_accepts_resource_canary_source_run_id():
+    notebook = render_training_notebook(
+        phase="simple_opd",
+        config_relative_path="configs/performance/paper4k-fsdp8-b1.json",
+        repo_dataset_source=REPO_DATASET,
+        training_dataset_source="testowner/resource-probe-paper4k-v1",
+        training_manifest_relative_path="manifest.json",
+        student_model_source=STUDENT,
+        teacher_model_source=TEACHER,
+        source_run_id="vdt-resource-simple_opd-paper4k-fsdp8-b1",
+        expected_run_id="vdt-resource-simple_opd-paper4k-fsdp8-b1-owner",
+        warm_start_kernel_source="testowner/public-sft-seed43",
+        warm_start_kernel_version=1,
+        warm_start_relative_path="checkpoints",
+    )
+    source = "".join(
+        "".join(cell.get("source", [])) for cell in notebook["cells"]
+    )
+    assert "source_run_id = 'vdt-resource-simple_opd-paper4k-fsdp8-b1'" in source
+    assert (
+        "config[\"run_id\"] = "
+        "'vdt-resource-simple_opd-paper4k-fsdp8-b1-owner'"
+    ) in source
+
+
 def test_training_renderer_can_enable_one_profile_step():
     notebook = render_training_notebook(
         phase="simple_opd",

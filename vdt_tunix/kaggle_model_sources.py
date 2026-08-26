@@ -543,6 +543,7 @@ def render_training_notebook(
     training_manifest_relative_path: str,
     student_model_source: str,
     teacher_model_source: str,
+    source_run_id: str | None = None,
     expected_run_id: str | None = None,
     training_seed: int | None = None,
     wandb_group: str = "public-substitute-one-seed",
@@ -563,8 +564,15 @@ def render_training_notebook(
         raise KaggleModelSourceError(
             f"phase must be one of {sorted(allowed_phases)}"
         )
+    default_run_id = "vdt-public-" + phase + "-screen"
+    if source_run_id is None:
+        source_run_id = default_run_id
     if expected_run_id is None:
-        expected_run_id = "vdt-public-" + phase + "-screen"
+        expected_run_id = source_run_id
+    if not isinstance(source_run_id, str) or not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9_-]*", source_run_id
+    ):
+        raise KaggleModelSourceError("source_run_id must be a safe run id")
     if not isinstance(expected_run_id, str) or not re.fullmatch(
         r"[A-Za-z0-9][A-Za-z0-9_-]*", expected_run_id
     ):
@@ -875,7 +883,7 @@ for required in (REPO, CONFIG_PATH, TRAINING_MANIFEST, STUDENT_MOUNT, TEACHER_MO
     if not required.exists():
         raise FileNotFoundError(f"required input missing: {{required}}")
 config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-source_run_id = {('vdt-public-' + phase + '-screen')!r}
+source_run_id = {source_run_id!r}
 if config["run_id"] != source_run_id:
     raise RuntimeError(
         f"unexpected source run_id in {{CONFIG_PATH}}: {{config['run_id']}}"
