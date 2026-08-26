@@ -78,13 +78,16 @@ def test_performance_matrix_is_two_separate_length_ladders(config_payload):
         }
         expected_length = 4096 if name.startswith("paper4k") else 8192
         assert configured["rollout"]["max_sequence_tokens"] == expected_length
-        if name.startswith("paper4k"):
-            assert "teacher_scoring_mode" not in configured["training"]
-        else:
-            assert (
-                configured["training"]["teacher_scoring_mode"]
-                == "cached_teacher_forcing"
-            )
+        expected_completion = 3840 if name.startswith("paper4k") else 4096
+        assert configured["rollout"]["max_completion_tokens"] == expected_completion
+        assert (
+            configured["rollout"]["max_prompt_tokens"] + expected_completion
+            == expected_length
+        )
+        assert (
+            configured["training"]["teacher_scoring_mode"]
+            == "cached_teacher_forcing"
+        )
 
 
 def test_checked_in_performance_matrix_matches_builder():

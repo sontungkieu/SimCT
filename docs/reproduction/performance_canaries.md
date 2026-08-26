@@ -10,7 +10,7 @@ reproduction evidence.
 `paper4k` is the operational interpretation of Table 4 in the SimCT paper:
 
 - maximum student prompt-plus-completion sequence: 4096 tokens;
-- rollout completion cap: 4096 tokens;
+- rollout completion cap: 3840 tokens with a static prompt cap of 256;
 - temperature 0.6, top-p 0.95, one response per prompt;
 - the runtime caps completion by the remaining sequence capacity.
 
@@ -24,9 +24,9 @@ width before appending generated tokens. Therefore the executable generation
 budget is
 `min(max_completion_tokens, max_sequence_tokens - max_prompt_tokens)`, not the
 sequence budget minus the observed prompt length. With the current static
-prompt cap of 256, `paper4k` requests at most 3840 generated tokens. This keeps
-the sampler cache shape within 4096 tokens while preserving a fixed-shape
-worst-case resource probe.
+prompt cap of 256, `paper4k` explicitly requests at most 3840 generated tokens.
+This keeps the sampler cache shape within 4096 tokens while preserving a
+fixed-shape worst-case resource probe.
 
 `public8k` follows the released shell script instead:
 
@@ -116,21 +116,27 @@ and realized selected-token log-probabilities. A small-tensor regression test
 checks numerical parity with the full-logit kernel. This is local correctness
 evidence only; a fresh remote canary must still verify peak HBM and throughput.
 
-For `public8k`, `training.teacher_scoring_mode=cached_teacher_forcing` replaces
-the dense 8K teacher call with exact Qwen prefill plus teacher-forced KV-cache
-decoding. Prompt prefill skips the vocabulary head and projects only the final
-prompt state. A `jax.lax.scan` then scores each realized completion token from
-one-step `B x 1 x V` logits, immediately reducing them to shared-token and
-selected-token log-probabilities. This avoids retained `B x L x V` logits and
-dense completion-length attention while preserving the dense causal objective.
-The small-tensor test compares every cached token score with dense causal
-log-softmax. This remains local design/parity evidence until a fresh remote B1
-canary verifies HBM, finite metrics, lineage and native W&B evidence.
+For both protocols, `training.teacher_scoring_mode=cached_teacher_forcing`
+replaces the dense teacher call with exact Qwen prefill plus teacher-forced
+KV-cache decoding. Prompt prefill skips the vocabulary head and projects only
+the final prompt state. A `jax.lax.scan` then scores each realized completion
+token from one-step `B x 1 x V` logits, immediately reducing them to
+shared-token and selected-token log-probabilities. This avoids retained
+`B x L x V` logits and dense completion-length attention while preserving the
+dense causal objective. The small-tensor test compares every cached token score
+with dense causal log-softmax. This remains local design/parity evidence until
+fresh remote canaries verify HBM, finite metrics, lineage and native W&B
+evidence.
+
+The dense BF16 `paper4k` B2 canary reached teacher scoring but failed while XLA
+tried to reserve 13.95 GiB with only 6.21 GiB reservable. That terminal evidence
+is the reason the 4K ladder now uses the already parity-tested exact cached
+path; it is not a scientific or W&B pass.
 
 The allowed optimization order is:
 
-1. use the implemented dense sufficient-statistics path for `paper4k` and the
-   exact cached teacher-forcing path for `public8k`, then verify remote HBM;
+1. use the exact cached teacher-forcing path for both protocols, then verify
+   remote HBM separately for `paper4k` and `public8k`;
 2. if necessary, chunk prompt prefill or exact scoring by example/sequence;
 3. bucket lengths or dynamically microbatch under a token budget;
 4. rematerialize/checkpoint activations;

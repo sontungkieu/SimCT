@@ -13,7 +13,7 @@
   "contract_version": 1,
   "rollout": {
     "force_max_completion": true,
-    "max_completion_tokens": 4096,
+    "max_completion_tokens": 3840,
     "max_prompt_tokens": 256,
     "max_sequence_tokens": 4096,
     "minimum_actual_sequence_tokens": 3968,
@@ -69,6 +69,7 @@
     "max_steps_unit": "optimizer_update",
     "micro_batch_size": 1,
     "synchronize_phase_timings": true,
+    "teacher_scoring_mode": "cached_teacher_forcing",
     "teacher_sequence_buckets": [
       4096,
       6144,

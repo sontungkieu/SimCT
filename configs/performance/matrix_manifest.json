@@ -2,7 +2,7 @@
   "canaries": [
     {
       "batch_size": 1,
-      "config_sha256": "95ef063c50bbd2c4e4d12310140431871f7e0c3b930803a5b3301c0d135f7faf",
+      "config_sha256": "9a828c9450d2266d63ef08965498c907164e03bd3aa9938907a34933a874f797",
       "effective_global_batch": 64,
       "gradient_accumulation_steps": 64,
       "name": "paper4k-fsdp8-b1",
@@ -11,7 +11,7 @@
     },
     {
       "batch_size": 2,
-      "config_sha256": "7e070f4f7263f25ad2c39a861f8ca40d07ca4ccbd5b3c9768909a8700fbb7d0d",
+      "config_sha256": "5a62d83bf7bf1494bdb8e9d1595512425908a4e10bde64e4207517c3cf9c1a6d",
       "effective_global_batch": 64,
       "gradient_accumulation_steps": 32,
       "name": "paper4k-fsdp8-b2",
@@ -20,7 +20,7 @@
     },
     {
       "batch_size": 4,
-      "config_sha256": "740209ead334744d45f8f8cb3ee830cedfb16fec638fca8685f5a083f261652f",
+      "config_sha256": "99bca5f2ec8551af1e4c67fcab7a23882f8b50539dbda735ecd1b2feea88e65b",
       "effective_global_batch": 64,
       "gradient_accumulation_steps": 16,
       "name": "paper4k-fsdp8-b4",
@@ -29,7 +29,7 @@
     },
     {
       "batch_size": 8,
-      "config_sha256": "4681a8f1bd87ca0c3d5cb56689de74f97a69b7262f6c25ce85f04f3b17139ede",
+      "config_sha256": "69055eb609a2269a3aba6989201ee16561aee88f8bf9b3a3b2b37d22b7eeb3f6",
       "effective_global_batch": 64,
       "gradient_accumulation_steps": 8,
       "name": "paper4k-fsdp8-b8",

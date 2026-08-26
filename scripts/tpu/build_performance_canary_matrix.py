@@ -21,7 +21,7 @@ PROTOCOLS = {
     "paper4k": {
         "sequence": 4096,
         "prompt": 256,
-        "completion": 4096,
+        "completion": 3840,
         "minimum_actual": 3968,
         "teacher_buckets": [4096, 6144, 8192],
         "alignment_bucket": 8192,
@@ -72,11 +72,7 @@ def build_matrix(baseline: RunConfig) -> dict[str, dict]:
                     "synchronize_phase_timings": True,
                     "teacher_sequence_buckets": contract["teacher_buckets"],
                     "alignment_bucket_size": contract["alignment_bucket"],
-                    "teacher_scoring_mode": (
-                        "cached_teacher_forcing"
-                        if protocol == "public8k"
-                        else "dense"
-                    ),
+                    "teacher_scoring_mode": "cached_teacher_forcing",
                 }
             )
             payload["tpu"].update(

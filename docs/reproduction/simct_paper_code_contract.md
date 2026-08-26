@@ -201,7 +201,7 @@ protocol therefore makes this reproduction interpretation explicit:
 
 ```text
 student prompt tokens + generated completion tokens <= 4096
-generated completion tokens <= 4096
+generated completion tokens <= 3840
 ```
 
 This is an **INFERENCE**, not an author-confirmed detail. The runtime caps the
@@ -220,10 +220,10 @@ The separate `public8k` protocol freezes the released launch semantics:
 updates), and the omitted top-p flag's default 1.0. It is a public-code
 ablation, not Table 4 reproduction. Results from `paper4k` and `public8k` must
 not be pooled. The Tunix port records
-`training.teacher_scoring_mode=cached_teacher_forcing` for this protocol: Qwen
+`training.teacher_scoring_mode=cached_teacher_forcing` for both protocols: Qwen
 prompt prefill plus exact token-by-token KV-cache forcing is mathematically
-equivalent to dense causal teacher scoring but avoids the infeasible dense 8K
-completion-attention allocation. Remote canaries, rather than the local parity
+equivalent to dense causal teacher scoring but avoids infeasible dense 4K/8K
+completion-attention allocations. Remote canaries, rather than the local parity
 test alone, determine whether that runtime path is operationally sufficient.
 
 `tests/upstream_parity/test_public_training_contract.py` checks these public
