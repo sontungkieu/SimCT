@@ -33,7 +33,7 @@ def test_generation_notebook_is_pinned_and_syntax_valid(variant):
     source = "".join(
         "".join(cell.get("source", [])) for cell in notebook["cells"]
     )
-    assert len(notebook["cells"]) == 6
+    assert len(notebook["cells"]) == 7
     assert "testowner/repo-v1" in source
     assert "testowner/evaluation-v1" in source
     assert "testowner/checkpoint-v1" in source
@@ -57,6 +57,15 @@ def test_generation_notebook_is_pinned_and_syntax_valid(variant):
     assert "not the official benchmark harness" in source
     assert "VDT_SCORING_SUMMARY" in source
     assert "scientific_evidence" in source
+    secret_cells = [
+        "".join(cell.get("source", []))
+        for cell in notebook["cells"]
+        if "__KJO_SECRET_WANDB_API_KEY__" in "".join(cell.get("source", []))
+    ]
+    assert secret_cells == [
+        'import os\n\nos.environ["WANDB_API_KEY"] = '
+        '"__KJO_SECRET_WANDB_API_KEY__"\n'
+    ]
     for index, cell in enumerate(notebook["cells"]):
         if cell["cell_type"] == "code":
             compile("".join(cell["source"]), f"<generation-cell-{index}>", "exec")

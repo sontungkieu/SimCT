@@ -836,6 +836,10 @@ print("VDT_TRAINING_INPUT_PROVENANCE " + json.dumps({{
     "warm_start_root": None if WARM_START_ROOT is None else str(WARM_START_ROOT),
 }}, sort_keys=True))'''
 
+    wandb_secret = '''import os
+
+os.environ["WANDB_API_KEY"] = "__KJO_SECRET_WANDB_API_KEY__"'''
+
     setup = f'''import hashlib
 import json
 import os
@@ -843,7 +847,6 @@ import platform
 import subprocess
 import sys
 
-os.environ["WANDB_API_KEY"] = "__KJO_SECRET_WANDB_API_KEY__"
 os.environ.setdefault("WANDB_PROJECT", "vdt-simct-tunix-reproduction")
 os.environ.setdefault("WANDB_RUN_GROUP", {wandb_group!r})
 os.environ.setdefault("WANDB_MODE", "online")
@@ -1033,6 +1036,7 @@ print("VDT_TRAINING_ARTIFACT " + json.dumps(artifact, sort_keys=True))'''
             },
             code_cell(copy_repo),
             code_cell(resolve_inputs),
+            code_cell(wandb_secret),
             code_cell(setup),
             code_cell(dependencies),
             code_cell(run),

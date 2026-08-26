@@ -298,7 +298,7 @@ def test_rendered_training_notebook_is_pinned_and_syntax_valid(phase):
     source = "".join(
         "".join(cell.get("source", [])) for cell in notebook["cells"]
     )
-    assert len(notebook["cells"]) == 6
+    assert len(notebook["cells"]) == 7
     assert REPO_DATASET in source
     assert "testowner/public-substitute-v1" in source
     assert STUDENT in source
@@ -312,6 +312,15 @@ def test_rendered_training_notebook_is_pinned_and_syntax_valid(phase):
     assert "RUNTIME_SUBPROCESS_ENV" in source
     assert "scientific_evidence" in source
     assert "shared downstream one-seed evaluation contract" in source
+    secret_cells = [
+        "".join(cell.get("source", []))
+        for cell in notebook["cells"]
+        if "__KJO_SECRET_WANDB_API_KEY__" in "".join(cell.get("source", []))
+    ]
+    assert secret_cells == [
+        'import os\n\nos.environ["WANDB_API_KEY"] = '
+        '"__KJO_SECRET_WANDB_API_KEY__"\n'
+    ]
     assert '__KJO_SECRET_WANDB_API_KEY__' in source
     assert 'WANDB_PROJECT' in source
     assert 'WANDB_RUN_GROUP' in source

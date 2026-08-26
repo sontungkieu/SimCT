@@ -115,11 +115,12 @@ def compose_cross_account_generation_notebook(
             "repo-copy cell must precede the generation-input cell"
         )
 
+    credential_secret_source = f'''SOURCE_KAGGLE_KEY = {source_key_placeholder!r}'''
+
     credential_source = f'''from pathlib import Path
 import json
 
 SOURCE_KAGGLE_OWNER = {source_owner!r}
-SOURCE_KAGGLE_KEY = {source_key_placeholder!r}
 SOURCE_KAGGLE_CONFIG_DIR = Path({str(config_path)!r})
 if not SOURCE_KAGGLE_KEY or SOURCE_KAGGLE_KEY.startswith("__KJO_SECRET_"):
     raise RuntimeError("source-owner Kaggle key was not injected")
@@ -219,6 +220,10 @@ print("VDT_CROSS_ACCOUNT_INPUT_OVERLAY " + json.dumps({{
 
     inserted = [
         _code_cell(cli_bootstrap_source, cell_id="cross-account-cli-bootstrap"),
+        _code_cell(
+            credential_secret_source,
+            cell_id="cross-account-credential-secret",
+        ),
         _code_cell(credential_source, cell_id="cross-account-credential"),
         _code_cell(
             cross_account_output_source.rstrip("\n"),

@@ -209,13 +209,16 @@ print("VDT_GENERATION_INPUT_PROVENANCE " + json.dumps({{
     "checkpoint_root": str(CHECKPOINT_ROOT),
 }}, sort_keys=True))'''
 
+    wandb_secret = '''import os
+
+os.environ["WANDB_API_KEY"] = "__KJO_SECRET_WANDB_API_KEY__"'''
+
     setup = f'''import json
 import os
 import platform
 import subprocess
 import sys
 
-os.environ["WANDB_API_KEY"] = "__KJO_SECRET_WANDB_API_KEY__"
 os.environ.setdefault("WANDB_PROJECT", "vdt-simct-tunix-reproduction")
 os.environ.setdefault("WANDB_RUN_GROUP", {wandb_group!r})
 os.environ.setdefault("WANDB_MODE", "online")
@@ -389,6 +392,7 @@ print("VDT_SCORING_SUMMARY " + json.dumps(score_payload, sort_keys=True))'''
             },
             code_cell(copy_repo),
             code_cell(resolve_inputs),
+            code_cell(wandb_secret),
             code_cell(setup),
             code_cell(dependencies),
             code_cell(run),

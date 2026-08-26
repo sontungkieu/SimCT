@@ -253,6 +253,11 @@ may replace `__KJO_SECRET_WANDB_API_KEY__` immediately before submission; the
 source notebook remains secret-free. The uv lock pins W&B 0.19.11 and its
 transitive dependencies, so observability does not depend on the ambient Kaggle
 image.
+Secret literals are rendered in dedicated assignment-only notebook cells.
+Failure-prone model resolution, checkpoint transfer, and environment bootstrap
+run in later cells that reference the assigned variables. This prevents a
+Papermill traceback from echoing an embedded key as part of a failed cell's
+`_kjo_source` string.
 W&B receives finite numeric training metrics, elapsed time,
 gradient/parameter norms, and span/token counts. Generation logs one progress
 row per resumable batch, and scoring logs the final score/counts for all four
