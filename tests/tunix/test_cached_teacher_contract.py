@@ -110,10 +110,18 @@ def test_qwen_cached_teacher_keeps_lm_head_inside_gather_free_barriered_steps():
     class FakeLax:
         def __init__(self) -> None:
             self.barrier_shapes = []
+            self.dot_general_calls = []
 
         def optimization_barrier(self, value):
             self.barrier_shapes.append(tuple(value.shape))
             return value
+
+        def dot_general(self, lhs, rhs, dimension_numbers):
+            self.dot_general_calls.append(
+                (tuple(lhs.shape), tuple(rhs.shape), dimension_numbers)
+            )
+            assert dimension_numbers == (((1,), (1,)), ((0,), (0,)))
+            return np.einsum("bv,bv->b", lhs, rhs)
 
         @staticmethod
         def scan(fn, carry, xs):
@@ -218,7 +226,10 @@ def test_qwen_cached_teacher_keeps_lm_head_inside_gather_free_barriered_steps():
     assert shared.shape == (1, 3, 2)
     assert selected.shape == (1, 3)
     assert module.skip_lm_head_flags == [True, True, True, True]
-    assert fake_lax.barrier_shapes == [(1, 2), (1, 6)] * 3
+    assert fake_lax.barrier_shapes == [(1, 2), (1, 6), (1, 6)] * 3
+    assert fake_lax.dot_general_calls == [
+        ((1, 6), (1, 6), (((1,), (1,)), ((0,), (0,))))
+    ] * 3
 
     centers = np.asarray([2.0, 6.0, 10.0], dtype=np.float32)[:, None]
     dense_logits = -np.square(centers - np.arange(6, dtype=np.float32)[None, :])

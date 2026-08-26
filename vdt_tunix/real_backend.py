@@ -72,16 +72,23 @@ def _reduce_teacher_step_statistics(
         values.shape[-1],
         dtype=selected_token_ids.dtype,
     )
-    # TPU XLA can miscompile the dynamic gather here when it is fused into the
-    # barriered scan body.  Compare/select/reduce picks the same single finite
-    # logit without introducing that gather instruction or a time-wide tensor.
-    selected = jnp_module.sum(
-        jnp_module.where(
-            vocabulary_ids == selected_token_ids[..., None],
-            values,
-            jnp_module.asarray(0.0, dtype=values.dtype),
+    # TPU XLA can miscompile both a dynamic gather and a compare/select
+    # ``reduce_sum`` when either is fused with the other vocabulary reductions
+    # in this barriered scan body.  A barriered one-hot batch dot selects the
+    # same single finite logit while lowering the contraction to dot_general,
+    # without retaining a time-wide tensor.
+    selector = (
+        vocabulary_ids == selected_token_ids[..., None]
+    ).astype(values.dtype)
+    selector = jax_module.lax.optimization_barrier(selector)
+    batch_dimensions = tuple(range(values.ndim - 1))
+    selected = jax_module.lax.dot_general(
+        values,
+        selector,
+        (
+            ((values.ndim - 1,), (selector.ndim - 1,)),
+            (batch_dimensions, batch_dimensions),
         ),
-        axis=-1,
     )
     return shared - log_normalizer[..., None], selected - log_normalizer
 

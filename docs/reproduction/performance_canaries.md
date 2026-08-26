@@ -122,10 +122,10 @@ KV-cache decoding. Prompt prefill skips the vocabulary head and projects only
 the final prompt state. A `jax.lax.scan` carries hidden state and scores each
 realized completion token from a barrier-bracketed one-step `B x 1 x V`
 projection, immediately reducing it to shared-token and selected-token
-log-probabilities. The selected-token reduction uses an exact compare/select
-sum instead of a dynamic gather inside the scan. The barriers keep XLA from
-lifting the LM head out of the loop and recreating a retained `T x B x V`
-tensor. This also avoids dense
+log-probabilities. The selected-token path uses a barriered one-hot batch dot
+instead of a dynamic gather or compare/select `reduce_sum` inside the scan.
+The barriers keep XLA from lifting the LM head out of the loop and recreating a
+retained `T x B x V` tensor. This also avoids dense
 completion-length attention while preserving the dense causal objective. The
 small-tensor test compares every cached token score with dense causal
 log-softmax. This remains local design/parity evidence until fresh remote
@@ -145,10 +145,13 @@ scientific or W&B pass.
 
 The first bounded cached retry reached that scan after its private checkpoint
 transfer succeeded, but TPU XLA then reported an internal post-optimization
-shape mismatch while fusing the dynamic selected-token gather. The gather-free
-compare/select reduction above addresses that specific compiler failure and is
-still pending a fresh remote canary; the failed retry logged zero optimizer
-steps and is not a scientific or W&B pass.
+shape mismatch while fusing the dynamic selected-token gather. A gather-free
+retry replaced it with compare/select `reduce_sum`; TPU XLA reached the same
+training phase but failed with a different post-optimization fusion shape
+mismatch at that reduction. The barriered one-hot batch dot above addresses the
+newly isolated reduction failure and is still pending a fresh remote canary.
+Both failed retries logged zero optimizer steps and are not scientific or W&B
+passes.
 
 The allowed optimization order is:
 

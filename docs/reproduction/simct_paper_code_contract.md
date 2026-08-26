@@ -226,10 +226,12 @@ equivalent to dense causal teacher scoring but avoids infeasible dense 4K/8K
 completion-attention allocations. The scan carries hidden states; each
 barrier-bracketed one-step LM-head projection is reduced immediately so XLA
 cannot recreate a completion-wide `T x B x V` tensor. The realized-token logit
-uses an exact compare/select reduction rather than a dynamic gather inside that
-barriered scan, avoiding the TPU compiler fusion failure observed by the first
-bounded retry. Remote canaries, rather than the local parity test alone,
-determine whether that runtime path is operationally sufficient.
+uses a barriered one-hot batch dot rather than a dynamic gather or
+compare/select `reduce_sum` inside that scan. The first form failed in the
+bounded retry and the second failed in the gather-free retry due to distinct
+TPU post-optimization fusion shape mismatches. Remote canaries, rather than the
+local parity test alone, determine whether the dot-based runtime path is
+operationally sufficient.
 
 `tests/upstream_parity/test_public_training_contract.py` checks these public
 values and the unresolved wrapper paths without launching a process.
