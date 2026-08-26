@@ -137,7 +137,7 @@ def _qwen_cached_teacher_statistics(
 ) -> tuple[Any, Any]:
     """Run exact Qwen prompt prefill plus cached teacher forcing."""
 
-    for field in ("num_layers", "num_kv_heads", "head_dim"):
+    for field in ("num_layers", "num_kv_heads", "head_dim", "dtype"):
         if not hasattr(model_params, field):
             raise RealBackendUnavailable(
                 "cached teacher forcing requires model config field " f"{field}"
@@ -159,7 +159,7 @@ def _qwen_cached_teacher_statistics(
         batch_size=batch_size,
         num_kv_heads=int(model_params.num_kv_heads),
         head_dim=int(model_params.head_dim),
-        dtype=jnp_module.bfloat16,
+        dtype=model_params.dtype,
     )
     prompt_positions = generate_utils.build_positions_from_mask(prompt_active)
     prefill_attention = generate_utils.make_causal_attn_mask(
