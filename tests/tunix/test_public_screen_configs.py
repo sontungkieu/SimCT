@@ -58,3 +58,42 @@ def test_paper_canary_uses_pinned_tunix_architecture_keys():
     )
     assert config.student.model_id == "gemma-2-2b-it"
     assert config.teacher.model_id == "qwen2.5-7b-instruct"
+
+
+@pytest.mark.parametrize("algorithm", ["simple_opd", "simct"])
+def test_paper4k_configs_freeze_table4_operational_contract(algorithm):
+    config = load_config(
+        REPO_ROOT
+        / "configs"
+        / "reproduction"
+        / f"qwen25_7b_to_gemma2_2b_paper4k_{algorithm}.json"
+    )
+    assert config.simct.algorithm == algorithm
+    assert config.rollout.max_sequence_tokens == 4096
+    assert config.rollout.max_completion_tokens == 4096
+    assert config.rollout.temperature == 0.6
+    assert config.rollout.top_p == 0.95
+    assert config.rollout.samples_per_prompt == 1
+    assert config.training.max_steps == 314
+    assert config.training.max_steps_unit == "optimizer_update"
+    assert config.training.gradient_accumulation_steps == 64
+    assert config.training.learning_rate == 1e-6
+
+
+@pytest.mark.parametrize("algorithm", ["simple_opd", "simct"])
+def test_public8k_configs_freeze_released_script_ablation(algorithm):
+    config = load_config(
+        REPO_ROOT
+        / "configs"
+        / "reproduction"
+        / f"qwen25_7b_to_gemma2_2b_public8k_{algorithm}.json"
+    )
+    assert config.simct.algorithm == algorithm
+    assert config.rollout.max_sequence_tokens == 8192
+    assert config.rollout.max_completion_tokens == 4096
+    assert config.rollout.temperature == 0.6
+    assert config.rollout.top_p == 1.0
+    assert config.training.max_steps == 157
+    assert config.training.max_steps_unit == "optimizer_update"
+    assert config.training.gradient_accumulation_steps == 64
+    assert config.training.learning_rate == 5e-7

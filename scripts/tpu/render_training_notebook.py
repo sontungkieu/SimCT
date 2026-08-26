@@ -36,6 +36,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--warm-start-kernel-source")
     parser.add_argument("--warm-start-kernel-version", type=int)
     parser.add_argument("--warm-start-relative-path")
+    parser.add_argument("--profile-step", type=int, default=0)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args(argv)
     try:
@@ -53,6 +54,7 @@ def main(argv: list[str] | None = None) -> int:
             warm_start_kernel_source=args.warm_start_kernel_source,
             warm_start_kernel_version=args.warm_start_kernel_version,
             warm_start_relative_path=args.warm_start_relative_path,
+            profile_step=args.profile_step,
         )
         args.output.parent.mkdir(parents=True, exist_ok=True)
         temporary = args.output.with_name(args.output.name + ".tmp")

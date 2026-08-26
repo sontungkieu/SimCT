@@ -549,6 +549,7 @@ def render_training_notebook(
     warm_start_kernel_source: str | None = None,
     warm_start_kernel_version: int | None = None,
     warm_start_relative_path: str | None = None,
+    profile_step: int = 0,
 ) -> dict[str, Any]:
     """Render a provenance-checked SFT or OPD notebook with durable output.
 
@@ -581,6 +582,14 @@ def render_training_notebook(
         )
     ):
         raise KaggleModelSourceError("training_seed must be non-negative")
+    if (
+        isinstance(profile_step, bool)
+        or not isinstance(profile_step, int)
+        or profile_step < 0
+    ):
+        raise KaggleModelSourceError("profile_step must be a non-negative integer")
+    if phase == "sft" and profile_step:
+        raise KaggleModelSourceError("profile_step is only supported for OPD canaries")
     config_relative = _safe_relative_path(
         config_relative_path, "config_relative_path"
     )
@@ -952,6 +961,11 @@ command = [
     "--output", str(SUMMARY),
     "--metrics", str(METRICS),
 ]
+if {profile_step!r}:
+    command.extend([
+        "--profile-dir", str(WORK / "jax-profile"),
+        "--profile-step", str({profile_step!r}),
+    ])
 result = None
 try:
     result = subprocess.run(

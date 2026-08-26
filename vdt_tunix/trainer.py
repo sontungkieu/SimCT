@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import time
 from typing import Any
 
 from vdt_tunix.config import RunConfig
@@ -16,6 +17,13 @@ from vdt_tunix.contracts import (
 from vdt_tunix.jax_kernels import (
     paper_simct_aligned_batch_loss,
     paper_simple_opd_aligned_batch_loss,
+)
+from vdt_tunix.performance import (
+    PerformanceContractError,
+    jax_memory_metrics,
+    jit_cache_size,
+    numeric_shape_signature,
+    select_length_bucket,
 )
 from vdt_tunix.real_backend import _LoadedTunixModel
 from vdt_tunix.supervision import (
@@ -49,6 +57,24 @@ class PreparedSimCTBatch:
     teacher_completion_tokens: int
     aligned_units: int
     aligned_spans: int
+    rollout_s: float = 0.0
+    teacher_score_s: float = 0.0
+    teacher_tokenize_s: float = 0.0
+    teacher_forward_s: float = 0.0
+    alignment_s: float = 0.0
+    batch_prepare_s: float = 0.0
+    teacher_sequence_required: int = 0
+    teacher_sequence_bucket: int = 0
+    teacher_completion_bucket: int = 0
+    alignment_bucket: int = 0
+    actual_prompt_tokens: int = 0
+    actual_completion_tokens: int = 0
+    actual_total_tokens: int = 0
+    maximum_prompt_tokens: int = 0
+    maximum_completion_tokens: int = 0
+    maximum_total_tokens: int = 0
+    minimum_total_tokens: int = 0
+    truncation_count: int = 0
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
@@ -61,18 +87,60 @@ class UpdateMetrics:
     teacher_completion_tokens: int
     aligned_units: int
     aligned_spans: int
+    rollout_s: float = 0.0
+    teacher_score_s: float = 0.0
+    teacher_tokenize_s: float = 0.0
+    teacher_forward_s: float = 0.0
+    alignment_s: float = 0.0
+    batch_prepare_s: float = 0.0
+    student_update_dispatch_s: float = 0.0
+    student_update_sync_s: float = 0.0
+    student_update_s: float = 0.0
+    student_fwd_bwd_s: float = 0.0
+    teacher_sequence_required: int = 0
+    teacher_sequence_bucket: int = 0
+    teacher_completion_bucket: int = 0
+    alignment_bucket: int = 0
+    shape_signature: int = 0
+    shape_signature_changed: int = 0
+    jit_cache_size_before: int = -1
+    jit_cache_size_after: int = -1
+    jit_cache_miss: int = -1
+    actual_prompt_tokens: int = 0
+    actual_completion_tokens: int = 0
+    actual_total_tokens: int = 0
+    maximum_prompt_tokens: int = 0
+    maximum_completion_tokens: int = 0
+    maximum_total_tokens: int = 0
+    minimum_total_tokens: int = 0
+    requested_prompt_tokens: int = 0
+    requested_completion_tokens: int = 0
+    requested_sequence_tokens: int = 0
+    truncation_count: int = 0
+    rollout_tokens_s: float = 0.0
+    teacher_score_tokens_s: float = 0.0
+    student_update_tokens_s: float = 0.0
+    student_fwd_bwd_tokens_s: float = 0.0
+    compile_s: float = 0.0
+    memory_bytes_in_use: int = -1
+    memory_peak_bytes_in_use: int = -1
+    memory_bytes_limit: int = -1
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
 
 
 def _build_optimizer(config: RunConfig, model: Any, nnx: Any, optax: Any) -> Any:
-    optimizer_steps = max(
-        1,
-        math.ceil(
-            config.training.max_steps
-            / config.training.gradient_accumulation_steps
-        ),
+    optimizer_steps = (
+        config.training.max_steps
+        if config.training.max_steps_unit == "optimizer_update"
+        else max(
+            1,
+            math.ceil(
+                config.training.max_steps
+                / config.training.gradient_accumulation_steps
+            ),
+        )
     )
     warmup_steps = int(optimizer_steps * 0.05)
     if warmup_steps > 0:
@@ -135,6 +203,8 @@ def prepare_simct_batch(
             "the Tunix optimizer currently implements paper_math only; "
             "public-code modes must remain separate"
         )
+    prepare_started = time.monotonic()
+    rollout_started = time.monotonic()
     rollouts = backends.student.rollout(
         RolloutRequest(
             run_id=config.run_id,
@@ -143,15 +213,18 @@ def prepare_simct_batch(
             samples_per_prompt=config.rollout.samples_per_prompt,
         )
     )
+    rollout_s = time.monotonic() - rollout_started
+    teacher_started = time.monotonic()
     teacher_scores = backends.teacher.score(
         TeacherScoreRequest(rollouts=rollouts, prompts=prompts)
     )
+    teacher_score_s = time.monotonic() - teacher_started
     scores = {sample.sample_id: sample for sample in teacher_scores.samples}
     if set(scores) != {sample.sample_id for sample in rollouts.samples}:
         raise TrainingError("teacher scores do not match rollout sample IDs")
 
     batch_size = len(rollouts.samples)
-    total_length = (
+    total_length = config.rollout.max_sequence_tokens or (
         config.rollout.max_prompt_tokens + config.rollout.max_completion_tokens
     )
     pad_id = backends.student.model_adapter.tokenizer.pad_token_id
@@ -168,7 +241,13 @@ def prepare_simct_batch(
     layouts = []
     student_token_total = 0
     teacher_token_total = 0
+    prompt_token_total = 0
+    total_token_counts: list[int] = []
+    prompt_token_counts: list[int] = []
+    completion_token_counts: list[int] = []
+    truncation_count = 0
 
+    alignment_started = time.monotonic()
     for row_index, rollout in enumerate(rollouts.samples):
         score = scores[rollout.sample_id]
         model_prompt_ids = (
@@ -192,13 +271,44 @@ def prepare_simct_batch(
         layouts.append(build_aligned_layout(rollout.completion, score.completion))
         student_token_total += width
         teacher_token_total += len(score.completion.token_ids)
+        prompt_width = len(model_prompt_ids)
+        prompt_token_total += prompt_width
+        prompt_token_counts.append(prompt_width)
+        completion_token_counts.append(width)
+        total_token_counts.append(prompt_width + width)
+        row_completion_limit = config.rollout.max_completion_tokens
+        if config.rollout.max_sequence_tokens is not None:
+            row_completion_limit = min(
+                row_completion_limit,
+                config.rollout.max_sequence_tokens - prompt_width,
+            )
+        truncation_count += int(width >= row_completion_limit)
 
-    teacher_width = max(int(row.shape[0]) for row in teacher_logits)
+    teacher_required = max(int(row.shape[0]) for row in teacher_logits)
+    try:
+        teacher_width = select_length_bucket(
+            teacher_required, config.training.teacher_sequence_buckets
+        )
+    except PerformanceContractError as exc:
+        raise TrainingError(str(exc)) from exc
     padded_teacher_logits = _pad_device_rows(teacher_logits, teacher_width, jnp)
     padded_teacher_ids = _pad_device_rows(teacher_ids, teacher_width, jnp)
-    bounds, unit_mask, spans = pad_layouts(layouts)
+    bounds, unit_mask, spans = pad_layouts(
+        layouts, width=config.training.alignment_bucket_size
+    )
     aligned_units = sum(len(layout.units) for layout in layouts)
     aligned_spans = sum(sum(layout.span_mask) for layout in layouts)
+    maximum_total_tokens = max(total_token_counts)
+    minimum_total_tokens = min(total_token_counts)
+    minimum_required = config.rollout.minimum_actual_sequence_tokens
+    if minimum_required is not None and minimum_total_tokens < minimum_required:
+        raise TrainingError(
+            "resource probe did not reach its minimum actual sequence length: "
+            f"{minimum_total_tokens} < {minimum_required}"
+        )
+    alignment_s = time.monotonic() - alignment_started
+    student_timing = getattr(backends.student, "last_phase_timings", {})
+    teacher_timing = getattr(backends.teacher, "last_phase_timings", {})
     return PreparedSimCTBatch(
         student_input_ids=jnp.asarray(student_input_ids),
         student_segment_ids=jnp.asarray(student_segment_ids),
@@ -215,6 +325,28 @@ def prepare_simct_batch(
         teacher_completion_tokens=teacher_token_total,
         aligned_units=aligned_units,
         aligned_spans=aligned_spans,
+        rollout_s=float(student_timing.get("student_rollout_s", rollout_s)),
+        teacher_score_s=teacher_score_s,
+        teacher_tokenize_s=float(teacher_timing.get("teacher_tokenize_s", 0.0)),
+        teacher_forward_s=float(teacher_timing.get("teacher_forward_s", 0.0)),
+        alignment_s=alignment_s,
+        batch_prepare_s=time.monotonic() - prepare_started,
+        teacher_sequence_required=int(
+            teacher_timing.get("teacher_sequence_required", teacher_required)
+        ),
+        teacher_sequence_bucket=int(
+            teacher_timing.get("teacher_sequence_bucket", teacher_required)
+        ),
+        teacher_completion_bucket=teacher_width,
+        alignment_bucket=len(bounds[0]),
+        actual_prompt_tokens=prompt_token_total,
+        actual_completion_tokens=student_token_total,
+        actual_total_tokens=prompt_token_total + student_token_total,
+        maximum_prompt_tokens=max(prompt_token_counts),
+        maximum_completion_tokens=max(completion_token_counts),
+        maximum_total_tokens=maximum_total_tokens,
+        minimum_total_tokens=minimum_total_tokens,
+        truncation_count=truncation_count,
     )
 
 
@@ -301,6 +433,7 @@ class PaperSimCTTrainer:
 
         self._update_fn = update_fn
         self._jax = jax
+        self._last_shape_signature: int | None = None
 
     def step(
         self,
@@ -316,6 +449,22 @@ class PaperSimCTTrainer:
             step=step,
         )
         loaded = self.loaded_student
+        shape_signature = numeric_shape_signature(
+            batch_size=int(batch.student_input_ids.shape[0]),
+            student_sequence=int(batch.student_input_ids.shape[1]),
+            student_completion=int(batch.student_completion_positions.shape[1]),
+            teacher_completion=int(batch.teacher_position_logits.shape[1]),
+            alignment_units=int(batch.segment_bounds.shape[1]),
+        )
+        shape_changed = int(
+            self._last_shape_signature is not None
+            and self._last_shape_signature != shape_signature
+        )
+        compilation_candidate = self._last_shape_signature is None or bool(
+            shape_changed
+        )
+        cache_before = jit_cache_size(self._update_fn)
+        dispatch_started = time.monotonic()
         with self._jax.set_mesh(loaded.mesh):
             loss, gradient_norm, parameter_norm = self._update_fn(
                 loaded.model,
@@ -331,9 +480,15 @@ class PaperSimCTTrainer:
                 batch.span_mask,
                 batch.normalizer,
             )
+        dispatch_s = time.monotonic() - dispatch_started
+        sync_started = time.monotonic()
         loss, gradient_norm, parameter_norm = self._jax.device_get(
             (loss, gradient_norm, parameter_norm)
         )
+        sync_s = time.monotonic() - sync_started
+        cache_after = jit_cache_size(self._update_fn)
+        memory = jax_memory_metrics(self._jax)
+        self._last_shape_signature = shape_signature
         return UpdateMetrics(
             loss=float(loss),
             gradient_norm=float(gradient_norm),
@@ -343,6 +498,70 @@ class PaperSimCTTrainer:
             teacher_completion_tokens=batch.teacher_completion_tokens,
             aligned_units=batch.aligned_units,
             aligned_spans=batch.aligned_spans,
+            rollout_s=batch.rollout_s,
+            teacher_score_s=batch.teacher_score_s,
+            teacher_tokenize_s=batch.teacher_tokenize_s,
+            teacher_forward_s=batch.teacher_forward_s,
+            alignment_s=batch.alignment_s,
+            batch_prepare_s=batch.batch_prepare_s,
+            student_update_dispatch_s=dispatch_s,
+            student_update_sync_s=sync_s,
+            student_update_s=dispatch_s + sync_s,
+            student_fwd_bwd_s=dispatch_s + sync_s,
+            teacher_sequence_required=batch.teacher_sequence_required,
+            teacher_sequence_bucket=batch.teacher_sequence_bucket,
+            teacher_completion_bucket=batch.teacher_completion_bucket,
+            alignment_bucket=batch.alignment_bucket,
+            shape_signature=shape_signature,
+            shape_signature_changed=shape_changed,
+            jit_cache_size_before=cache_before,
+            jit_cache_size_after=cache_after,
+            jit_cache_miss=(
+                int(cache_after > cache_before)
+                if cache_before >= 0 and cache_after >= 0
+                else -1
+            ),
+            actual_prompt_tokens=batch.actual_prompt_tokens,
+            actual_completion_tokens=batch.actual_completion_tokens,
+            actual_total_tokens=batch.actual_total_tokens,
+            maximum_prompt_tokens=batch.maximum_prompt_tokens,
+            maximum_completion_tokens=batch.maximum_completion_tokens,
+            maximum_total_tokens=batch.maximum_total_tokens,
+            minimum_total_tokens=batch.minimum_total_tokens,
+            requested_prompt_tokens=self.config.rollout.max_prompt_tokens,
+            requested_completion_tokens=self.config.rollout.max_completion_tokens,
+            requested_sequence_tokens=(
+                self.config.rollout.max_sequence_tokens
+                or self.config.rollout.max_prompt_tokens
+                + self.config.rollout.max_completion_tokens
+            ),
+            truncation_count=batch.truncation_count,
+            rollout_tokens_s=(
+                batch.actual_completion_tokens / batch.rollout_s
+                if batch.rollout_s > 0
+                else 0.0
+            ),
+            teacher_score_tokens_s=(
+                batch.teacher_completion_tokens / batch.teacher_score_s
+                if batch.teacher_score_s > 0
+                else 0.0
+            ),
+            student_update_tokens_s=(
+                batch.actual_total_tokens / (dispatch_s + sync_s)
+                if dispatch_s + sync_s > 0
+                else 0.0
+            ),
+            student_fwd_bwd_tokens_s=(
+                batch.actual_total_tokens / (dispatch_s + sync_s)
+                if dispatch_s + sync_s > 0
+                else 0.0
+            ),
+            compile_s=(
+                dispatch_s + sync_s
+                if compilation_candidate
+                else 0.0
+            ),
+            **memory,
         )
 
 
@@ -431,6 +650,7 @@ class PaperSimpleOPDTrainer:
 
         self._update_fn = update_fn
         self._jax = jax
+        self._last_shape_signature: int | None = None
 
     def step(
         self,
@@ -445,6 +665,22 @@ class PaperSimpleOPDTrainer:
             self.overlap,
             step=step,
         )
+        shape_signature = numeric_shape_signature(
+            batch_size=int(batch.student_input_ids.shape[0]),
+            student_sequence=int(batch.student_input_ids.shape[1]),
+            student_completion=int(batch.student_completion_positions.shape[1]),
+            teacher_completion=int(batch.teacher_position_logits.shape[1]),
+            alignment_units=int(batch.segment_bounds.shape[1]),
+        )
+        shape_changed = int(
+            self._last_shape_signature is not None
+            and self._last_shape_signature != shape_signature
+        )
+        compilation_candidate = self._last_shape_signature is None or bool(
+            shape_changed
+        )
+        cache_before = jit_cache_size(self._update_fn)
+        dispatch_started = time.monotonic()
         with self._jax.set_mesh(self.loaded_student.mesh):
             loss, gradient_norm, parameter_norm = self._update_fn(
                 self.loaded_student.model,
@@ -458,9 +694,15 @@ class PaperSimpleOPDTrainer:
                 batch.span_mask,
                 batch.normalizer,
             )
+        dispatch_s = time.monotonic() - dispatch_started
+        sync_started = time.monotonic()
         loss, gradient_norm, parameter_norm = self._jax.device_get(
             (loss, gradient_norm, parameter_norm)
         )
+        sync_s = time.monotonic() - sync_started
+        cache_after = jit_cache_size(self._update_fn)
+        memory = jax_memory_metrics(self._jax)
+        self._last_shape_signature = shape_signature
         return UpdateMetrics(
             loss=float(loss),
             gradient_norm=float(gradient_norm),
@@ -470,4 +712,68 @@ class PaperSimpleOPDTrainer:
             teacher_completion_tokens=batch.teacher_completion_tokens,
             aligned_units=batch.aligned_units - batch.aligned_spans,
             aligned_spans=0,
+            rollout_s=batch.rollout_s,
+            teacher_score_s=batch.teacher_score_s,
+            teacher_tokenize_s=batch.teacher_tokenize_s,
+            teacher_forward_s=batch.teacher_forward_s,
+            alignment_s=batch.alignment_s,
+            batch_prepare_s=batch.batch_prepare_s,
+            student_update_dispatch_s=dispatch_s,
+            student_update_sync_s=sync_s,
+            student_update_s=dispatch_s + sync_s,
+            student_fwd_bwd_s=dispatch_s + sync_s,
+            teacher_sequence_required=batch.teacher_sequence_required,
+            teacher_sequence_bucket=batch.teacher_sequence_bucket,
+            teacher_completion_bucket=batch.teacher_completion_bucket,
+            alignment_bucket=batch.alignment_bucket,
+            shape_signature=shape_signature,
+            shape_signature_changed=shape_changed,
+            jit_cache_size_before=cache_before,
+            jit_cache_size_after=cache_after,
+            jit_cache_miss=(
+                int(cache_after > cache_before)
+                if cache_before >= 0 and cache_after >= 0
+                else -1
+            ),
+            actual_prompt_tokens=batch.actual_prompt_tokens,
+            actual_completion_tokens=batch.actual_completion_tokens,
+            actual_total_tokens=batch.actual_total_tokens,
+            maximum_prompt_tokens=batch.maximum_prompt_tokens,
+            maximum_completion_tokens=batch.maximum_completion_tokens,
+            maximum_total_tokens=batch.maximum_total_tokens,
+            minimum_total_tokens=batch.minimum_total_tokens,
+            requested_prompt_tokens=self.config.rollout.max_prompt_tokens,
+            requested_completion_tokens=self.config.rollout.max_completion_tokens,
+            requested_sequence_tokens=(
+                self.config.rollout.max_sequence_tokens
+                or self.config.rollout.max_prompt_tokens
+                + self.config.rollout.max_completion_tokens
+            ),
+            truncation_count=batch.truncation_count,
+            rollout_tokens_s=(
+                batch.actual_completion_tokens / batch.rollout_s
+                if batch.rollout_s > 0
+                else 0.0
+            ),
+            teacher_score_tokens_s=(
+                batch.teacher_completion_tokens / batch.teacher_score_s
+                if batch.teacher_score_s > 0
+                else 0.0
+            ),
+            student_update_tokens_s=(
+                batch.actual_total_tokens / (dispatch_s + sync_s)
+                if dispatch_s + sync_s > 0
+                else 0.0
+            ),
+            student_fwd_bwd_tokens_s=(
+                batch.actual_total_tokens / (dispatch_s + sync_s)
+                if dispatch_s + sync_s > 0
+                else 0.0
+            ),
+            compile_s=(
+                dispatch_s + sync_s
+                if compilation_candidate
+                else 0.0
+            ),
+            **memory,
         )

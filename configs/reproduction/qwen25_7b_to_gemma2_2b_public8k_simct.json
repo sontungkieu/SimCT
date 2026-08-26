@@ -1,0 +1,72 @@
+{
+  "contract_version": 1,
+  "run_id": "vdt-public8k-simct",
+  "student": {
+    "model_id": "gemma-2-2b-it",
+    "model_revision": "kaggle-google-gemma-2-flax-gemma2-2b-it-v1",
+    "tokenizer_id": "google/gemma-2-2b-it",
+    "tokenizer_revision": "kaggle-google-gemma-2-flax-gemma2-2b-it-v1",
+    "maxtext_checkpoint_uri": "/kaggle/input/models/google/gemma-2/flax/gemma2-2b-it/1",
+    "model_source": "kaggle",
+    "model_path": "/kaggle/input/models/google/gemma-2/flax/gemma2-2b-it/1",
+    "tokenizer_type": "sentencepiece",
+    "tokenizer_path": "/kaggle/input/models/google/gemma-2/flax/gemma2-2b-it/1/tokenizer.model"
+  },
+  "teacher": {
+    "model_id": "qwen2.5-7b-instruct",
+    "model_revision": "a09a35458c702b33eeacc393d103063234e8bc28",
+    "tokenizer_id": "Qwen/Qwen2.5-7B-Instruct",
+    "tokenizer_revision": "a09a35458c702b33eeacc393d103063234e8bc28",
+    "maxtext_checkpoint_uri": "/kaggle/input/models/qwen-lm/qwen2.5/transformers/7b-instruct/1",
+    "model_source": "huggingface",
+    "model_path": "/kaggle/input/models/qwen-lm/qwen2.5/transformers/7b-instruct/1",
+    "tokenizer_type": "huggingface",
+    "tokenizer_path": "/kaggle/input/models/qwen-lm/qwen2.5/transformers/7b-instruct/1"
+  },
+  "simct": {
+    "algorithm": "simct",
+    "divergence": "reverse_kl",
+    "alignment_unit": "utf8_bytes",
+    "virtual_support": "shared_tokens_plus_realized_spans",
+    "temperature": 1.0,
+    "span_gh_mask_threshold": 0.0,
+    "reproduction_mode": "paper_math"
+  },
+  "rollout": {
+    "prompt_batch_size": 1,
+    "samples_per_prompt": 1,
+    "max_prompt_tokens": 2048,
+    "max_completion_tokens": 4096,
+    "max_sequence_tokens": 8192,
+    "temperature": 0.6,
+    "top_p": 1.0
+  },
+  "training": {
+    "max_steps": 157,
+    "max_steps_unit": "optimizer_update",
+    "micro_batch_size": 1,
+    "gradient_accumulation_steps": 64,
+    "learning_rate": 5e-7,
+    "teacher_sequence_buckets": [8192, 12288, 16384],
+    "alignment_bucket_size": 16384,
+    "synchronize_phase_timings": false
+  },
+  "tpu": {
+    "accelerator_type": "v5e-8",
+    "expected_device_count": 8,
+    "tensor_parallelism": 1,
+    "pipeline_parallelism": 1,
+    "fsdp_parallelism": 8
+  },
+  "checkpoint": {
+    "root": "/kaggle/working/vdt_public8k_simct/checkpoints",
+    "save_every_steps": 10,
+    "resume_from": null,
+    "warm_start_from": "/kaggle/input/attached-sft-source/checkpoints"
+  },
+  "canary": {
+    "prompt_id": "unused-public8k",
+    "student_prompt": "<start_of_turn>user\nReturn only the integer 4.<end_of_turn>\n<start_of_turn>model\n",
+    "teacher_prompt": "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\nReturn only the integer 4.<|im_end|>\n<|im_start|>assistant\n"
+  }
+}

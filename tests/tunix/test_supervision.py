@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import pytest
+
 from vdt_tunix.contracts import TokenSequence
 from vdt_tunix.supervision import (
+    SupervisionError,
     build_aligned_layout,
     build_overlap_vocabulary,
     pad_layouts,
@@ -51,3 +54,8 @@ def test_aligned_layout_and_padding_use_completion_token_coordinates():
     assert bounds == [[[0, 2, 0, 3]], [[0, 1, 0, 1]]]
     assert unit_mask == [[1.0], [1.0]]
     assert span_mask == [[True], [False]]
+
+    bounds, unit_mask, span_mask = pad_layouts((layout, second), width=3)
+    assert len(bounds[0]) == len(unit_mask[0]) == len(span_mask[0]) == 3
+    with pytest.raises(SupervisionError, match="exceeds static bucket"):
+        pad_layouts((layout,), width=0)

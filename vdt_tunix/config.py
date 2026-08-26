@@ -264,6 +264,9 @@ class RolloutConfig:
     max_completion_tokens: int
     temperature: float
     top_p: float
+    max_sequence_tokens: int | None = None
+    force_max_completion: bool = False
+    minimum_actual_sequence_tokens: int | None = None
 
     def __post_init__(self) -> None:
         for name in (
@@ -278,6 +281,28 @@ class RolloutConfig:
             raise ConfigError("rollout.temperature must be finite and non-negative")
         if not math.isfinite(self.top_p) or not 0 < self.top_p <= 1:
             raise ConfigError("rollout.top_p must be in (0, 1]")
+        if self.max_sequence_tokens is not None:
+            if self.max_sequence_tokens < 2:
+                raise ConfigError("rollout.max_sequence_tokens must be at least 2")
+            if self.max_sequence_tokens <= self.max_prompt_tokens:
+                raise ConfigError(
+                    "rollout.max_sequence_tokens must exceed max_prompt_tokens"
+                )
+        if not isinstance(self.force_max_completion, bool):
+            raise ConfigError("rollout.force_max_completion must be boolean")
+        if self.minimum_actual_sequence_tokens is not None:
+            if self.minimum_actual_sequence_tokens < 1:
+                raise ConfigError(
+                    "rollout.minimum_actual_sequence_tokens must be positive"
+                )
+            if (
+                self.max_sequence_tokens is not None
+                and self.minimum_actual_sequence_tokens > self.max_sequence_tokens
+            ):
+                raise ConfigError(
+                    "rollout.minimum_actual_sequence_tokens cannot exceed "
+                    "max_sequence_tokens"
+                )
 
     @classmethod
     def from_mapping(cls, value: Any) -> RolloutConfig:
@@ -291,7 +316,23 @@ class RolloutConfig:
             "temperature",
             "top_p",
         }
-        _keys(raw, context=context, required=required)
+        _keys(
+            raw,
+            context=context,
+            required=required,
+            optional={
+                "max_sequence_tokens",
+                "force_max_completion",
+                "minimum_actual_sequence_tokens",
+            },
+        )
+        max_sequence_tokens = raw.get("max_sequence_tokens")
+        force_max_completion = raw.get("force_max_completion", False)
+        minimum_actual_sequence_tokens = raw.get(
+            "minimum_actual_sequence_tokens"
+        )
+        if not isinstance(force_max_completion, bool):
+            raise ConfigError("rollout.force_max_completion must be boolean")
         return cls(
             prompt_batch_size=_integer(
                 raw["prompt_batch_size"], "rollout.prompt_batch_size"
@@ -307,6 +348,20 @@ class RolloutConfig:
             ),
             temperature=_number(raw["temperature"], "rollout.temperature"),
             top_p=_number(raw["top_p"], "rollout.top_p"),
+            max_sequence_tokens=(
+                None
+                if max_sequence_tokens is None
+                else _integer(max_sequence_tokens, "rollout.max_sequence_tokens")
+            ),
+            force_max_completion=force_max_completion,
+            minimum_actual_sequence_tokens=(
+                None
+                if minimum_actual_sequence_tokens is None
+                else _integer(
+                    minimum_actual_sequence_tokens,
+                    "rollout.minimum_actual_sequence_tokens",
+                )
+            ),
         )
 
 
@@ -317,6 +372,10 @@ class TrainingConfig:
     gradient_accumulation_steps: int
     learning_rate: float
     seed: int | None = None
+    teacher_sequence_buckets: tuple[int, ...] = ()
+    alignment_bucket_size: int | None = None
+    synchronize_phase_timings: bool = False
+    max_steps_unit: str = "trainer_call"
 
     def __post_init__(self) -> None:
         for name in ("max_steps", "micro_batch_size", "gradient_accumulation_steps"):
@@ -326,6 +385,22 @@ class TrainingConfig:
             raise ConfigError("training.learning_rate must be positive and finite")
         if self.seed is not None and self.seed < 0:
             raise ConfigError("training.seed must be non-negative")
+        if any(value < 1 for value in self.teacher_sequence_buckets):
+            raise ConfigError(
+                "training.teacher_sequence_buckets must contain positive integers"
+            )
+        if tuple(sorted(set(self.teacher_sequence_buckets))) != (
+            self.teacher_sequence_buckets
+        ):
+            raise ConfigError(
+                "training.teacher_sequence_buckets must be strictly increasing"
+            )
+        if self.alignment_bucket_size is not None and self.alignment_bucket_size < 1:
+            raise ConfigError("training.alignment_bucket_size must be positive")
+        if self.max_steps_unit not in {"trainer_call", "optimizer_update"}:
+            raise ConfigError(
+                "training.max_steps_unit must be trainer_call or optimizer_update"
+            )
 
     @classmethod
     def from_mapping(cls, value: Any) -> TrainingConfig:
@@ -337,7 +412,29 @@ class TrainingConfig:
             "gradient_accumulation_steps",
             "learning_rate",
         }
-        _keys(raw, context=context, required=required, optional={"seed"})
+        _keys(
+            raw,
+            context=context,
+            required=required,
+            optional={
+                "seed",
+                "teacher_sequence_buckets",
+                "alignment_bucket_size",
+                "synchronize_phase_timings",
+                "max_steps_unit",
+            },
+        )
+        bucket_values = raw.get("teacher_sequence_buckets", [])
+        if not isinstance(bucket_values, list):
+            raise ConfigError("training.teacher_sequence_buckets must be an array")
+        buckets = tuple(
+            _integer(value, f"training.teacher_sequence_buckets[{index}]")
+            for index, value in enumerate(bucket_values)
+        )
+        alignment_bucket_size = raw.get("alignment_bucket_size")
+        synchronize_phase_timings = raw.get("synchronize_phase_timings", False)
+        if not isinstance(synchronize_phase_timings, bool):
+            raise ConfigError("training.synchronize_phase_timings must be boolean")
         return cls(
             max_steps=_integer(raw["max_steps"], "training.max_steps"),
             micro_batch_size=_integer(
@@ -352,6 +449,19 @@ class TrainingConfig:
                 None
                 if "seed" not in raw
                 else _integer(raw["seed"], "training.seed")
+            ),
+            teacher_sequence_buckets=buckets,
+            alignment_bucket_size=(
+                None
+                if alignment_bucket_size is None
+                else _integer(
+                    alignment_bucket_size, "training.alignment_bucket_size"
+                )
+            ),
+            synchronize_phase_timings=synchronize_phase_timings,
+            max_steps_unit=_string(
+                raw.get("max_steps_unit", "trainer_call"),
+                "training.max_steps_unit",
             ),
         )
 
@@ -570,6 +680,20 @@ class RunConfig:
         # New multi-seed configs include an explicit seed in their digest.
         if self.training.seed is None:
             payload["training"].pop("seed", None)
+        if not self.training.teacher_sequence_buckets:
+            payload["training"].pop("teacher_sequence_buckets", None)
+        if self.training.alignment_bucket_size is None:
+            payload["training"].pop("alignment_bucket_size", None)
+        if not self.training.synchronize_phase_timings:
+            payload["training"].pop("synchronize_phase_timings", None)
+        if self.training.max_steps_unit == "trainer_call":
+            payload["training"].pop("max_steps_unit", None)
+        if self.rollout.max_sequence_tokens is None:
+            payload["rollout"].pop("max_sequence_tokens", None)
+        if not self.rollout.force_max_completion:
+            payload["rollout"].pop("force_max_completion", None)
+        if self.rollout.minimum_actual_sequence_tokens is None:
+            payload["rollout"].pop("minimum_actual_sequence_tokens", None)
         payload["checkpoint"] = {
             "save_every_steps": self.checkpoint.save_every_steps,
         }

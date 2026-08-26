@@ -34,6 +34,62 @@ def test_explicit_training_seed_changes_identity_without_drifting_legacy(config_
         RunConfig.from_mapping(negative)
 
 
+def test_performance_controls_are_opt_in_and_part_of_identity(config_payload):
+    legacy = RunConfig.from_mapping(copy.deepcopy(config_payload))
+    payload = copy.deepcopy(config_payload)
+    payload["training"].update(
+        {
+            "teacher_sequence_buckets": [128, 256, 512],
+            "alignment_bucket_size": 64,
+            "synchronize_phase_timings": True,
+        }
+    )
+    configured = RunConfig.from_mapping(payload)
+    assert configured.training.teacher_sequence_buckets == (128, 256, 512)
+    assert configured.training.alignment_bucket_size == 64
+    assert configured.training.synchronize_phase_timings
+    assert configured.digest() != legacy.digest()
+
+    invalid = copy.deepcopy(payload)
+    invalid["training"]["teacher_sequence_buckets"] = [256, 128]
+    with pytest.raises(ConfigError, match="strictly increasing"):
+        RunConfig.from_mapping(invalid)
+
+
+def test_sequence_probe_and_optimizer_update_contracts_are_explicit(config_payload):
+    legacy = RunConfig.from_mapping(copy.deepcopy(config_payload))
+    payload = copy.deepcopy(config_payload)
+    payload["rollout"].update(
+        {
+            "max_sequence_tokens": 4096,
+            "force_max_completion": True,
+            "minimum_actual_sequence_tokens": 3968,
+        }
+    )
+    payload["training"].update(
+        {
+            "max_steps_unit": "optimizer_update",
+            "gradient_accumulation_steps": 64,
+        }
+    )
+    configured = RunConfig.from_mapping(payload)
+    assert configured.rollout.max_sequence_tokens == 4096
+    assert configured.rollout.force_max_completion
+    assert configured.rollout.minimum_actual_sequence_tokens == 3968
+    assert configured.training.max_steps_unit == "optimizer_update"
+    assert configured.digest() != legacy.digest()
+
+    invalid = copy.deepcopy(payload)
+    invalid["rollout"]["minimum_actual_sequence_tokens"] = 4097
+    with pytest.raises(ConfigError, match="cannot exceed max_sequence_tokens"):
+        RunConfig.from_mapping(invalid)
+
+    invalid = copy.deepcopy(payload)
+    invalid["training"]["max_steps_unit"] = "micro_step"
+    with pytest.raises(ConfigError, match="trainer_call or optimizer_update"):
+        RunConfig.from_mapping(invalid)
+
+
 def test_contract_is_single_teacher_and_rejects_unknown_teachers(config_payload):
     payload = copy.deepcopy(config_payload)
     payload["teachers"] = [payload["teacher"]]

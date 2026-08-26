@@ -388,6 +388,27 @@ def test_training_renderer_materializes_explicit_seed_runtime_config():
     assert "'public-substitute-multiseed'" in source
 
 
+def test_training_renderer_can_enable_one_profile_step():
+    notebook = render_training_notebook(
+        phase="simple_opd",
+        config_relative_path="configs/simple-opd.json",
+        repo_dataset_source=REPO_DATASET,
+        training_dataset_source="testowner/public-substitute-v1",
+        training_manifest_relative_path="opd/manifest.json",
+        student_model_source=STUDENT,
+        teacher_model_source=TEACHER,
+        warm_start_kernel_source="testowner/public-sft-seed43",
+        warm_start_kernel_version=1,
+        warm_start_relative_path="checkpoints",
+        profile_step=2,
+    )
+    source = "".join(
+        "".join(cell.get("source", [])) for cell in notebook["cells"]
+    )
+    assert '"--profile-dir", str(WORK / "jax-profile")' in source
+    assert '"--profile-step", str(2)' in source
+
+
 def test_training_renderer_rejects_sft_warm_start():
     with pytest.raises(KaggleModelSourceError, match="may not declare"):
         render_training_notebook(

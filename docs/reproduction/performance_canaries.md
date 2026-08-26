@@ -1,0 +1,114 @@
+# TPU resource and performance canaries
+
+These canaries answer a resource question before full training: what is the
+largest prompt batch that preserves the intended cross-tokenizer OPD workload
+at a fixed sequence budget on one TPU v5e-8? They are not benchmark or paper
+reproduction evidence.
+
+## Two protocols that must stay separate
+
+`paper4k` is the operational interpretation of Table 4 in the SimCT paper:
+
+- maximum student prompt-plus-completion sequence: 4096 tokens;
+- rollout completion cap: 4096 tokens;
+- temperature 0.6, top-p 0.95, one response per prompt;
+- the runtime caps completion by the remaining sequence capacity.
+
+The paper reports both maximum sequence length 4096 and rollout maximum length
+4096, but does not specify the exact truncation interaction for a non-empty
+prompt. Therefore the rule above is an explicit reproduction interpretation,
+not an author-confirmed fact.
+
+`public8k` follows the released shell script instead:
+
+- model sequence length: 8192 tokens;
+- rollout completion cap: 4096 tokens;
+- prompt cap: 4096 for the worst-case probe;
+- temperature 0.6 and top-p 0.95 in the controlled comparison.
+
+The released script itself leaves top-p at the code default 1.0. The controlled
+canary pins 0.95 so memory and throughput comparisons differ only in length and
+batch. This is public-code configuration evidence, not Table 4 evidence. Never
+pool 4K and 8K results.
+
+## Resource ladder
+
+For each protocol, test prompt batch `B = 1, 2, 4, 8` in that order on the
+unchanged `FSDP8 x TP1 x PP1` topology. Stop at the first OOM, non-finite
+metric, missing W&B evidence, or runtime-contract failure. Do not submit a
+larger batch for that length until the failure is diagnosed.
+
+Every canary performs one logical optimizer update. The trainer call consumes
+the whole prompt batch and Optax accumulates across calls:
+
+| Prompt batch B | Gradient accumulation | Effective responses/update |
+|---:|---:|---:|
+| 1 | 64 | 64 |
+| 2 | 32 | 64 |
+| 4 | 16 | 64 |
+| 8 | 8 | 64 |
+
+`FSDP8`, `TP1`, and `PP1` describe model topology, not batch replication.
+W&B `step` advances only after accumulation completes; raw trainer calls are
+written separately to `*.micro.jsonl`.
+
+## A real worst-case rollout
+
+The probe uses the native Tunix sampler. In probe mode, normal EOS tokens are
+forbidden and the pad token is supplied as the unreachable EOS sentinel, so
+the sampler executes the requested completion length instead of ending early.
+The run fails closed unless the observed total token length reaches the
+protocol-specific floor. This prevents a short/EOS-terminated output from
+being misreported as proof that 4K or 8K fits.
+
+Build fixed prompt datasets and the config matrix:
+
+```bash
+python3 scripts/tpu/build_resource_probe_dataset.py \
+  --output-dir /tmp/vdt-resource-probes
+
+python3 scripts/tpu/build_performance_canary_matrix.py \
+  --baseline configs/reproduction/qwen25_7b_to_gemma2_2b_public_simple_opd_screen.json \
+  --output-dir /tmp/vdt-performance-canaries
+```
+
+## Required W&B and local evidence
+
+Each accepted canary must have a native finished W&B run and matching local
+summary. Required fields include:
+
+- requested and actual prompt, completion, and total token lengths;
+- prompt batch, accumulation count, effective global batch;
+- `compile_s`, rollout, teacher tokenize/forward/score, alignment, and student
+  forward-backward timings plus token/s rates (`compile_s` is a first-shape
+  compile-attributed upper bound, not a compiler-internal timer);
+- finite loss, gradient norm, and parameter norm;
+- truncation count, TPU device count/topology, shape signature and JIT-cache
+  observations;
+- best-effort JAX memory-in-use, peak, and limit values when exposed by the
+  runtime.
+
+Pass `--profile-step 1` with `--profile-dir` to profile one micro-call. The
+first call deliberately includes compile/startup costs. Later optimization
+canaries may profile a warm call, but must label it separately.
+
+## Optimization order after the ladder
+
+If `paper4k` cannot run at B>=4 or `public8k` cannot run at B>=2, profile before
+changing topology. The current implementation can retain teacher and student
+full-vocabulary tensors of shape approximately `B x L x V`, which may dominate
+weights or KV-cache memory.
+
+The allowed optimization order is:
+
+1. chunk exact teacher scoring by example/sequence;
+2. retain only mathematically sufficient SimCT statistics instead of full
+   `B x L x V` logits, with a small-tensor parity test against the reference;
+3. bucket lengths or dynamically microbatch under a token budget;
+4. rematerialize/checkpoint activations;
+5. only then test HSDP or rollout replicas as a separate topology experiment.
+
+Any loss-path optimization must pass numerical parity tests before a remote
+canary. The fastest safe `paper4k` batch becomes the candidate for the full
+two-epoch, effective-batch-64 scientific run. `public8k` remains a separate
+ablation.

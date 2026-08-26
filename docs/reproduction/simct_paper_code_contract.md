@@ -192,6 +192,31 @@ LR `1e-8`. Only weight decay and a generic cosine schedule are stated in paper
 Table 4; the other exact optimizer/scheduler details are code-observed and must
 not be back-attributed to the paper without author confirmation.
 
+### 4.3 Sequence-budget interpretation used by the Tunix port
+
+The paper reports both maximum sequence length 4096 and rollout maximum length
+4096, but does not specify whether the latter is an independent completion cap
+or whether prompts reduce the available rollout length. The Tunix `paper4k`
+protocol therefore makes this reproduction interpretation explicit:
+
+```text
+student prompt tokens + generated completion tokens <= 4096
+generated completion tokens <= 4096
+```
+
+This is an **INFERENCE**, not an author-confirmed detail. The runtime caps the
+completion by the remaining student sequence capacity and logs requested versus
+actual lengths. The corresponding two-epoch 10K-data template uses 314 logical
+optimizer updates at effective batch 64 (20,096 response consumptions), so the
+small final-epoch overshoot is explicit rather than silently calling 314 updates
+an exact 20,000-example traversal.
+
+The separate `public8k` protocol freezes the released launch semantics:
+`max_len=8192`, rollout cap 4096, LR `5e-7`, one epoch (157 effective-batch-64
+updates), and the omitted top-p flag's default 1.0. It is a public-code
+ablation, not Table 4 reproduction. Results from `paper4k` and `public8k` must
+not be pooled.
+
 `tests/upstream_parity/test_public_training_contract.py` checks these public
 values and the unresolved wrapper paths without launching a process.
 

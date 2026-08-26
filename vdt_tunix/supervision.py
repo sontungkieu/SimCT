@@ -158,12 +158,20 @@ def build_aligned_layout(
 
 def pad_layouts(
     layouts: Sequence[AlignedLayout],
+    *,
+    width: int | None = None,
 ) -> tuple[list[list[list[int]]], list[list[float]], list[list[bool]]]:
     """Pad host layouts into JSON/JAX-friendly batch arrays."""
 
     if not layouts:
         raise SupervisionError("layout batch must not be empty")
-    width = max(len(layout.units) for layout in layouts)
+    required_width = max(len(layout.units) for layout in layouts)
+    if width is None:
+        width = required_width
+    if width < required_width:
+        raise SupervisionError(
+            f"layout width {required_width} exceeds static bucket {width}"
+        )
     bounds: list[list[list[int]]] = []
     unit_mask: list[list[float]] = []
     span_mask: list[list[bool]] = []

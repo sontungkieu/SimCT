@@ -13,11 +13,13 @@ import dataclasses
 import hashlib
 import importlib
 import math
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 from vdt_tunix.config import ModelConfig, RunConfig
+from vdt_tunix.performance import PerformanceContractError, select_length_bucket
 from vdt_tunix.contracts import (
     INTERFACE_CONTRACT_VERSION,
     BackendBundle,
@@ -440,6 +442,7 @@ class TunixStudentRolloutBackend:
         self._config = config
         self.model_adapter = model_adapter
         self.real_model_integration = model_adapter.dependencies.production
+        self.last_phase_timings: dict[str, float | int] = {}
 
     def _tunix_sampler_rollout(
         self,
@@ -477,8 +480,11 @@ class TunixStudentRolloutBackend:
                 tokenizer=self.model_adapter.tokenizer.raw_tokenizer,
                 cache_config=sampler_lib.CacheConfig(
                     cache_size=(
-                        self._config.rollout.max_prompt_tokens
-                        + self._config.rollout.max_completion_tokens
+                        (
+                            self._config.rollout.max_sequence_tokens
+                            or self._config.rollout.max_prompt_tokens
+                            + self._config.rollout.max_completion_tokens
+                        )
                         + 1
                     ),
                     num_layers=int(params.num_layers),
@@ -497,10 +503,29 @@ class TunixStudentRolloutBackend:
             if self._config.rollout.temperature == 0.0
             else self._config.rollout.top_p
         )
+        longest_prompt = max(len(row[4]) for row in rows)
+        max_generation_steps = self._config.rollout.max_completion_tokens
+        if self._config.rollout.max_sequence_tokens is not None:
+            max_generation_steps = min(
+                max_generation_steps,
+                self._config.rollout.max_sequence_tokens - longest_prompt,
+            )
+        if max_generation_steps < 1:
+            raise ModelAdapterError(
+                "no completion capacity remains under max_sequence_tokens"
+            )
+        forced_kwargs: dict[str, Any] = {}
+        if self._config.rollout.force_max_completion:
+            forced_kwargs = {
+                "eos_tokens": [self.model_adapter.tokenizer.pad_token_id],
+                "forbidden_tokens": sorted(
+                    self.model_adapter.tokenizer.special_token_ids
+                ),
+            }
         with __import__("jax").set_mesh(loaded.mesh):
             sampled = loaded.sampler(
                 prompts,
-                max_generation_steps=self._config.rollout.max_completion_tokens,
+                max_generation_steps=max_generation_steps,
                 max_prompt_length=self._config.rollout.max_prompt_tokens,
                 temperature=self._config.rollout.temperature,
                 top_p=top_p,
@@ -509,6 +534,7 @@ class TunixStudentRolloutBackend:
                 return_logprobs=True,
                 echo=False,
                 pad_output=False,
+                **forced_kwargs,
             )
         if len(sampled.tokens) != len(rows) or sampled.logprobs is None:
             raise ModelAdapterError("Tunix sampler returned an invalid sample batch")
@@ -548,6 +574,8 @@ class TunixStudentRolloutBackend:
     def rollout(self, request: RolloutRequest) -> StudentRolloutBatch:
         import numpy as np
 
+        started = time.monotonic()
+
         rows: list[
             tuple[Any, int, str, tuple[int, ...], tuple[int, ...]]
         ] = []
@@ -573,7 +601,25 @@ class TunixStudentRolloutBackend:
                 )
 
         if self.real_model_integration:
-            return self._tunix_sampler_rollout(request, rows)
+            requested_generation_steps = self._config.rollout.max_completion_tokens
+            if self._config.rollout.max_sequence_tokens is not None:
+                requested_generation_steps = min(
+                    requested_generation_steps,
+                    self._config.rollout.max_sequence_tokens
+                    - max(len(row[4]) for row in rows),
+                )
+            result = self._tunix_sampler_rollout(request, rows)
+            self.last_phase_timings = {
+                "student_rollout_s": time.monotonic() - started,
+                "student_rollout_records": len(result.samples),
+                "student_rollout_requested_tokens": (
+                    len(result.samples) * requested_generation_steps
+                ),
+                "student_rollout_forced_length": int(
+                    self._config.rollout.force_max_completion
+                ),
+            }
+            return result
 
         max_prompt = max(len(row[4]) for row in rows)
         total_length = max_prompt + self._config.rollout.max_completion_tokens
@@ -644,7 +690,7 @@ class TunixStudentRolloutBackend:
                 )
             )
         model = self._config.student
-        return StudentRolloutBatch(
+        result = StudentRolloutBatch(
             contract_version=INTERFACE_CONTRACT_VERSION,
             run_id=request.run_id,
             step=request.step,
@@ -654,6 +700,11 @@ class TunixStudentRolloutBackend:
             tokenizer_revision=model.tokenizer_revision,
             samples=tuple(samples),
         )
+        self.last_phase_timings = {
+            "student_rollout_s": time.monotonic() - started,
+            "student_rollout_records": len(result.samples),
+        }
+        return result
 
 
 class MaxTextFrozenTeacherScoreBackend:
@@ -667,10 +718,12 @@ class MaxTextFrozenTeacherScoreBackend:
         self._config = config
         self.model_adapter = model_adapter
         self.real_model_integration = model_adapter.dependencies.production
+        self.last_phase_timings: dict[str, float | int] = {}
 
     def score(self, request: TeacherScoreRequest) -> TeacherScoreBatch:
         import numpy as np
 
+        tokenize_started = time.monotonic()
         prompt_by_id = {prompt.prompt_id: prompt for prompt in request.prompts}
         tokenized: list[
             tuple[Any, tuple[int, ...], tuple[int, ...], Any]
@@ -698,7 +751,14 @@ class MaxTextFrozenTeacherScoreBackend:
             len(model_prompt_ids) + len(completion.token_ids)
             for _, _, model_prompt_ids, completion in tokenized
         ]
-        max_width = max(widths)
+        tokenize_s = time.monotonic() - tokenize_started
+        required_width = max(widths)
+        try:
+            max_width = select_length_bucket(
+                required_width, self._config.training.teacher_sequence_buckets
+            )
+        except PerformanceContractError as exc:
+            raise ModelAdapterError(str(exc)) from exc
         pad_id = self.model_adapter.tokenizer.pad_token_id
         input_ids = np.full((len(tokenized), max_width), pad_id, dtype=np.int32)
         segment_ids = np.zeros_like(input_ids)
@@ -710,7 +770,16 @@ class MaxTextFrozenTeacherScoreBackend:
         # Keep teacher logits on device.  Moving [batch, sequence, vocabulary]
         # to host would dominate the cross-tokenizer update and can exceed RAM.
         # The contract payload is backend-owned and accepts JAX or NumPy arrays.
+        forward_started = time.monotonic()
         full_logits = self.model_adapter.forward(input_ids, segment_ids)
+        if self._config.training.synchronize_phase_timings:
+            try:
+                import jax
+
+                jax.block_until_ready(full_logits)
+            except (ImportError, AttributeError):
+                self.model_adapter.to_host(full_logits)
+        forward_s = time.monotonic() - forward_started
         samples: list[TeacherScoreSample] = []
         for row_index, (
             rollout,
@@ -735,7 +804,7 @@ class MaxTextFrozenTeacherScoreBackend:
                 )
             )
         model = self._config.teacher
-        return TeacherScoreBatch(
+        result = TeacherScoreBatch(
             contract_version=INTERFACE_CONTRACT_VERSION,
             run_id=request.rollouts.run_id,
             step=request.rollouts.step,
@@ -745,6 +814,13 @@ class MaxTextFrozenTeacherScoreBackend:
             tokenizer_revision=model.tokenizer_revision,
             samples=tuple(samples),
         )
+        self.last_phase_timings = {
+            "teacher_tokenize_s": tokenize_s,
+            "teacher_forward_s": forward_s,
+            "teacher_sequence_required": required_width,
+            "teacher_sequence_bucket": max_width,
+        }
+        return result
 
 
 def build_backends(
