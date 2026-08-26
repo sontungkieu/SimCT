@@ -35,7 +35,6 @@ def _validate_observability(
     expected = {
         "provider": "wandb",
         "requested": True,
-        "fail_open": True,
         "status": "finished",
     }
     drift = {
@@ -45,6 +44,17 @@ def _validate_observability(
     }
     if drift:
         raise WandbEvidenceError(f"{context} W&B evidence drifted: {drift}")
+    fail_open = observability.get("fail_open")
+    if not isinstance(fail_open, bool):
+        raise WandbEvidenceError(f"{context}.fail_open must be a boolean")
+    required = observability.get("required")
+    if required is not None:
+        if not isinstance(required, bool):
+            raise WandbEvidenceError(f"{context}.required must be a boolean")
+        if fail_open is required:
+            raise WandbEvidenceError(
+                f"{context}.fail_open must equal not required"
+            )
     logged_steps = _positive_int(
         observability.get("logged_steps"), f"{context}.logged_steps"
     )

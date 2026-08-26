@@ -51,12 +51,26 @@ def test_native_wandb_evidence_requires_all_three_finished_runs():
     assert set(report["phases"]) == {"training", "generation", "scoring"}
 
 
+def test_native_wandb_evidence_accepts_required_fail_closed_phases():
+    training, generation, scoring = _summaries()
+    for summary in (generation, scoring):
+        summary["observability"]["required"] = True
+        summary["observability"]["fail_open"] = False
+    report = validate_native_wandb_evidence(
+        training_summary=training,
+        generation_summary=generation,
+        scoring_summary=scoring,
+    )
+    assert report["status"] == "passed"
+
+
 @pytest.mark.parametrize(
     ("phase", "field", "value", "match"),
     [
         ("training", "status", "degraded", "drifted"),
         ("generation", "logged_steps", 4, "must be 5"),
         ("scoring", "run_url", "", "not a W&B URL"),
+        ("training", "fail_open", "yes", "must be a boolean"),
     ],
 )
 def test_native_wandb_evidence_fails_closed(phase, field, value, match):
@@ -69,6 +83,17 @@ def test_native_wandb_evidence_fails_closed(phase, field, value, match):
             training_summary=summaries[0],
             generation_summary=summaries[1],
             scoring_summary=summaries[2],
+        )
+
+
+def test_native_wandb_evidence_rejects_inconsistent_required_policy():
+    training, generation, scoring = _summaries()
+    generation["observability"]["required"] = True
+    with pytest.raises(WandbEvidenceError, match="must equal not required"):
+        validate_native_wandb_evidence(
+            training_summary=training,
+            generation_summary=generation,
+            scoring_summary=scoring,
         )
 
 
