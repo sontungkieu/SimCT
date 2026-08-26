@@ -185,21 +185,61 @@ class LogitsPayload:
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
+class TeacherSufficientStatisticsPayload:
+    """Exact reduced teacher scores used by the paper SimCT loss."""
+
+    shared_log_probs: Any = dataclasses.field(repr=False, compare=False)
+    selected_log_probs: Any = dataclasses.field(repr=False, compare=False)
+    shape: tuple[int, int]
+    dtype: str
+
+    def __post_init__(self) -> None:
+        if len(self.shape) != 2 or self.shape[0] < 1 or self.shape[1] < 1:
+            raise ContractError(
+                "teacher shared log-probabilities must have shape "
+                "[tokens, overlap>=1]"
+            )
+        shared_shape = _payload_shape(self.shared_log_probs)
+        if shared_shape is not None and shared_shape != self.shape:
+            raise ContractError(
+                "teacher shared-score payload shape "
+                f"{shared_shape} != declared {self.shape}"
+            )
+        selected_shape = _payload_shape(self.selected_log_probs)
+        if selected_shape is not None and selected_shape != (self.shape[0],):
+            raise ContractError(
+                "teacher selected-score payload must match the token axis"
+            )
+        if not self.dtype:
+            raise ContractError("teacher sufficient-statistic dtype must be declared")
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
 class TeacherScoreSample:
     sample_id: str
     prompt_id: str
     teacher_prompt_token_ids: tuple[int, ...]
     completion: TokenSequence
-    position_logits: LogitsPayload
+    position_logits: LogitsPayload | None = None
+    sufficient_statistics: TeacherSufficientStatisticsPayload | None = None
 
     def __post_init__(self) -> None:
         if not self.sample_id or not self.prompt_id:
             raise ContractError("sample_id and prompt_id must be non-empty")
         if not self.teacher_prompt_token_ids:
             raise ContractError("teacher prompt token ids must be non-empty")
-        if self.position_logits.shape[0] != len(self.completion.token_ids):
+        if (self.position_logits is None) == (self.sufficient_statistics is None):
             raise ContractError(
-                "teacher logit rows must match teacher completion tokens"
+                "teacher score must provide exactly one score representation"
+            )
+        token_rows = (
+            self.position_logits.shape[0]
+            if self.position_logits is not None
+            else self.sufficient_statistics.shape[0]
+        )
+        if token_rows != len(self.completion.token_ids):
+            raise ContractError(
+                "teacher score rows must match teacher completion tokens"
             )
 
 

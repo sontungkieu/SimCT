@@ -424,8 +424,8 @@ class TrainingConfig:
                 "max_steps_unit",
             },
         )
-        bucket_values = raw.get("teacher_sequence_buckets", [])
-        if not isinstance(bucket_values, list):
+        bucket_values = raw.get("teacher_sequence_buckets") or []
+        if not isinstance(bucket_values, (list, tuple)):
             raise ConfigError("training.teacher_sequence_buckets must be an array")
         buckets = tuple(
             _integer(value, f"training.teacher_sequence_buckets[{index}]")
@@ -447,7 +447,7 @@ class TrainingConfig:
             learning_rate=_number(raw["learning_rate"], "training.learning_rate"),
             seed=(
                 None
-                if "seed" not in raw
+                if raw.get("seed") is None
                 else _integer(raw["seed"], "training.seed")
             ),
             teacher_sequence_buckets=buckets,

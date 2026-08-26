@@ -30,6 +30,7 @@ from vdt_tunix.contracts import (
     TeacherScoreBatch,
     TeacherScoreRequest,
     TeacherScoreSample,
+    TeacherSufficientStatisticsPayload,
 )
 from vdt_tunix.model_adapters import (
     CausalModelForwardAdapter,
@@ -50,6 +51,7 @@ class _LoadedTunixModel:
     forward_fn: Any
     model_config: Any
     sampler: Any | None = None
+    forward_statistics_fn: Any | None = None
 
 
 def _normalize_tokenizer_padding(tokenizer: Any, tokenizer_type: str) -> Any:
@@ -342,11 +344,57 @@ def _production_dependencies(config: RunConfig) -> ModelRuntimeDependencies:
                 segments=segments,
             )
 
+        @nnx.jit
+        def forward_statistics_fn(
+            module: Any,
+            input_ids: Any,
+            positions: Any,
+            segments: Any,
+            completion_positions: Any,
+            completion_token_ids: Any,
+            overlap_ids: Any,
+        ):
+            input_mask = segments.astype(jnp.bool_)
+            sequence_length = input_ids.shape[-1]
+            causal_mask = jnp.tril(
+                jnp.ones(
+                    (sequence_length, sequence_length),
+                    dtype=jnp.bool_,
+                )
+            )
+            attention_mask = input_mask[:, None, :] & causal_mask[None, ...]
+            logits = _call_native_tunix_model(
+                module,
+                family=model_family,
+                input_ids=input_ids,
+                positions=positions,
+                attention_mask=attention_mask,
+                segments=segments,
+            )
+            batch = jnp.arange(input_ids.shape[0], dtype=jnp.int32)[:, None]
+            completion_logits = logits[batch, completion_positions].astype(
+                jnp.float32
+            )
+            log_normalizer = jax.scipy.special.logsumexp(
+                completion_logits, axis=-1
+            )
+            shared_log_probs = (
+                jnp.take(completion_logits, overlap_ids, axis=-1)
+                - log_normalizer[..., None]
+            )
+            selected_logits = jnp.take_along_axis(
+                completion_logits,
+                completion_token_ids[..., None],
+                axis=-1,
+            )[..., 0]
+            return shared_log_probs, selected_logits - log_normalizer
+
         return _LoadedTunixModel(
             model=model,
             mesh=mesh,
             forward_fn=forward_fn,
             model_config=model_params,
+            forward_statistics_fn=forward_statistics_fn,
         )
 
     def forward_model(
@@ -364,6 +412,43 @@ def _production_dependencies(config: RunConfig) -> ModelRuntimeDependencies:
         with jax.set_mesh(loaded.mesh):
             return loaded.forward_fn(loaded.model, ids, positions, segments)
 
+    def forward_sufficient_statistics(
+        loaded: _LoadedTunixModel,
+        input_ids: Any,
+        segment_ids: Any,
+        completion_positions: Any,
+        completion_token_ids: Any,
+        overlap_ids: Any,
+    ) -> tuple[Any, Any]:
+        ids = jnp.asarray(input_ids, dtype=jnp.int32)
+        segments = jnp.asarray(segment_ids, dtype=jnp.int32)
+        selected_positions = jnp.asarray(completion_positions, dtype=jnp.int32)
+        selected_ids = jnp.asarray(completion_token_ids, dtype=jnp.int32)
+        shared_ids = jnp.asarray(overlap_ids, dtype=jnp.int32)
+        if ids.ndim != 2 or segments.shape != ids.shape:
+            raise ModelAdapterError(
+                "input_ids and segment_ids must be equal-shape rank-2 arrays"
+            )
+        if selected_positions.ndim != 2 or selected_ids.shape != selected_positions.shape:
+            raise ModelAdapterError(
+                "completion positions and ids must be equal-shape rank-2 arrays"
+            )
+        if selected_positions.shape[0] != ids.shape[0] or shared_ids.ndim != 1:
+            raise ModelAdapterError("teacher sufficient-statistic batch shape mismatch")
+        if loaded.forward_statistics_fn is None:
+            raise ModelAdapterError("loaded model lacks sufficient-statistic forward")
+        positions = jnp.maximum(jnp.cumsum(segments, axis=-1) - 1, 0)
+        with jax.set_mesh(loaded.mesh):
+            return loaded.forward_statistics_fn(
+                loaded.model,
+                ids,
+                positions,
+                segments,
+                selected_positions,
+                selected_ids,
+                shared_ids,
+            )
+
     return ModelRuntimeDependencies(
         name="tunix-local-mounted",
         production=True,
@@ -373,6 +458,7 @@ def _production_dependencies(config: RunConfig) -> ModelRuntimeDependencies:
         forward_model=forward_model,
         stop_gradient=jax.lax.stop_gradient,
         to_host=jax.device_get,
+        forward_sufficient_statistics=forward_sufficient_statistics,
     )
 
 
@@ -719,6 +805,13 @@ class MaxTextFrozenTeacherScoreBackend:
         self.model_adapter = model_adapter
         self.real_model_integration = model_adapter.dependencies.production
         self.last_phase_timings: dict[str, float | int] = {}
+        self._overlap_token_ids: tuple[int, ...] | None = None
+
+    def configure_overlap_token_ids(self, token_ids: Sequence[int]) -> None:
+        normalized = tuple(int(value) for value in token_ids)
+        if not normalized:
+            raise ModelAdapterError("teacher overlap token ids must not be empty")
+        self._overlap_token_ids = normalized
 
     def score(self, request: TeacherScoreRequest) -> TeacherScoreBatch:
         import numpy as np
@@ -762,23 +855,65 @@ class MaxTextFrozenTeacherScoreBackend:
         pad_id = self.model_adapter.tokenizer.pad_token_id
         input_ids = np.full((len(tokenized), max_width), pad_id, dtype=np.int32)
         segment_ids = np.zeros_like(input_ids)
+        completion_required = max(
+            len(completion.token_ids)
+            for _, _, _, completion in tokenized
+        )
+        try:
+            completion_width = select_length_bucket(
+                completion_required,
+                self._config.training.teacher_sequence_buckets,
+            )
+        except PerformanceContractError as exc:
+            raise ModelAdapterError(str(exc)) from exc
+        completion_positions = np.zeros(
+            (len(tokenized), completion_width), dtype=np.int32
+        )
+        completion_token_ids = np.full(
+            (len(tokenized), completion_width), pad_id, dtype=np.int32
+        )
         for row_index, (_, _, model_prompt_ids, completion) in enumerate(tokenized):
             row_ids = model_prompt_ids + completion.token_ids
             input_ids[row_index, : len(row_ids)] = row_ids
             segment_ids[row_index, : len(row_ids)] = 1
 
-        # Keep teacher logits on device.  Moving [batch, sequence, vocabulary]
-        # to host would dominate the cross-tokenizer update and can exceed RAM.
-        # The contract payload is backend-owned and accepts JAX or NumPy arrays.
+            start = len(model_prompt_ids) - 1
+            width = len(completion.token_ids)
+            completion_positions[row_index, :width] = np.arange(
+                start, start + width, dtype=np.int32
+            )
+            completion_token_ids[row_index, :width] = completion.token_ids
+
+        use_sufficient_statistics = (
+            self._overlap_token_ids is not None
+            and self.model_adapter.dependencies.forward_sufficient_statistics
+            is not None
+        )
+        # The optimizer path reduces the frozen teacher inside one JIT to the
+        # exact SimCT sufficient statistics.  CPU dependency fakes and the
+        # framework-light interface canary retain the full-logit fallback.
         forward_started = time.monotonic()
-        full_logits = self.model_adapter.forward(input_ids, segment_ids)
+        if use_sufficient_statistics:
+            shared_log_probs, selected_log_probs = (
+                self.model_adapter.forward_sufficient_statistics(
+                    input_ids,
+                    segment_ids,
+                    completion_positions,
+                    completion_token_ids,
+                    self._overlap_token_ids,
+                )
+            )
+            forward_values: Any = (shared_log_probs, selected_log_probs)
+        else:
+            full_logits = self.model_adapter.forward(input_ids, segment_ids)
+            forward_values = full_logits
         if self._config.training.synchronize_phase_timings:
             try:
                 import jax
 
-                jax.block_until_ready(full_logits)
+                jax.block_until_ready(forward_values)
             except (ImportError, AttributeError):
-                self.model_adapter.to_host(full_logits)
+                self.model_adapter.to_host(forward_values)
         forward_s = time.monotonic() - forward_started
         samples: list[TeacherScoreSample] = []
         for row_index, (
@@ -788,19 +923,36 @@ class MaxTextFrozenTeacherScoreBackend:
             completion,
         ) in enumerate(tokenized):
             start = len(model_prompt_ids) - 1
-            end = start + len(completion.token_ids)
-            position_logits = full_logits[row_index, start:end, :]
+            width = len(completion.token_ids)
+            if use_sufficient_statistics:
+                sample_shared = shared_log_probs[row_index, :width, :]
+                sample_selected = selected_log_probs[row_index, :width]
+                score_payload = {
+                    "sufficient_statistics": TeacherSufficientStatisticsPayload(
+                        shared_log_probs=sample_shared,
+                        selected_log_probs=sample_selected,
+                        shape=tuple(int(value) for value in sample_shared.shape),
+                        dtype=str(sample_shared.dtype),
+                    )
+                }
+            else:
+                position_logits = full_logits[
+                    row_index, start : start + width, :
+                ]
+                score_payload = {
+                    "position_logits": LogitsPayload(
+                        values=position_logits,
+                        shape=tuple(int(value) for value in position_logits.shape),
+                        dtype=str(position_logits.dtype),
+                    )
+                }
             samples.append(
                 TeacherScoreSample(
                     sample_id=rollout.sample_id,
                     prompt_id=rollout.prompt_id,
                     teacher_prompt_token_ids=prompt_ids,
                     completion=completion,
-                    position_logits=LogitsPayload(
-                        values=position_logits,
-                        shape=tuple(int(value) for value in position_logits.shape),
-                        dtype=str(position_logits.dtype),
-                    ),
+                    **score_payload,
                 )
             )
         model = self._config.teacher
@@ -819,6 +971,7 @@ class MaxTextFrozenTeacherScoreBackend:
             "teacher_forward_s": forward_s,
             "teacher_sequence_required": required_width,
             "teacher_sequence_bucket": max_width,
+            "teacher_completion_bucket": completion_width,
         }
         return result
 

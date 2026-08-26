@@ -104,15 +104,19 @@ canaries may profile a warm call, but must label it separately.
 ## Optimization order after the ladder
 
 If `paper4k` cannot run at B>=4 or `public8k` cannot run at B>=2, profile before
-changing topology. The current implementation can retain teacher and student
-full-vocabulary tensors of shape approximately `B x L x V`, which may dominate
-weights or KV-cache memory.
+changing topology. The original implementation returned teacher
+full-vocabulary tensors of shape approximately `B x L x V`, which can dominate
+weights or KV-cache memory. The production teacher forward now computes the
+exact full-vocabulary log-normalizer inside its JIT and returns only shared-token
+and realized selected-token log-probabilities. A small-tensor regression test
+checks numerical parity with the full-logit kernel. This is local correctness
+evidence only; a fresh remote canary must still verify peak HBM and throughput.
 
 The allowed optimization order is:
 
-1. chunk exact teacher scoring by example/sequence;
-2. retain only mathematically sufficient SimCT statistics instead of full
-   `B x L x V` logits, with a small-tensor parity test against the reference;
+1. use the implemented exact teacher sufficient-statistics path and verify its
+   remote HBM profile;
+2. if necessary, chunk exact teacher scoring by example/sequence;
 3. bucket lengths or dynamically microbatch under a token budget;
 4. rematerialize/checkpoint activations;
 5. only then test HSDP or rollout replicas as a separate topology experiment.

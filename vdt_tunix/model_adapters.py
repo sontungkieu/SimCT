@@ -35,6 +35,9 @@ class ModelRuntimeDependencies:
     forward_model: Callable[[Any, Any, Any], Any]
     stop_gradient: Callable[[Any], Any]
     to_host: Callable[[Any], Any]
+    forward_sufficient_statistics: Callable[
+        [Any, Any, Any, Any, Any, Any], tuple[Any, Any]
+    ] | None = None
 
 
 def _as_token_ids(value: Any) -> tuple[int, ...]:
@@ -313,6 +316,56 @@ class CausalModelForwardAdapter:
         if not self.trainable:
             logits = self.dependencies.stop_gradient(logits)
         return logits
+
+    def forward_sufficient_statistics(
+        self,
+        input_ids: Any,
+        segment_ids: Any,
+        completion_positions: Any,
+        completion_token_ids: Any,
+        overlap_ids: Any,
+    ) -> tuple[Any, Any]:
+        """Return exact reduced frozen-teacher statistics from one fused JIT."""
+
+        if self.trainable:
+            raise ModelAdapterError(
+                "sufficient-statistic forward is reserved for the frozen teacher"
+            )
+        forward = self.dependencies.forward_sufficient_statistics
+        if forward is None:
+            raise ModelAdapterError(
+                "runtime does not implement fused teacher sufficient statistics"
+            )
+        try:
+            shared, selected = forward(
+                self._require_model(),
+                input_ids,
+                segment_ids,
+                completion_positions,
+                completion_token_ids,
+                overlap_ids,
+            )
+        except ModelAdapterError:
+            raise
+        except Exception as exc:
+            raise ModelAdapterError(
+                "teacher sufficient-statistic forward failed: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+        if getattr(shared, "ndim", None) != 3:
+            raise ModelAdapterError(
+                "teacher shared scores must have [batch, token, overlap] shape"
+            )
+        if getattr(selected, "ndim", None) != 2:
+            raise ModelAdapterError(
+                "teacher selected scores must have [batch, token] shape"
+            )
+        if shared.shape[:2] != selected.shape:
+            raise ModelAdapterError("teacher sufficient-statistic shapes mismatch")
+        return (
+            self.dependencies.stop_gradient(shared),
+            self.dependencies.stop_gradient(selected),
+        )
 
     def to_host(self, value: Any) -> Any:
         return self.dependencies.to_host(value)

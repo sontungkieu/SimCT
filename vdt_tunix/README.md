@@ -8,7 +8,7 @@ keeps the CPU-testable boundary separate from the existing KDFlow and
 |---|---:|---|
 | Strict JSON configuration | implemented | one student, exactly one teacher, distinct tokenizers, explicit SimCT/SimpleOPD support, v5e-8 layout |
 | Student rollout interface | implemented | prompt/completion ids, exact UTF-8 token pieces, rollout log-probability shape and provenance |
-| Teacher score interface | implemented | the same completion text retokenized by one teacher plus full-vocabulary logit shape/provenance |
+| Teacher score interface | implemented | the same completion text retokenized by one teacher plus either a compatibility full-logit payload or exact shared/selected-token sufficient statistics with explicit provenance |
 | CPU contract pipeline | implemented | identity, sample count, exact text bridge and genuinely different tokenization are checked with both original mocks and dependency-injected adapter fakes |
 | Prompt dataset contract | implemented | strict JSONL schema, immutable revision, file and manifest SHA-256, unique prompt IDs, deterministic cursor batches |
 | Provenance-checked SFT dataset | implemented | strict teacher-response rows with source, source ID, license, immutable revision and content digest |
@@ -16,7 +16,7 @@ keeps the CPU-testable boundary separate from the existing KDFlow and
 | TPU v5e-8 hardware preflight | implemented | lazily checks JAX backend, exactly eight devices and v5e/v5-lite device kinds |
 | Tunix/MaxText model adapters | implemented, execution pending | lazy local-checkpoint `AutoModel` restore contract, full-sequence causal forward, trainable student and stop-gradient teacher; TP8/PP1 only |
 | Real student rollout canary | implemented, execution pending | native Tunix KV-cached sampler, deterministic rollout coordinate, rollout log-probabilities and exact decoded-byte bridge |
-| Real frozen-teacher scoring | implemented, execution pending | exact completion retokenization and full-vocabulary causal rows from the local MaxText teacher |
+| Real frozen-teacher scoring | implemented, execution pending | exact completion retokenization; the production fused forward reduces full-vocabulary causal rows inside the JIT to shared-token and realized selected-token log-probabilities before returning them |
 | JAX paper-math SimCT update | implemented, TPU execution pending | Eq. (7) mean log-probability scores, finite-candidate softmax, reverse KL, NNX gradient and AdamW update |
 | JAX paper-control SimpleOPD update | implemented, TPU execution pending | reverse KL on normalized overlap vocabulary at exact one-to-one byte-aligned units; no span credit |
 | Tunix/Orbax array save/restore | implemented, TPU execution pending | synchronous model plus optimizer persistence, directory digest, custom metadata cross-check, movable resume root |

@@ -16,9 +16,11 @@ from vdt_span.scoring import (
 from vdt_tunix.jax_kernels import (
     candidate_log_probs,
     paper_simct_aligned_batch_loss,
+    paper_simct_aligned_batch_loss_from_teacher_statistics,
     paper_candidate_scores,
     paper_simct_reverse_kl,
     paper_simple_opd_aligned_batch_loss,
+    paper_teacher_sufficient_statistics,
     reverse_kl_loss_and_student_score_gradient,
 )
 
@@ -164,6 +166,60 @@ def test_aligned_batch_loss_matches_two_row_python_reference():
         span_mask,
     )
     assert float(observed) == pytest.approx(sum(expected_rows) / 2.0, abs=1e-6)
+
+
+def test_teacher_sufficient_statistics_preserve_exact_aligned_loss():
+    student_logits = jnp.asarray(
+        [[
+            [2.0, 0.0, -1.0, 1.0],
+            [0.0, 3.0, 1.0, -1.0],
+            [1.0, -1.0, 2.0, 0.0],
+        ]]
+    )
+    teacher_logits = jnp.asarray(
+        [[
+            [0.0, 2.0, -1.0, 1.0, 0.5],
+            [2.0, 0.0, 1.0, -1.0, 0.2],
+        ]]
+    )
+    student_ids = jnp.asarray([[0, 1, 2]])
+    teacher_ids = jnp.asarray([[1, 0]])
+    student_overlap = jnp.asarray([0, 3])
+    teacher_overlap = jnp.asarray([1, 4])
+    bounds = jnp.asarray([[[0, 1, 0, 2], [1, 2, 2, 3]]])
+    unit_mask = jnp.asarray([[1.0, 1.0]])
+    span_mask = jnp.asarray([[True, False]])
+
+    expected = paper_simct_aligned_batch_loss(
+        student_logits,
+        student_ids,
+        teacher_logits,
+        teacher_ids,
+        student_overlap,
+        teacher_overlap,
+        bounds,
+        unit_mask,
+        span_mask,
+    )
+    teacher_shared, teacher_selected = paper_teacher_sufficient_statistics(
+        teacher_logits,
+        teacher_ids,
+        teacher_overlap,
+    )
+    observed = paper_simct_aligned_batch_loss_from_teacher_statistics(
+        student_logits,
+        student_ids,
+        teacher_shared,
+        teacher_selected,
+        student_overlap,
+        bounds,
+        unit_mask,
+        span_mask,
+    )
+
+    assert teacher_shared.shape == (1, 2, 2)
+    assert teacher_selected.shape == (1, 2)
+    assert float(observed) == pytest.approx(float(expected), abs=1e-6)
 
 
 def test_aligned_batch_loss_stops_teacher_gradient_and_uses_padding_mask():

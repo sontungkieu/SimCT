@@ -15,8 +15,9 @@ from vdt_tunix.contracts import (
     TeacherScoreRequest,
 )
 from vdt_tunix.jax_kernels import (
-    paper_simct_aligned_batch_loss,
-    paper_simple_opd_aligned_batch_loss,
+    paper_simct_aligned_batch_loss_from_teacher_statistics,
+    paper_simple_opd_aligned_batch_loss_from_teacher_statistics,
+    paper_teacher_sufficient_statistics,
 )
 from vdt_tunix.performance import (
     PerformanceContractError,
@@ -46,8 +47,8 @@ class PreparedSimCTBatch:
     student_segment_ids: Any
     student_completion_positions: Any
     student_completion_token_ids: Any
-    teacher_position_logits: Any
-    teacher_completion_token_ids: Any
+    teacher_shared_log_probs: Any
+    teacher_selected_log_probs: Any
     segment_bounds: Any
     segment_mask: Any
     span_mask: Any
@@ -236,8 +237,8 @@ def prepare_simct_batch(
         (batch_size, config.rollout.max_completion_tokens), dtype=np.int32
     )
     completion_ids = np.zeros_like(completion_positions)
-    teacher_logits: list[Any] = []
-    teacher_ids: list[Any] = []
+    teacher_shared_scores: list[Any] = []
+    teacher_selected_scores: list[Any] = []
     layouts = []
     student_token_total = 0
     teacher_token_total = 0
@@ -266,8 +267,32 @@ def prepare_simct_batch(
             start, start + width, dtype=np.int32
         )
         completion_ids[row_index, :width] = rollout.completion.token_ids
-        teacher_logits.append(score.position_logits.values)
-        teacher_ids.append(jnp.asarray(score.completion.token_ids, dtype=jnp.int32))
+        score_ids = jnp.asarray(score.completion.token_ids, dtype=jnp.int32)
+        if score.sufficient_statistics is not None:
+            shared_scores = jnp.asarray(
+                score.sufficient_statistics.shared_log_probs,
+                dtype=jnp.float32,
+            )
+            selected_scores = jnp.asarray(
+                score.sufficient_statistics.selected_log_probs,
+                dtype=jnp.float32,
+            )
+            if shared_scores.shape[-1] != len(overlap.teacher_ids):
+                raise TrainingError(
+                    "teacher sufficient-statistic overlap width mismatch"
+                )
+        else:
+            if score.position_logits is None:
+                raise TrainingError("teacher score contains no score representation")
+            shared_batch, selected_batch = paper_teacher_sufficient_statistics(
+                jnp.asarray(score.position_logits.values)[None, ...],
+                score_ids[None, ...],
+                jnp.asarray(overlap.teacher_ids, dtype=jnp.int32),
+            )
+            shared_scores = shared_batch[0]
+            selected_scores = selected_batch[0]
+        teacher_shared_scores.append(shared_scores)
+        teacher_selected_scores.append(selected_scores)
         layouts.append(build_aligned_layout(rollout.completion, score.completion))
         student_token_total += width
         teacher_token_total += len(score.completion.token_ids)
@@ -284,15 +309,19 @@ def prepare_simct_batch(
             )
         truncation_count += int(width >= row_completion_limit)
 
-    teacher_required = max(int(row.shape[0]) for row in teacher_logits)
+    teacher_required = max(int(row.shape[0]) for row in teacher_shared_scores)
     try:
         teacher_width = select_length_bucket(
             teacher_required, config.training.teacher_sequence_buckets
         )
     except PerformanceContractError as exc:
         raise TrainingError(str(exc)) from exc
-    padded_teacher_logits = _pad_device_rows(teacher_logits, teacher_width, jnp)
-    padded_teacher_ids = _pad_device_rows(teacher_ids, teacher_width, jnp)
+    padded_teacher_shared = _pad_device_rows(
+        teacher_shared_scores, teacher_width, jnp
+    )
+    padded_teacher_selected = _pad_device_rows(
+        teacher_selected_scores, teacher_width, jnp
+    )
     bounds, unit_mask, spans = pad_layouts(
         layouts, width=config.training.alignment_bucket_size
     )
@@ -314,8 +343,8 @@ def prepare_simct_batch(
         student_segment_ids=jnp.asarray(student_segment_ids),
         student_completion_positions=jnp.asarray(completion_positions),
         student_completion_token_ids=jnp.asarray(completion_ids),
-        teacher_position_logits=padded_teacher_logits,
-        teacher_completion_token_ids=padded_teacher_ids,
+        teacher_shared_log_probs=padded_teacher_shared,
+        teacher_selected_log_probs=padded_teacher_selected,
         segment_bounds=jnp.asarray(bounds, dtype=jnp.int32),
         segment_mask=jnp.asarray(unit_mask, dtype=jnp.float32),
         span_mask=jnp.asarray(spans, dtype=bool),
@@ -377,6 +406,11 @@ class PaperSimCTTrainer:
             backends.student.model_adapter.tokenizer.raw_tokenizer,
             backends.teacher.model_adapter.tokenizer.raw_tokenizer,
         )
+        configure_teacher = getattr(
+            backends.teacher, "configure_overlap_token_ids", None
+        )
+        if callable(configure_teacher):
+            configure_teacher(self.overlap.teacher_ids)
         loaded = backends.student.model_adapter.require_loaded_model()
         if not isinstance(loaded, _LoadedTunixModel):
             raise TrainingError("student backend did not expose a native Tunix model")
@@ -384,7 +418,6 @@ class PaperSimCTTrainer:
         self.optimizer = _build_optimizer(config, loaded.model, nnx, optax)
 
         student_overlap = jnp.asarray(self.overlap.student_ids, dtype=jnp.int32)
-        teacher_overlap = jnp.asarray(self.overlap.teacher_ids, dtype=jnp.int32)
         temperature = config.simct.temperature
         forward_fn = loaded.forward_fn
 
@@ -396,8 +429,8 @@ class PaperSimCTTrainer:
             segment_ids,
             completion_positions,
             completion_token_ids,
-            teacher_position_logits,
-            teacher_completion_token_ids,
+            teacher_shared_log_probs,
+            teacher_selected_log_probs,
             segment_bounds,
             segment_mask,
             span_mask,
@@ -411,13 +444,12 @@ class PaperSimCTTrainer:
                 )
                 batch = jnp.arange(input_ids.shape[0], dtype=jnp.int32)[:, None]
                 student_position_logits = full_logits[batch, completion_positions]
-                return paper_simct_aligned_batch_loss(
+                return paper_simct_aligned_batch_loss_from_teacher_statistics(
                     student_position_logits,
                     completion_token_ids,
-                    teacher_position_logits,
-                    teacher_completion_token_ids,
+                    teacher_shared_log_probs,
+                    teacher_selected_log_probs,
                     student_overlap,
-                    teacher_overlap,
                     segment_bounds,
                     segment_mask,
                     span_mask,
@@ -453,7 +485,7 @@ class PaperSimCTTrainer:
             batch_size=int(batch.student_input_ids.shape[0]),
             student_sequence=int(batch.student_input_ids.shape[1]),
             student_completion=int(batch.student_completion_positions.shape[1]),
-            teacher_completion=int(batch.teacher_position_logits.shape[1]),
+            teacher_completion=int(batch.teacher_shared_log_probs.shape[1]),
             alignment_units=int(batch.segment_bounds.shape[1]),
         )
         shape_changed = int(
@@ -473,8 +505,8 @@ class PaperSimCTTrainer:
                 batch.student_segment_ids,
                 batch.student_completion_positions,
                 batch.student_completion_token_ids,
-                batch.teacher_position_logits,
-                batch.teacher_completion_token_ids,
+                batch.teacher_shared_log_probs,
+                batch.teacher_selected_log_probs,
                 batch.segment_bounds,
                 batch.segment_mask,
                 batch.span_mask,
@@ -598,6 +630,11 @@ class PaperSimpleOPDTrainer:
             backends.student.model_adapter.tokenizer.raw_tokenizer,
             backends.teacher.model_adapter.tokenizer.raw_tokenizer,
         )
+        configure_teacher = getattr(
+            backends.teacher, "configure_overlap_token_ids", None
+        )
+        if callable(configure_teacher):
+            configure_teacher(self.overlap.teacher_ids)
         loaded = backends.student.model_adapter.require_loaded_model()
         if not isinstance(loaded, _LoadedTunixModel):
             raise TrainingError("student backend did not expose a native Tunix model")
@@ -605,7 +642,6 @@ class PaperSimpleOPDTrainer:
         self.optimizer = _build_optimizer(config, loaded.model, nnx, optax)
 
         student_overlap = jnp.asarray(self.overlap.student_ids, dtype=jnp.int32)
-        teacher_overlap = jnp.asarray(self.overlap.teacher_ids, dtype=jnp.int32)
         temperature = config.simct.temperature
         forward_fn = loaded.forward_fn
 
@@ -616,7 +652,7 @@ class PaperSimpleOPDTrainer:
             input_ids,
             segment_ids,
             completion_positions,
-            teacher_position_logits,
+            teacher_shared_log_probs,
             segment_bounds,
             segment_mask,
             span_mask,
@@ -630,11 +666,10 @@ class PaperSimpleOPDTrainer:
                 )
                 batch = jnp.arange(input_ids.shape[0], dtype=jnp.int32)[:, None]
                 student_position_logits = full_logits[batch, completion_positions]
-                return paper_simple_opd_aligned_batch_loss(
+                return paper_simple_opd_aligned_batch_loss_from_teacher_statistics(
                     student_position_logits,
-                    teacher_position_logits,
+                    teacher_shared_log_probs,
                     student_overlap,
-                    teacher_overlap,
                     segment_bounds,
                     segment_mask,
                     span_mask,
@@ -669,7 +704,7 @@ class PaperSimpleOPDTrainer:
             batch_size=int(batch.student_input_ids.shape[0]),
             student_sequence=int(batch.student_input_ids.shape[1]),
             student_completion=int(batch.student_completion_positions.shape[1]),
-            teacher_completion=int(batch.teacher_position_logits.shape[1]),
+            teacher_completion=int(batch.teacher_shared_log_probs.shape[1]),
             alignment_units=int(batch.segment_bounds.shape[1]),
         )
         shape_changed = int(
@@ -688,7 +723,7 @@ class PaperSimpleOPDTrainer:
                 batch.student_input_ids,
                 batch.student_segment_ids,
                 batch.student_completion_positions,
-                batch.teacher_position_logits,
+                batch.teacher_shared_log_probs,
                 batch.segment_bounds,
                 batch.segment_mask,
                 batch.span_mask,
