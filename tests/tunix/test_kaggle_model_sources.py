@@ -356,7 +356,7 @@ def test_tpu_requirements_pin_wandb_observability_client():
     ).read_text(encoding="utf-8").splitlines()
 
     assert [line for line in requirements if line.startswith("wandb")] == [
-        "wandb>=0.19,<0.20"
+        "wandb==0.26.1"
     ]
 
 

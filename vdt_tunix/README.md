@@ -250,9 +250,13 @@ failure instead of spending the remaining TPU session without a dashboard.
 The multi-seed orchestration also treats terminal W&B evidence as a separate
 completion gate. A staged private notebook
 may replace `__KJO_SECRET_WANDB_API_KEY__` immediately before submission; the
-source notebook remains secret-free. The uv lock pins W&B 0.19.11 and its
+source notebook remains secret-free. The uv lock pins W&B 0.26.1 and its
 transitive dependencies, so observability does not depend on the ambient Kaggle
-image.
+image. W&B 0.26.1 also enables native libtpu system monitoring when the Kaggle
+runtime exposes the required telemetry interface. Expected automatic metrics
+include per-device TensorCore utilization, duty cycle, total HBM capacity, and
+HBM usage. Their presence remains a runtime evidence check: the package pin
+does not fabricate telemetry when the provider image does not expose it.
 Secret literals are rendered in dedicated assignment-only notebook cells.
 Failure-prone model resolution, checkpoint transfer, and environment bootstrap
 run in later cells that reference the assigned variables. This prevents a

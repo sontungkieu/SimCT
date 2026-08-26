@@ -46,7 +46,7 @@ def test_kaggle_tpu_uv_project_and_lock_are_pinned():
     }
 
     packages = {item["name"]: item for item in lock["package"]}
-    assert packages["wandb"]["version"] == "0.19.11"
+    assert packages["wandb"]["version"] == "0.26.1"
     assert packages["google-tunix"]["source"]["git"].endswith(TUNIX_COMMIT)
     for provider in PROVIDER_PACKAGES:
         assert provider in packages
@@ -64,7 +64,7 @@ def test_kaggle_tpu_uv_project_and_lock_are_pinned():
 def test_export_validation_accepts_locked_userspace_packages(tmp_path: Path):
     exported = tmp_path / "requirements.lock"
     exported.write_text(
-        "wandb==0.19.11 ; sys_platform == 'linux'\n"
+        "wandb==0.26.1 ; sys_platform == 'linux'\n"
         "google-tunix @ git+https://example.invalid/tunix.git@abc\n",
         encoding="utf-8",
     )
