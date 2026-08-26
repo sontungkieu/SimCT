@@ -1,0 +1,81 @@
+{
+  "canaries": [
+    {
+      "batch_size": 1,
+      "config_sha256": "95ef063c50bbd2c4e4d12310140431871f7e0c3b930803a5b3301c0d135f7faf",
+      "effective_global_batch": 64,
+      "gradient_accumulation_steps": 64,
+      "name": "paper4k-fsdp8-b1",
+      "path": "paper4k-fsdp8-b1.json",
+      "protocol": "paper4k"
+    },
+    {
+      "batch_size": 2,
+      "config_sha256": "7e070f4f7263f25ad2c39a861f8ca40d07ca4ccbd5b3c9768909a8700fbb7d0d",
+      "effective_global_batch": 64,
+      "gradient_accumulation_steps": 32,
+      "name": "paper4k-fsdp8-b2",
+      "path": "paper4k-fsdp8-b2.json",
+      "protocol": "paper4k"
+    },
+    {
+      "batch_size": 4,
+      "config_sha256": "740209ead334744d45f8f8cb3ee830cedfb16fec638fca8685f5a083f261652f",
+      "effective_global_batch": 64,
+      "gradient_accumulation_steps": 16,
+      "name": "paper4k-fsdp8-b4",
+      "path": "paper4k-fsdp8-b4.json",
+      "protocol": "paper4k"
+    },
+    {
+      "batch_size": 8,
+      "config_sha256": "4681a8f1bd87ca0c3d5cb56689de74f97a69b7262f6c25ce85f04f3b17139ede",
+      "effective_global_batch": 64,
+      "gradient_accumulation_steps": 8,
+      "name": "paper4k-fsdp8-b8",
+      "path": "paper4k-fsdp8-b8.json",
+      "protocol": "paper4k"
+    },
+    {
+      "batch_size": 1,
+      "config_sha256": "f03ce4743aaf95adfdcf11653fb99299ad512205556ea9f95c4ec39340c2a95e",
+      "effective_global_batch": 64,
+      "gradient_accumulation_steps": 64,
+      "name": "public8k-fsdp8-b1",
+      "path": "public8k-fsdp8-b1.json",
+      "protocol": "public8k"
+    },
+    {
+      "batch_size": 2,
+      "config_sha256": "2e6ce81b93d64f9aa319f5c070c5bca241f7e2ecd5aa52d7281d2c4a63e44082",
+      "effective_global_batch": 64,
+      "gradient_accumulation_steps": 32,
+      "name": "public8k-fsdp8-b2",
+      "path": "public8k-fsdp8-b2.json",
+      "protocol": "public8k"
+    },
+    {
+      "batch_size": 4,
+      "config_sha256": "9ebc15ef2a65e16c4d283eea21d5dd1c6045c9460acb8bf01a97f28615bf52a7",
+      "effective_global_batch": 64,
+      "gradient_accumulation_steps": 16,
+      "name": "public8k-fsdp8-b4",
+      "path": "public8k-fsdp8-b4.json",
+      "protocol": "public8k"
+    },
+    {
+      "batch_size": 8,
+      "config_sha256": "6001f5ee33cdb4c51ae59095dacc9c1d8d270378b6fad55e70ad99fe3d5b3558",
+      "effective_global_batch": 64,
+      "gradient_accumulation_steps": 8,
+      "name": "public8k-fsdp8-b8",
+      "path": "public8k-fsdp8-b8.json",
+      "protocol": "public8k"
+    }
+  ],
+  "probe_mode": "forced-full-length-native-rollout",
+  "profile_micro_step": 1,
+  "scientific_evidence": false,
+  "status": "staged",
+  "submit_policy": "for each protocol submit B=1,2,4,8 sequentially; stop at the first OOM, non-finite metric, or runtime-contract failure"
+}

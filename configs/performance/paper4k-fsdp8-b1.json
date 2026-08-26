@@ -1,0 +1,78 @@
+{
+  "canary": {
+    "prompt_id": "unused-production-screen",
+    "student_prompt": "<start_of_turn>user\nReturn only the integer 4.<end_of_turn>\n<start_of_turn>model\n",
+    "teacher_prompt": "<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\nReturn only the integer 4.<|im_end|>\n<|im_start|>assistant\n"
+  },
+  "checkpoint": {
+    "resume_from": null,
+    "root": "/kaggle/working/vdt-resource-simple_opd-paper4k-fsdp8-b1/checkpoints",
+    "save_every_steps": 1,
+    "warm_start_from": "/kaggle/input/attached-sft-source/vdt_public_sft_screen/checkpoints"
+  },
+  "contract_version": 1,
+  "rollout": {
+    "force_max_completion": true,
+    "max_completion_tokens": 4096,
+    "max_prompt_tokens": 256,
+    "max_sequence_tokens": 4096,
+    "minimum_actual_sequence_tokens": 3968,
+    "prompt_batch_size": 1,
+    "samples_per_prompt": 1,
+    "temperature": 0.6,
+    "top_p": 0.95
+  },
+  "run_id": "vdt-resource-simple_opd-paper4k-fsdp8-b1",
+  "simct": {
+    "algorithm": "simple_opd",
+    "alignment_unit": "utf8_bytes",
+    "divergence": "reverse_kl",
+    "reproduction_mode": "paper_math",
+    "span_gh_mask_threshold": 0.0,
+    "temperature": 1.0,
+    "virtual_support": "shared_tokens_only"
+  },
+  "student": {
+    "maxtext_checkpoint_uri": "/kaggle/input/models/google/gemma-2/flax/gemma2-2b-it/1",
+    "model_id": "gemma-2-2b-it",
+    "model_path": "/kaggle/input/models/google/gemma-2/flax/gemma2-2b-it/1",
+    "model_revision": "kaggle-google-gemma-2-flax-gemma2-2b-it-v1",
+    "model_source": "kaggle",
+    "tokenizer_id": "google/gemma-2-2b-it",
+    "tokenizer_path": "/kaggle/input/models/google/gemma-2/flax/gemma2-2b-it/1/tokenizer.model",
+    "tokenizer_revision": "kaggle-google-gemma-2-flax-gemma2-2b-it-v1",
+    "tokenizer_type": "sentencepiece"
+  },
+  "teacher": {
+    "maxtext_checkpoint_uri": "/kaggle/input/models/qwen-lm/qwen2.5/transformers/7b-instruct/1",
+    "model_id": "qwen2.5-7b-instruct",
+    "model_path": "/kaggle/input/models/qwen-lm/qwen2.5/transformers/7b-instruct/1",
+    "model_revision": "a09a35458c702b33eeacc393d103063234e8bc28",
+    "model_source": "huggingface",
+    "tokenizer_id": "Qwen/Qwen2.5-7B-Instruct",
+    "tokenizer_path": "/kaggle/input/models/qwen-lm/qwen2.5/transformers/7b-instruct/1",
+    "tokenizer_revision": "a09a35458c702b33eeacc393d103063234e8bc28",
+    "tokenizer_type": "huggingface"
+  },
+  "tpu": {
+    "accelerator_type": "v5e-8",
+    "expected_device_count": 8,
+    "fsdp_parallelism": 8,
+    "pipeline_parallelism": 1,
+    "tensor_parallelism": 1
+  },
+  "training": {
+    "alignment_bucket_size": 8192,
+    "gradient_accumulation_steps": 64,
+    "learning_rate": 1e-06,
+    "max_steps": 1,
+    "max_steps_unit": "optimizer_update",
+    "micro_batch_size": 1,
+    "synchronize_phase_timings": true,
+    "teacher_sequence_buckets": [
+      4096,
+      6144,
+      8192
+    ]
+  }
+}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+from pathlib import Path
 import subprocess
 import sys
 
@@ -77,6 +78,24 @@ def test_performance_matrix_is_two_separate_length_ladders(config_payload):
         }
         expected_length = 4096 if name.startswith("paper4k") else 8192
         assert configured["rollout"]["max_sequence_tokens"] == expected_length
+
+
+def test_checked_in_performance_matrix_matches_builder():
+    repo = Path(__file__).resolve().parents[2]
+    baseline_payload = json.loads(
+        (
+            repo
+            / "configs/reproduction/qwen25_7b_to_gemma2_2b_public_simple_opd_screen.json"
+        ).read_text(encoding="utf-8")
+    )
+    expected = build_matrix(RunConfig.from_mapping(baseline_payload))
+    for name, payload in expected.items():
+        checked_in = json.loads(
+            (repo / "configs/performance" / f"{name}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert checked_in == payload
 
 
 def test_resource_probe_dataset_is_fixed_and_large_enough(tmp_path):

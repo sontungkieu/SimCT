@@ -10,6 +10,7 @@ from vdt_tunix.kaggle_cross_account_generation import (
 )
 from vdt_tunix.kaggle_generation_sources import render_generation_notebook
 from vdt_tunix.kaggle_model_sources import KaggleModelSourceError
+from vdt_tunix.kaggle_model_sources import render_training_notebook
 
 
 SOURCE_KERNEL = "sourceowner/checkpoint-v1"
@@ -148,3 +149,51 @@ def test_composer_rejects_drifted_kjo_download_cell(tmp_path):
             cross_account_output_dir=str(tmp_path / "output"),
             overlay_input_root=str(tmp_path / "overlay"),
         )
+
+
+def test_composer_supports_opd_training_input_resolution(tmp_path):
+    base = render_training_notebook(
+        phase="simple_opd",
+        config_relative_path="configs/performance/paper4k-fsdp8-b1.json",
+        repo_dataset_source="runtimeowner/repo-v1",
+        training_dataset_source=EVALUATION_SOURCE,
+        training_manifest_relative_path="manifest.json",
+        student_model_source=STUDENT,
+        teacher_model_source="qwen-lm/qwen2.5/transformers/7b-instruct/1",
+        source_run_id="vdt-resource-simple_opd-paper4k-fsdp8-b1",
+        warm_start_kernel_source=SOURCE_KERNEL,
+        warm_start_kernel_version=1,
+        warm_start_relative_path="checkpoints",
+    )
+    output = (
+        tmp_path
+        / "overlay"
+        / "kernels"
+        / "sourceowner"
+        / "checkpoint-v1"
+        / "versions"
+        / "1"
+    )
+    notebook = compose_cross_account_generation_notebook(
+        base_notebook=base,
+        cross_account_output_source=_download_source(
+            str(tmp_path / "source-config"), str(output)
+        ),
+        source_kernel_id=SOURCE_KERNEL,
+        runtime_owner=RUNTIME_OWNER,
+        evaluation_dataset_source=EVALUATION_SOURCE,
+        source_config_dir=str(tmp_path / "source-config"),
+        cross_account_output_dir=str(output),
+        overlay_input_root=str(tmp_path / "overlay"),
+    )
+    sources = ["".join(cell.get("source", [])) for cell in notebook["cells"]]
+    overlay_index = next(
+        i for i, source in enumerate(sources)
+        if "VDT_CROSS_ACCOUNT_INPUT_OVERLAY" in source
+    )
+    resolve_index = next(
+        i for i, source in enumerate(sources)
+        if "TRAINING_DATASET_SOURCE" in source
+        and "WARM_START_KERNEL_SOURCE" in source
+    )
+    assert overlay_index < resolve_index

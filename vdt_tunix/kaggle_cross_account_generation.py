@@ -1,4 +1,4 @@
-"""Compose generation notebooks that consume a private checkpoint cross-account."""
+"""Compose Tunix notebooks that consume a private checkpoint cross-account."""
 
 from __future__ import annotations
 
@@ -98,16 +98,25 @@ def compose_cross_account_generation_notebook(
         for index, cell in enumerate(cells)
         if "KJO_REPO_DATASET_COPY_SUMMARY" in "".join(cell.get("source", []))
     ]
-    resolve_indexes = [
-        index
-        for index, cell in enumerate(cells)
-        if "EVALUATION_DATASET_SOURCE" in "".join(cell.get("source", []))
-        and "CHECKPOINT_KERNEL_SOURCE" in "".join(cell.get("source", []))
-    ]
+    resolve_indexes = []
+    for index, cell in enumerate(cells):
+        source = "".join(cell.get("source", []))
+        generation_inputs = (
+            "VDT_GENERATION_INPUT_PROVENANCE" in source
+            and "EVALUATION_DATASET_SOURCE" in source
+            and "CHECKPOINT_KERNEL_SOURCE" in source
+        )
+        training_inputs = (
+            "VDT_TRAINING_INPUT_PROVENANCE" in source
+            and "TRAINING_DATASET_SOURCE" in source
+            and "WARM_START_KERNEL_SOURCE" in source
+        )
+        if generation_inputs or training_inputs:
+            resolve_indexes.append(index)
     if len(copy_indexes) != 1 or len(resolve_indexes) != 1:
         raise KaggleModelSourceError(
-            "base generation notebook must contain exactly one repo-copy cell "
-            "and one generation-input cell"
+            "base notebook must contain exactly one repo-copy cell and one "
+            "supported training/generation input cell"
         )
     insert_at = resolve_indexes[0]
     if copy_indexes[0] >= insert_at:
