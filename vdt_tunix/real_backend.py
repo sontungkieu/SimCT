@@ -68,11 +68,21 @@ def _reduce_teacher_step_statistics(
     values = logits.astype(jnp_module.float32)
     log_normalizer = jax_module.scipy.special.logsumexp(values, axis=-1)
     shared = jnp_module.take(values, overlap_ids, axis=-1)
-    selected = jnp_module.take_along_axis(
-        values,
-        selected_token_ids[..., None],
+    vocabulary_ids = jnp_module.arange(
+        values.shape[-1],
+        dtype=selected_token_ids.dtype,
+    )
+    # TPU XLA can miscompile the dynamic gather here when it is fused into the
+    # barriered scan body.  Compare/select/reduce picks the same single finite
+    # logit without introducing that gather instruction or a time-wide tensor.
+    selected = jnp_module.sum(
+        jnp_module.where(
+            vocabulary_ids == selected_token_ids[..., None],
+            values,
+            jnp_module.asarray(0.0, dtype=values.dtype),
+        ),
         axis=-1,
-    )[..., 0]
+    )
     return shared - log_normalizer[..., None], selected - log_normalizer
 
 

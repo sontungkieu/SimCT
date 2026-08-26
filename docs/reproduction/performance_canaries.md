@@ -122,8 +122,10 @@ KV-cache decoding. Prompt prefill skips the vocabulary head and projects only
 the final prompt state. A `jax.lax.scan` carries hidden state and scores each
 realized completion token from a barrier-bracketed one-step `B x 1 x V`
 projection, immediately reducing it to shared-token and selected-token
-log-probabilities. The barriers keep XLA from lifting the LM head out of the
-loop and recreating a retained `T x B x V` tensor. This also avoids dense
+log-probabilities. The selected-token reduction uses an exact compare/select
+sum instead of a dynamic gather inside the scan. The barriers keep XLA from
+lifting the LM head out of the loop and recreating a retained `T x B x V`
+tensor. This also avoids dense
 completion-length attention while preserving the dense causal objective. The
 small-tensor test compares every cached token score with dense causal
 log-softmax. This remains local design/parity evidence until fresh remote
@@ -140,6 +142,13 @@ positions and attempted an FP32 `[5888, 2, 64272]` allocation (about 193.8 GB).
 The hidden-state carry and optimization barriers above address that exact
 failure; this failed canary also logged zero optimizer steps and is not a
 scientific or W&B pass.
+
+The first bounded cached retry reached that scan after its private checkpoint
+transfer succeeded, but TPU XLA then reported an internal post-optimization
+shape mismatch while fusing the dynamic selected-token gather. The gather-free
+compare/select reduction above addresses that specific compiler failure and is
+still pending a fresh remote canary; the failed retry logged zero optimizer
+steps and is not a scientific or W&B pass.
 
 The allowed optimization order is:
 

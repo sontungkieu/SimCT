@@ -100,7 +100,13 @@ def test_qwen_cached_teacher_requires_model_compute_dtype():
         )
 
 
-def test_qwen_cached_teacher_keeps_lm_head_inside_barriered_scan_steps():
+def test_qwen_cached_teacher_keeps_lm_head_inside_gather_free_barriered_steps():
+    class NoDynamicGatherNumpy:
+        def __getattr__(self, name):
+            if name == "take_along_axis":
+                raise AssertionError("selected-token reduction used dynamic gather")
+            return getattr(np, name)
+
     class FakeLax:
         def __init__(self) -> None:
             self.barrier_shapes = []
@@ -206,10 +212,21 @@ def test_qwen_cached_teacher_keeps_lm_head_inside_barriered_scan_steps():
         generate_sampler=FakeSampler,
         generate_utils=FakeGenerateUtils,
         jax_module=fake_jax,
-        jnp_module=np,
+        jnp_module=NoDynamicGatherNumpy(),
     )
 
     assert shared.shape == (1, 3, 2)
     assert selected.shape == (1, 3)
     assert module.skip_lm_head_flags == [True, True, True, True]
     assert fake_lax.barrier_shapes == [(1, 2), (1, 6)] * 3
+
+    centers = np.asarray([2.0, 6.0, 10.0], dtype=np.float32)[:, None]
+    dense_logits = -np.square(centers - np.arange(6, dtype=np.float32)[None, :])
+    dense_log_probs = dense_logits - FakeSpecial.logsumexp(dense_logits, axis=-1)[
+        :, None
+    ]
+    np.testing.assert_allclose(shared[0], dense_log_probs[:, [0, 2]])
+    np.testing.assert_allclose(
+        selected[0],
+        dense_log_probs[np.arange(3), [3, 4, 5]],
+    )
