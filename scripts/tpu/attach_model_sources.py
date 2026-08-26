@@ -16,6 +16,7 @@ if str(REPO_ROOT) not in sys.path:
 from vdt_tunix.kaggle_model_sources import (
     KaggleModelSourceError,
     attach_model_sources,
+    verify_attached_model_sources,
 )
 
 
@@ -24,11 +25,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--metadata", required=True, type=Path)
     parser.add_argument("--stage-manifest", required=True, type=Path)
     parser.add_argument("--model-source", action="append", required=True)
+    parser.add_argument(
+        "--verify-only",
+        action="store_true",
+        help="Fail unless metadata and manifest already contain exact sources.",
+    )
     args = parser.parse_args(argv)
     try:
-        result = attach_model_sources(
-            args.metadata, args.stage_manifest, args.model_source
+        operation = (
+            verify_attached_model_sources
+            if args.verify_only
+            else attach_model_sources
         )
+        result = operation(args.metadata, args.stage_manifest, args.model_source)
     except (KaggleModelSourceError, OSError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}), file=sys.stderr)
         return 78

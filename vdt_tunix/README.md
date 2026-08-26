@@ -450,6 +450,12 @@ python scripts/tpu/attach_model_sources.py \
   --metadata <run-dir>/stage/kernel-metadata.json \
   --stage-manifest <run-dir>/stage/stage_package_manifest.json \
   --model-source google/gemma-2/flax/gemma2-2b-it/1
+
+python scripts/tpu/attach_model_sources.py \
+  --metadata <run-dir>/stage/kernel-metadata.json \
+  --stage-manifest <run-dir>/stage/stage_package_manifest.json \
+  --model-source google/gemma-2/flax/gemma2-2b-it/1 \
+  --verify-only
 ```
 
 This step is mandatory for batch generation. Kaggle does not allow a
@@ -458,6 +464,9 @@ destination account has accepted the model license. The helper writes
 `model_sources` into both the metadata and stage manifest and refreshes the
 metadata fingerprint. Verify that exact field in the final pre-submit audit;
 access probes alone do not prove that the batch notebook has the model attached.
+The fail-closed ``--verify-only`` call is intended to run immediately before
+secret injection, so a restage that dropped ``model_sources`` cannot reach a
+non-interactive Kaggle session.
 
 Treat a successful evaluation-dataset upload as accepted work, not as proof
 that Kaggle can mount every file yet. Before submitting a dependent notebook,

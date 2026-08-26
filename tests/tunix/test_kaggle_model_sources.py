@@ -15,6 +15,7 @@ from vdt_tunix.kaggle_model_sources import (
     bind_runtime_model_mount,
     model_source_mount,
     resolve_model_source_mount,
+    verify_attached_model_sources,
     render_canary_notebook,
     render_model_source_mount_probe_notebook,
     render_training_notebook,
@@ -117,6 +118,27 @@ def test_attach_model_sources_rejects_existing_drift(tmp_path: Path):
     )
     with pytest.raises(KaggleModelSourceError, match="drifted"):
         attach_model_sources(metadata, manifest, [STUDENT, TEACHER])
+
+
+def test_verify_attached_model_sources_fails_before_noninteractive_submit(
+    tmp_path: Path,
+):
+    metadata = tmp_path / "kernel-metadata.json"
+    manifest = tmp_path / "stage_package_manifest.json"
+    metadata.write_text(json.dumps({"id": "owner/slug"}), encoding="utf-8")
+    manifest.write_text(
+        json.dumps({"fingerprints": {"metadata": {}}}), encoding="utf-8"
+    )
+
+    with pytest.raises(
+        KaggleModelSourceError, match="not statically attached"
+    ):
+        verify_attached_model_sources(metadata, manifest, [STUDENT])
+
+    attach_model_sources(metadata, manifest, [STUDENT])
+    report = verify_attached_model_sources(metadata, manifest, [STUDENT])
+    assert report["verified"] is True
+    assert report["model_sources"] == [STUDENT]
 
 
 def test_rendered_model_source_mount_probe_is_bounded_and_operational():

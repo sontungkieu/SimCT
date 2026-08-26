@@ -180,6 +180,50 @@ def attach_model_sources(
     }
 
 
+def verify_attached_model_sources(
+    metadata_path: str | Path,
+    stage_manifest_path: str | Path,
+    sources: Sequence[str],
+) -> dict[str, Any]:
+    """Fail closed unless a staged package statically attaches exact models."""
+
+    metadata_path = Path(metadata_path).resolve()
+    stage_manifest_path = Path(stage_manifest_path).resolve()
+    normalized = [validate_model_source(source) for source in sources]
+    if not normalized:
+        raise KaggleModelSourceError("at least one model source is required")
+    if len(set(normalized)) != len(normalized):
+        raise KaggleModelSourceError("model sources must be unique")
+
+    metadata = _read_object(metadata_path)
+    manifest = _read_object(stage_manifest_path)
+    if metadata.get("model_sources") != normalized:
+        raise KaggleModelSourceError(
+            "model sources are not statically attached in kernel metadata: "
+            f"{metadata.get('model_sources')!r} != {normalized!r}"
+        )
+    if manifest.get("model_sources") != normalized:
+        raise KaggleModelSourceError(
+            "model sources are not recorded in the stage manifest: "
+            f"{manifest.get('model_sources')!r} != {normalized!r}"
+        )
+    fingerprints = manifest.get("fingerprints")
+    recorded = fingerprints.get("metadata") if isinstance(fingerprints, dict) else None
+    current = _fingerprint(metadata_path)
+    if not isinstance(recorded, dict) or recorded.get("sha256") != current["sha256"]:
+        raise KaggleModelSourceError(
+            "stage manifest metadata fingerprint is stale after model attachment"
+        )
+    return {
+        "ok": True,
+        "verified": True,
+        "metadata": str(metadata_path),
+        "stage_manifest": str(stage_manifest_path),
+        "model_sources": normalized,
+        "metadata_fingerprint": current,
+    }
+
+
 def render_model_source_mount_probe_notebook(
     *, model_sources: Sequence[str]
 ) -> dict[str, Any]:
