@@ -38,6 +38,9 @@ class ModelRuntimeDependencies:
     forward_sufficient_statistics: Callable[
         [Any, Any, Any, Any, Any, Any], tuple[Any, Any]
     ] | None = None
+    forward_cached_sufficient_statistics: Callable[
+        [Any, Any, Any, Any, Any, Any], tuple[Any, Any]
+    ] | None = None
 
 
 def _as_token_ids(value: Any) -> tuple[int, ...]:
@@ -362,6 +365,56 @@ class CausalModelForwardAdapter:
             )
         if shared.shape[:2] != selected.shape:
             raise ModelAdapterError("teacher sufficient-statistic shapes mismatch")
+        return (
+            self.dependencies.stop_gradient(shared),
+            self.dependencies.stop_gradient(selected),
+        )
+
+    def forward_cached_sufficient_statistics(
+        self,
+        prompt_ids: Any,
+        prompt_mask: Any,
+        completion_token_ids: Any,
+        completion_mask: Any,
+        overlap_ids: Any,
+    ) -> tuple[Any, Any]:
+        """Return exact teacher statistics via prefill plus cached forcing."""
+
+        if self.trainable:
+            raise ModelAdapterError(
+                "cached sufficient-statistic forward is reserved for the frozen teacher"
+            )
+        forward = self.dependencies.forward_cached_sufficient_statistics
+        if forward is None:
+            raise ModelAdapterError(
+                "runtime does not implement cached teacher sufficient statistics"
+            )
+        try:
+            shared, selected = forward(
+                self._require_model(),
+                prompt_ids,
+                prompt_mask,
+                completion_token_ids,
+                completion_mask,
+                overlap_ids,
+            )
+        except ModelAdapterError:
+            raise
+        except Exception as exc:
+            raise ModelAdapterError(
+                "cached teacher sufficient-statistic forward failed: "
+                f"{type(exc).__name__}: {exc}"
+            ) from exc
+        if getattr(shared, "ndim", None) != 3:
+            raise ModelAdapterError(
+                "cached teacher shared scores must have [batch, token, overlap] shape"
+            )
+        if getattr(selected, "ndim", None) != 2:
+            raise ModelAdapterError(
+                "cached teacher selected scores must have [batch, token] shape"
+            )
+        if shared.shape[:2] != selected.shape:
+            raise ModelAdapterError("cached teacher sufficient-statistic shapes mismatch")
         return (
             self.dependencies.stop_gradient(shared),
             self.dependencies.stop_gradient(selected),

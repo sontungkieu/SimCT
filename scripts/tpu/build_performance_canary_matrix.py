@@ -72,6 +72,11 @@ def build_matrix(baseline: RunConfig) -> dict[str, dict]:
                     "synchronize_phase_timings": True,
                     "teacher_sequence_buckets": contract["teacher_buckets"],
                     "alignment_bucket_size": contract["alignment_bucket"],
+                    "teacher_scoring_mode": (
+                        "cached_teacher_forcing"
+                        if protocol == "public8k"
+                        else "dense"
+                    ),
                 }
             )
             payload["tpu"].update(
@@ -89,6 +94,8 @@ def build_matrix(baseline: RunConfig) -> dict[str, dict]:
             serialized = json.loads(json.dumps(configured.to_dict()))
             if serialized["training"].get("seed") is None:
                 serialized["training"].pop("seed", None)
+            if serialized["training"].get("teacher_scoring_mode") == "dense":
+                serialized["training"].pop("teacher_scoring_mode", None)
             result[name] = serialized
     return result
 
@@ -126,8 +133,8 @@ def main() -> int:
                 "probe_mode": "forced-full-length-native-rollout",
                 "profile_micro_step": 1,
                 "submit_policy": (
-                    "for each protocol submit B=1,2,4,8 sequentially; stop at "
-                    "the first OOM, non-finite metric, or runtime-contract failure"
+                    "B=1,2,4,8 may run independently on distinct healthy owners; "
+                    "audit and diagnose every configuration separately"
                 ),
                 "canaries": manifest,
             },

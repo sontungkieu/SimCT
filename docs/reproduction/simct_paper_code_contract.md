@@ -219,7 +219,12 @@ The separate `public8k` protocol freezes the released launch semantics:
 `max_len=8192`, rollout cap 4096, LR `5e-7`, one epoch (157 effective-batch-64
 updates), and the omitted top-p flag's default 1.0. It is a public-code
 ablation, not Table 4 reproduction. Results from `paper4k` and `public8k` must
-not be pooled.
+not be pooled. The Tunix port records
+`training.teacher_scoring_mode=cached_teacher_forcing` for this protocol: Qwen
+prompt prefill plus exact token-by-token KV-cache forcing is mathematically
+equivalent to dense causal teacher scoring but avoids the infeasible dense 8K
+completion-attention allocation. Remote canaries, rather than the local parity
+test alone, determine whether that runtime path is operationally sufficient.
 
 `tests/upstream_parity/test_public_training_contract.py` checks these public
 values and the unresolved wrapper paths without launching a process.

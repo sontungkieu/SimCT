@@ -78,6 +78,7 @@ def test_paper4k_configs_freeze_table4_operational_contract(algorithm):
     assert config.training.max_steps_unit == "optimizer_update"
     assert config.training.gradient_accumulation_steps == 64
     assert config.training.learning_rate == 1e-6
+    assert config.training.teacher_scoring_mode == "dense"
 
 
 @pytest.mark.parametrize("algorithm", ["simple_opd", "simct"])
@@ -97,3 +98,4 @@ def test_public8k_configs_freeze_released_script_ablation(algorithm):
     assert config.training.max_steps_unit == "optimizer_update"
     assert config.training.gradient_accumulation_steps == 64
     assert config.training.learning_rate == 5e-7
+    assert config.training.teacher_scoring_mode == "cached_teacher_forcing"

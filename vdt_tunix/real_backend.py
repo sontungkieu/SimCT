@@ -52,6 +52,171 @@ class _LoadedTunixModel:
     model_config: Any
     sampler: Any | None = None
     forward_statistics_fn: Any | None = None
+    forward_cached_statistics_fn: Any | None = None
+
+
+def _reduce_teacher_step_statistics(
+    logits: Any,
+    selected_token_ids: Any,
+    overlap_ids: Any,
+    *,
+    jax_module: Any,
+    jnp_module: Any,
+) -> tuple[Any, Any]:
+    """Reduce one next-token distribution to exact SimCT statistics."""
+
+    values = logits.astype(jnp_module.float32)
+    log_normalizer = jax_module.scipy.special.logsumexp(values, axis=-1)
+    shared = jnp_module.take(values, overlap_ids, axis=-1)
+    selected = jnp_module.take_along_axis(
+        values,
+        selected_token_ids[..., None],
+        axis=-1,
+    )[..., 0]
+    return shared - log_normalizer[..., None], selected - log_normalizer
+
+
+def _cached_teacher_forcing_scan(
+    initial_logits: Any,
+    initial_cache: Any,
+    completion_token_ids: Any,
+    overlap_ids: Any,
+    decode_one: Any,
+    *,
+    jax_module: Any,
+    jnp_module: Any,
+) -> tuple[Any, Any]:
+    """Score a fixed completion exactly while retaining only one-step logits.
+
+    ``initial_logits`` predicts completion token zero from the prompt prefill.
+    Each scan iteration records that token's sufficient statistics, then feeds
+    the realized token through the KV cache to obtain the next distribution.
+    """
+
+    token_steps = jnp_module.swapaxes(completion_token_ids, 0, 1)
+    step_ids = jnp_module.arange(token_steps.shape[0], dtype=jnp_module.int32)
+
+    def scan_step(carry: tuple[Any, Any], inputs: tuple[Any, Any]):
+        current_logits, cache = carry
+        token_ids, step = inputs
+        shared, selected = _reduce_teacher_step_statistics(
+            current_logits,
+            token_ids,
+            overlap_ids,
+            jax_module=jax_module,
+            jnp_module=jnp_module,
+        )
+        next_logits, next_cache = decode_one(cache, token_ids, step)
+        return (next_logits, next_cache), (shared, selected)
+
+    (_, _), (shared_steps, selected_steps) = jax_module.lax.scan(
+        scan_step,
+        (initial_logits, initial_cache),
+        (token_steps, step_ids),
+    )
+    return (
+        jnp_module.swapaxes(shared_steps, 0, 1),
+        jnp_module.swapaxes(selected_steps, 0, 1),
+    )
+
+
+def _qwen_cached_teacher_statistics(
+    module: Any,
+    prompt_ids: Any,
+    prompt_mask: Any,
+    completion_token_ids: Any,
+    completion_mask: Any,
+    overlap_ids: Any,
+    *,
+    model_params: Any,
+    configured_cache_size: int,
+    generate_sampler: Any,
+    generate_utils: Any,
+    jax_module: Any,
+    jnp_module: Any,
+) -> tuple[Any, Any]:
+    """Run exact Qwen prompt prefill plus cached teacher forcing."""
+
+    for field in ("num_layers", "num_kv_heads", "head_dim"):
+        if not hasattr(model_params, field):
+            raise RealBackendUnavailable(
+                "cached teacher forcing requires model config field " f"{field}"
+            )
+
+    prompt_active = prompt_mask.astype(jnp_module.bool_)
+    completion_active = completion_mask.astype(jnp_module.bool_)
+    batch_size, prompt_width = prompt_ids.shape
+    completion_width = completion_token_ids.shape[1]
+    cache_size = configured_cache_size + 1
+    if prompt_width + completion_width > configured_cache_size:
+        raise RealBackendUnavailable(
+            "cached teacher forcing prompt/completion shapes exceed "
+            "the configured sequence budget"
+        )
+    cache = generate_sampler._init_cache(
+        n_layers=int(model_params.num_layers),
+        cache_size=cache_size,
+        batch_size=batch_size,
+        num_kv_heads=int(model_params.num_kv_heads),
+        head_dim=int(model_params.head_dim),
+        dtype=jnp_module.bfloat16,
+    )
+    prompt_positions = generate_utils.build_positions_from_mask(prompt_active)
+    prefill_attention = generate_utils.make_causal_attn_mask(
+        prompt_active,
+        cache_size,
+    )
+    prompt_hidden, cache = module(
+        prompt_ids,
+        prompt_positions,
+        cache,
+        prefill_attention,
+        skip_lm_head=True,
+    )
+    initial_logits = module.compute_final_logits(prompt_hidden[:, -1:, :])[:, 0, :]
+
+    trailing_width = cache_size - prompt_width - completion_width
+    padding_mask = jnp_module.concatenate(
+        (
+            ~prompt_active,
+            ~completion_active,
+            jnp_module.ones(
+                (batch_size, trailing_width),
+                dtype=jnp_module.bool_,
+            ),
+        ),
+        axis=-1,
+    )
+    prompt_lengths = jnp_module.sum(
+        prompt_active,
+        axis=-1,
+        dtype=jnp_module.int32,
+    )
+
+    def decode_one(current_cache: Any, token_ids: Any, step: Any):
+        decode_position = prompt_lengths + step
+        attention_mask = generate_utils.compute_attention_masks(
+            prompt_width + step,
+            cache_size,
+            padding_mask,
+        )
+        logits, updated_cache = module(
+            token_ids[:, None],
+            decode_position[:, None],
+            current_cache,
+            attention_mask,
+        )
+        return logits[:, 0, :], updated_cache
+
+    return _cached_teacher_forcing_scan(
+        initial_logits,
+        cache,
+        completion_token_ids,
+        overlap_ids,
+        decode_one,
+        jax_module=jax_module,
+        jnp_module=jnp_module,
+    )
 
 
 def _normalize_tokenizer_padding(tokenizer: Any, tokenizer_type: str) -> Any:
@@ -151,6 +316,8 @@ def _production_dependencies(config: RunConfig) -> ModelRuntimeDependencies:
         maxtext_parallelism = importlib.import_module(
             "tunix.models.maxtext_parallelism"
         )
+        generate_sampler = importlib.import_module("tunix.generate.sampler")
+        generate_utils = importlib.import_module("tunix.generate.utils")
         mesh_lib = importlib.import_module("tunix.utils.mesh")
         transformers = importlib.import_module("transformers")
     except ImportError as exc:
@@ -389,12 +556,50 @@ def _production_dependencies(config: RunConfig) -> ModelRuntimeDependencies:
             )[..., 0]
             return shared_log_probs, selected_logits - log_normalizer
 
+        @nnx.jit
+        def forward_cached_statistics_fn(
+            module: Any,
+            prompt_ids: Any,
+            prompt_mask: Any,
+            completion_token_ids: Any,
+            completion_mask: Any,
+            overlap_ids: Any,
+        ):
+            if model_family != "qwen2p5":
+                raise RealBackendUnavailable(
+                    "cached teacher forcing currently supports Qwen 2.5 only"
+                )
+            configured_cache_size = (
+                config.rollout.max_sequence_tokens
+                or config.rollout.max_prompt_tokens
+                + config.rollout.max_completion_tokens
+            )
+            configured_cache_size = max(
+                configured_cache_size,
+                prompt_ids.shape[1] + completion_token_ids.shape[1],
+            )
+            return _qwen_cached_teacher_statistics(
+                module,
+                prompt_ids,
+                prompt_mask,
+                completion_token_ids,
+                completion_mask,
+                overlap_ids,
+                model_params=model_params,
+                configured_cache_size=configured_cache_size,
+                generate_sampler=generate_sampler,
+                generate_utils=generate_utils,
+                jax_module=jax,
+                jnp_module=jnp,
+            )
+
         return _LoadedTunixModel(
             model=model,
             mesh=mesh,
             forward_fn=forward_fn,
             model_config=model_params,
             forward_statistics_fn=forward_statistics_fn,
+            forward_cached_statistics_fn=forward_cached_statistics_fn,
         )
 
     def forward_model(
@@ -449,6 +654,41 @@ def _production_dependencies(config: RunConfig) -> ModelRuntimeDependencies:
                 shared_ids,
             )
 
+    def forward_cached_sufficient_statistics(
+        loaded: _LoadedTunixModel,
+        prompt_ids: Any,
+        prompt_mask: Any,
+        completion_token_ids: Any,
+        completion_mask: Any,
+        overlap_ids: Any,
+    ) -> tuple[Any, Any]:
+        prompts = jnp.asarray(prompt_ids, dtype=jnp.int32)
+        prompts_active = jnp.asarray(prompt_mask, dtype=jnp.bool_)
+        completion_ids = jnp.asarray(completion_token_ids, dtype=jnp.int32)
+        completion_active = jnp.asarray(completion_mask, dtype=jnp.bool_)
+        shared_ids = jnp.asarray(overlap_ids, dtype=jnp.int32)
+        if prompts.ndim != 2 or prompts_active.shape != prompts.shape:
+            raise ModelAdapterError(
+                "cached prompt ids and mask must be equal-shape rank-2 arrays"
+            )
+        if completion_ids.ndim != 2 or completion_active.shape != completion_ids.shape:
+            raise ModelAdapterError(
+                "cached completion ids and mask must be equal-shape rank-2 arrays"
+            )
+        if completion_ids.shape[0] != prompts.shape[0] or shared_ids.ndim != 1:
+            raise ModelAdapterError("cached teacher statistic batch shape mismatch")
+        if loaded.forward_cached_statistics_fn is None:
+            raise ModelAdapterError("loaded model lacks cached statistic forward")
+        with jax.set_mesh(loaded.mesh):
+            return loaded.forward_cached_statistics_fn(
+                loaded.model,
+                prompts,
+                prompts_active,
+                completion_ids,
+                completion_active,
+                shared_ids,
+            )
+
     return ModelRuntimeDependencies(
         name="tunix-local-mounted",
         production=True,
@@ -459,6 +699,7 @@ def _production_dependencies(config: RunConfig) -> ModelRuntimeDependencies:
         stop_gradient=jax.lax.stop_gradient,
         to_host=jax.device_get,
         forward_sufficient_statistics=forward_sufficient_statistics,
+        forward_cached_sufficient_statistics=forward_cached_sufficient_statistics,
     )
 
 
@@ -846,32 +1087,64 @@ class MaxTextFrozenTeacherScoreBackend:
         ]
         tokenize_s = time.monotonic() - tokenize_started
         required_width = max(widths)
+        completion_required = max(
+            len(completion.token_ids)
+            for _, _, _, completion in tokenized
+        )
+        cached_mode = (
+            self._config.training.teacher_scoring_mode
+            == "cached_teacher_forcing"
+        )
+        bucket_required_width = required_width
+        if cached_mode:
+            bucket_required_width = max(
+                bucket_required_width,
+                self._config.rollout.max_prompt_tokens + completion_required,
+            )
         try:
             max_width = select_length_bucket(
-                required_width, self._config.training.teacher_sequence_buckets
+                bucket_required_width,
+                self._config.training.teacher_sequence_buckets,
             )
         except PerformanceContractError as exc:
             raise ModelAdapterError(str(exc)) from exc
         pad_id = self.model_adapter.tokenizer.pad_token_id
         input_ids = np.full((len(tokenized), max_width), pad_id, dtype=np.int32)
         segment_ids = np.zeros_like(input_ids)
-        completion_required = max(
-            len(completion.token_ids)
-            for _, _, _, completion in tokenized
-        )
-        try:
-            completion_width = select_length_bucket(
-                completion_required,
-                self._config.training.teacher_sequence_buckets,
+        if cached_mode:
+            completion_width = (
+                max_width - self._config.rollout.max_prompt_tokens
             )
-        except PerformanceContractError as exc:
-            raise ModelAdapterError(str(exc)) from exc
+            if completion_required > completion_width:
+                raise ModelAdapterError(
+                    "teacher completion exceeds the cached scoring budget"
+                )
+        else:
+            try:
+                completion_width = select_length_bucket(
+                    completion_required,
+                    self._config.training.teacher_sequence_buckets,
+                )
+            except PerformanceContractError as exc:
+                raise ModelAdapterError(str(exc)) from exc
         completion_positions = np.zeros(
             (len(tokenized), completion_width), dtype=np.int32
         )
         completion_token_ids = np.full(
             (len(tokenized), completion_width), pad_id, dtype=np.int32
         )
+        completion_mask = np.zeros(
+            (len(tokenized), completion_width), dtype=np.bool_
+        )
+        cached_prompt_ids = np.full(
+            (
+                len(tokenized),
+                self._config.rollout.max_prompt_tokens,
+            ),
+            pad_id,
+            dtype=np.int32,
+        )
+        cached_prompt_mask = np.zeros_like(cached_prompt_ids, dtype=np.bool_)
         for row_index, (_, _, model_prompt_ids, completion) in enumerate(tokenized):
             row_ids = model_prompt_ids + completion.token_ids
             input_ids[row_index, : len(row_ids)] = row_ids
@@ -883,9 +1156,26 @@ class MaxTextFrozenTeacherScoreBackend:
                 start, start + width, dtype=np.int32
             )
             completion_token_ids[row_index, :width] = completion.token_ids
+            completion_mask[row_index, :width] = True
+            prompt_start = (
+                self._config.rollout.max_prompt_tokens - len(model_prompt_ids)
+            )
+            cached_prompt_ids[row_index, prompt_start:] = model_prompt_ids
+            cached_prompt_mask[row_index, prompt_start:] = True
 
-        use_sufficient_statistics = (
-            self._overlap_token_ids is not None
+        use_cached_statistics = (
+            cached_mode
+            and self._overlap_token_ids is not None
+            and self.model_adapter.dependencies.forward_cached_sufficient_statistics
+            is not None
+        )
+        if cached_mode and not use_cached_statistics:
+            raise ModelAdapterError(
+                "cached teacher scoring requires overlap ids and a cached runtime"
+            )
+        use_dense_statistics = (
+            not cached_mode
+            and self._overlap_token_ids is not None
             and self.model_adapter.dependencies.forward_sufficient_statistics
             is not None
         )
@@ -893,7 +1183,18 @@ class MaxTextFrozenTeacherScoreBackend:
         # exact SimCT sufficient statistics.  CPU dependency fakes and the
         # framework-light interface canary retain the full-logit fallback.
         forward_started = time.monotonic()
-        if use_sufficient_statistics:
+        if use_cached_statistics:
+            shared_log_probs, selected_log_probs = (
+                self.model_adapter.forward_cached_sufficient_statistics(
+                    cached_prompt_ids,
+                    cached_prompt_mask,
+                    completion_token_ids,
+                    completion_mask,
+                    self._overlap_token_ids,
+                )
+            )
+            forward_values: Any = (shared_log_probs, selected_log_probs)
+        elif use_dense_statistics:
             shared_log_probs, selected_log_probs = (
                 self.model_adapter.forward_sufficient_statistics(
                     input_ids,
@@ -924,7 +1225,7 @@ class MaxTextFrozenTeacherScoreBackend:
         ) in enumerate(tokenized):
             start = len(model_prompt_ids) - 1
             width = len(completion.token_ids)
-            if use_sufficient_statistics:
+            if use_cached_statistics or use_dense_statistics:
                 sample_shared = shared_log_probs[row_index, :width, :]
                 sample_selected = selected_log_probs[row_index, :width]
                 score_payload = {

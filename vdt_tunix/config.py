@@ -376,6 +376,7 @@ class TrainingConfig:
     alignment_bucket_size: int | None = None
     synchronize_phase_timings: bool = False
     max_steps_unit: str = "trainer_call"
+    teacher_scoring_mode: str = "dense"
 
     def __post_init__(self) -> None:
         for name in ("max_steps", "micro_batch_size", "gradient_accumulation_steps"):
@@ -401,6 +402,11 @@ class TrainingConfig:
             raise ConfigError(
                 "training.max_steps_unit must be trainer_call or optimizer_update"
             )
+        if self.teacher_scoring_mode not in {"dense", "cached_teacher_forcing"}:
+            raise ConfigError(
+                "training.teacher_scoring_mode must be dense or "
+                "cached_teacher_forcing"
+            )
 
     @classmethod
     def from_mapping(cls, value: Any) -> TrainingConfig:
@@ -422,6 +428,7 @@ class TrainingConfig:
                 "alignment_bucket_size",
                 "synchronize_phase_timings",
                 "max_steps_unit",
+                "teacher_scoring_mode",
             },
         )
         bucket_values = raw.get("teacher_sequence_buckets") or []
@@ -462,6 +469,10 @@ class TrainingConfig:
             max_steps_unit=_string(
                 raw.get("max_steps_unit", "trainer_call"),
                 "training.max_steps_unit",
+            ),
+            teacher_scoring_mode=_string(
+                raw.get("teacher_scoring_mode", "dense"),
+                "training.teacher_scoring_mode",
             ),
         )
 
@@ -688,6 +699,8 @@ class RunConfig:
             payload["training"].pop("synchronize_phase_timings", None)
         if self.training.max_steps_unit == "trainer_call":
             payload["training"].pop("max_steps_unit", None)
+        if self.training.teacher_scoring_mode == "dense":
+            payload["training"].pop("teacher_scoring_mode", None)
         if self.rollout.max_sequence_tokens is None:
             payload["rollout"].pop("max_sequence_tokens", None)
         if not self.rollout.force_max_completion:

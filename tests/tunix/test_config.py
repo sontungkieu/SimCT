@@ -56,6 +56,22 @@ def test_performance_controls_are_opt_in_and_part_of_identity(config_payload):
         RunConfig.from_mapping(invalid)
 
 
+def test_cached_teacher_scoring_is_explicit_and_part_of_identity(config_payload):
+    legacy = RunConfig.from_mapping(copy.deepcopy(config_payload))
+    payload = copy.deepcopy(config_payload)
+    payload["training"]["teacher_scoring_mode"] = "cached_teacher_forcing"
+    configured = RunConfig.from_mapping(payload)
+
+    assert legacy.training.teacher_scoring_mode == "dense"
+    assert configured.training.teacher_scoring_mode == "cached_teacher_forcing"
+    assert configured.digest() != legacy.digest()
+
+    invalid = copy.deepcopy(payload)
+    invalid["training"]["teacher_scoring_mode"] = "approximate"
+    with pytest.raises(ConfigError, match="dense or cached_teacher_forcing"):
+        RunConfig.from_mapping(invalid)
+
+
 def test_sequence_probe_and_optimizer_update_contracts_are_explicit(config_payload):
     legacy = RunConfig.from_mapping(copy.deepcopy(config_payload))
     payload = copy.deepcopy(config_payload)

@@ -42,10 +42,14 @@ pool 4K and 8K results.
 
 ## Resource ladder
 
-For each protocol, test prompt batch `B = 1, 2, 4, 8` in that order on the
-unchanged `FSDP8 x TP1 x PP1` topology. Stop at the first OOM, non-finite
-metric, missing W&B evidence, or runtime-contract failure. Do not submit a
-larger batch for that length until the failure is diagnosed.
+For each protocol, test prompt batch `B = 1, 2, 4, 8` on the unchanged
+`FSDP8 x TP1 x PP1` topology. The four batch sizes may be submitted as
+independent speculative canaries on different healthy owners to reduce queue
+wall time. Each run keeps a unique slug, fixed prompt/seed/checkpoint and its
+own audit trail; a larger-B result never conceals or retroactively invalidates
+a smaller-B failure. Diagnose every OOM, non-finite metric, missing W&B
+evidence, or runtime-contract failure separately before retrying that exact
+configuration.
 
 Every canary performs one logical optimizer update. The trainer call consumes
 the whole prompt batch and Optax accumulates across calls:
@@ -112,11 +116,22 @@ and realized selected-token log-probabilities. A small-tensor regression test
 checks numerical parity with the full-logit kernel. This is local correctness
 evidence only; a fresh remote canary must still verify peak HBM and throughput.
 
+For `public8k`, `training.teacher_scoring_mode=cached_teacher_forcing` replaces
+the dense 8K teacher call with exact Qwen prefill plus teacher-forced KV-cache
+decoding. Prompt prefill skips the vocabulary head and projects only the final
+prompt state. A `jax.lax.scan` then scores each realized completion token from
+one-step `B x 1 x V` logits, immediately reducing them to shared-token and
+selected-token log-probabilities. This avoids retained `B x L x V` logits and
+dense completion-length attention while preserving the dense causal objective.
+The small-tensor test compares every cached token score with dense causal
+log-softmax. This remains local design/parity evidence until a fresh remote B1
+canary verifies HBM, finite metrics, lineage and native W&B evidence.
+
 The allowed optimization order is:
 
-1. use the implemented exact teacher sufficient-statistics path and verify its
-   remote HBM profile;
-2. if necessary, chunk exact teacher scoring by example/sequence;
+1. use the implemented dense sufficient-statistics path for `paper4k` and the
+   exact cached teacher-forcing path for `public8k`, then verify remote HBM;
+2. if necessary, chunk prompt prefill or exact scoring by example/sequence;
 3. bucket lengths or dynamically microbatch under a token budget;
 4. rematerialize/checkpoint activations;
 5. only then test HSDP or rollout replicas as a separate topology experiment.

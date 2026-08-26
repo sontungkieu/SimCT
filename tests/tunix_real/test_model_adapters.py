@@ -197,6 +197,92 @@ def test_dependency_injected_adapters_exercise_real_backend_contract(real_config
     assert scores.samples[0].completion.pieces == (b"hap", b"py")
 
 
+def test_cached_teacher_scoring_left_pads_prompt_and_masks_completion(real_config):
+    student_tokenizer = PieceTokenizer(["P:", "ha", "pp", "y"])
+    teacher_tokenizer = PieceTokenizer(["P:", "hap", "py"])
+    dependencies, _, _ = _fake_dependencies(
+        student_tokenizer,
+        teacher_tokenizer,
+    )
+    captured = []
+
+    def cached_forward(
+        model,
+        prompt_ids,
+        prompt_mask,
+        completion_ids,
+        completion_mask,
+        overlap_ids,
+    ):
+        del model
+        captured.append(
+            tuple(
+                np.asarray(value).copy()
+                for value in (
+                    prompt_ids,
+                    prompt_mask,
+                    completion_ids,
+                    completion_mask,
+                    overlap_ids,
+                )
+            )
+        )
+        batch, completion_width = np.asarray(completion_ids).shape
+        overlap_width = len(overlap_ids)
+        return (
+            np.zeros((batch, completion_width, overlap_width), dtype=np.float32),
+            np.zeros((batch, completion_width), dtype=np.float32),
+        )
+
+    dependencies = dataclasses.replace(
+        dependencies,
+        forward_cached_sufficient_statistics=cached_forward,
+    )
+    config = dataclasses.replace(
+        real_config,
+        training=dataclasses.replace(
+            real_config.training,
+            teacher_scoring_mode="cached_teacher_forcing",
+        ),
+    )
+    bundle = build_backends(config, dependencies=dependencies)
+    overlap_ids = (
+        teacher_tokenizer.id_for("hap"),
+        teacher_tokenizer.id_for("py"),
+    )
+    bundle.teacher.configure_overlap_token_ids(overlap_ids)
+    prompts = (
+        PromptRecord(
+            prompt_id=config.canary.prompt_id,
+            student_prompt=config.canary.student_prompt,
+            teacher_prompt=config.canary.teacher_prompt,
+        ),
+    )
+    rollouts = bundle.student.rollout(
+        RolloutRequest(
+            run_id=config.run_id,
+            step=1,
+            prompts=prompts,
+            samples_per_prompt=config.rollout.samples_per_prompt,
+        )
+    )
+    scores = bundle.teacher.score(
+        TeacherScoreRequest(rollouts=rollouts, prompts=prompts)
+    )
+
+    assert len(scores.samples) == 2
+    assert len(captured) == 1
+    prompt_ids, prompt_mask, completion_ids, completion_mask, captured_overlap = (
+        captured[0]
+    )
+    assert prompt_ids.shape == (2, config.rollout.max_prompt_tokens)
+    assert prompt_mask[:, -1].all()
+    assert not prompt_mask[:, :-1].any()
+    assert completion_ids.shape == (2, 2)
+    assert completion_mask[:, :2].all()
+    np.testing.assert_array_equal(captured_overlap, overlap_ids)
+
+
 def test_teacher_tokenization_without_prompt_boundary_fails_closed(real_config):
     tokenizer = PieceTokenizer(["P:h", "appy"])
     adapter = TokenizerByteAdapter(tokenizer, real_config.teacher)

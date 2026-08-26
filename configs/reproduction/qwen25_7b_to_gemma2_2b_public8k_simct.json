@@ -44,6 +44,7 @@
   "training": {
     "max_steps": 157,
     "max_steps_unit": "optimizer_update",
+    "teacher_scoring_mode": "cached_teacher_forcing",
     "micro_batch_size": 1,
     "gradient_accumulation_steps": 64,
     "learning_rate": 5e-7,
