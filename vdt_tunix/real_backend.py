@@ -76,6 +76,21 @@ def _reduce_teacher_step_statistics(
     return shared - log_normalizer[..., None], selected - log_normalizer
 
 
+def _configure_qwen_compute_dtype(
+    model_params: Any,
+    *,
+    compute_dtype: Any,
+) -> Any:
+    """Make the Qwen activation dtype explicit before model construction."""
+
+    if not hasattr(model_params, "dtype"):
+        raise RealBackendUnavailable(
+            "Qwen model config does not expose a compute dtype"
+        )
+    model_params.dtype = compute_dtype
+    return model_params
+
+
 def _cached_teacher_forcing_scan(
     initial_logits: Any,
     initial_cache: Any,
@@ -449,6 +464,11 @@ def _production_dependencies(config: RunConfig) -> ModelRuntimeDependencies:
                     model_params = automodel.call_model_config(
                         model_config.model_id
                     )
+                    if model_family == "qwen2p5":
+                        _configure_qwen_compute_dtype(
+                            model_params,
+                            compute_dtype=jnp.bfloat16,
+                        )
                     model = automodel.create_model_from_safe_tensors(
                         model_config.model_id,
                         str(model_path),

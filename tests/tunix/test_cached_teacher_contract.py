@@ -7,6 +7,7 @@ import pytest
 
 from vdt_tunix.real_backend import (
     RealBackendUnavailable,
+    _configure_qwen_compute_dtype,
     _qwen_cached_teacher_statistics,
 )
 
@@ -29,6 +30,26 @@ class _StopBeforePrefill:
     def build_positions_from_mask(mask):
         del mask
         raise _StopAfterCacheInitialization
+
+
+def test_qwen_compute_dtype_is_explicitly_configured_before_restore():
+    model_params = SimpleNamespace(dtype=np.float32)
+
+    configured = _configure_qwen_compute_dtype(
+        model_params,
+        compute_dtype=np.float16,
+    )
+
+    assert configured is model_params
+    assert model_params.dtype is np.float16
+
+
+def test_qwen_compute_dtype_configuration_fails_closed_without_contract():
+    with pytest.raises(RealBackendUnavailable, match="compute dtype"):
+        _configure_qwen_compute_dtype(
+            SimpleNamespace(),
+            compute_dtype=np.float16,
+        )
 
 
 def test_qwen_cached_teacher_uses_model_compute_dtype_for_kv_cache():
