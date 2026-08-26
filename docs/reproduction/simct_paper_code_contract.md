@@ -206,7 +206,11 @@ generated completion tokens <= 4096
 
 This is an **INFERENCE**, not an author-confirmed detail. The runtime caps the
 completion by the remaining student sequence capacity and logs requested versus
-actual lengths. The corresponding two-epoch 10K-data template uses 314 logical
+actual lengths. Because the native Tunix sampler statically pads prompts to
+`max_prompt_tokens`, the executable completion cap is
+`min(max_completion_tokens, max_sequence_tokens - max_prompt_tokens)`; it is
+3840 for the current `paper4k` prompt cap of 256. The corresponding two-epoch
+10K-data template uses 314 logical
 optimizer updates at effective batch 64 (20,096 response consumptions), so the
 small final-epoch overshoot is explicit rather than silently calling 314 updates
 an exact 20,000-example traversal.

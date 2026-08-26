@@ -121,8 +121,10 @@ def test_forced_resource_probe_uses_native_full_length_sampler(
     )
 
     assert observed["constructor"]["cache_config"].kwargs["cache_size"] == 9
-    assert observed["call"]["max_generation_steps"] == 5
+    # Tunix pads every prompt to max_prompt_length before adding generation
+    # steps, so the static budget is 7 prompt tokens + 1 generated token.
+    assert observed["call"]["max_generation_steps"] == 1
     assert observed["call"]["eos_tokens"] == [0]
     assert observed["call"]["forbidden_tokens"] == [0, 1, 2]
     assert observed["call"]["top_p"] == 0.95
-    assert len(result.samples[0].completion.token_ids) == 5
+    assert len(result.samples[0].completion.token_ids) == 1

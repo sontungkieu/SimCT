@@ -503,12 +503,12 @@ class TunixStudentRolloutBackend:
             if self._config.rollout.temperature == 0.0
             else self._config.rollout.top_p
         )
-        longest_prompt = max(len(row[4]) for row in rows)
         max_generation_steps = self._config.rollout.max_completion_tokens
         if self._config.rollout.max_sequence_tokens is not None:
             max_generation_steps = min(
                 max_generation_steps,
-                self._config.rollout.max_sequence_tokens - longest_prompt,
+                self._config.rollout.max_sequence_tokens
+                - self._config.rollout.max_prompt_tokens,
             )
         if max_generation_steps < 1:
             raise ModelAdapterError(
@@ -606,7 +606,7 @@ class TunixStudentRolloutBackend:
                 requested_generation_steps = min(
                     requested_generation_steps,
                     self._config.rollout.max_sequence_tokens
-                    - max(len(row[4]) for row in rows),
+                    - self._config.rollout.max_prompt_tokens,
                 )
             result = self._tunix_sampler_rollout(request, rows)
             self.last_phase_timings = {

@@ -19,6 +19,15 @@ The paper reports both maximum sequence length 4096 and rollout maximum length
 prompt. Therefore the rule above is an explicit reproduction interpretation,
 not an author-confirmed fact.
 
+The native Tunix sampler pads every prompt to the configured static prompt
+width before appending generated tokens. Therefore the executable generation
+budget is
+`min(max_completion_tokens, max_sequence_tokens - max_prompt_tokens)`, not the
+sequence budget minus the observed prompt length. With the current static
+prompt cap of 256, `paper4k` requests at most 3840 generated tokens. This keeps
+the sampler cache shape within 4096 tokens while preserving a fixed-shape
+worst-case resource probe.
+
 `public8k` follows the released shell script instead:
 
 - model sequence length: 8192 tokens;
