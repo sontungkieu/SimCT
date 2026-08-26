@@ -69,6 +69,7 @@ class TokenizerByteAdapter:
     def __init__(self, tokenizer: Any, config: ModelConfig):
         self._tokenizer = tokenizer
         self.config = config
+        self.last_continuation_tokenization_mode = "not_run"
         self.pad_token_id = self._special_id("pad_token_id", "pad_id")
         self.eos_token_id = self._special_id("eos_token_id", "eos_id")
         self.bos_token_id = self._optional_special_id("bos_token_id", "bos_id")
@@ -235,9 +236,33 @@ class TokenizerByteAdapter:
             if len(decoded) > len(prompt_bytes) or not prompt_bytes.startswith(decoded):
                 break
         if boundary is None or boundary == len(full_ids):
-            raise ModelAdapterError(
-                "teacher tokenization has no exact prompt/completion byte boundary"
-            )
+            # A byte-level BPE may merge the final prompt bytes with the first
+            # completion bytes when the concatenated text is tokenized in one
+            # call.  Causal generation cannot use such a cross-boundary token:
+            # the prompt tokens already exist before the first completion token
+            # is sampled.  Reproduce that causal state by tokenizing the prompt
+            # and completion independently, then fail closed unless their
+            # concatenated IDs still decode to the exact requested UTF-8 text.
+            try:
+                prompt_ids = self.encode(prompt_text)
+                completion_ids = self.encode(completion_text)
+                sequence = self.continuation_from_generated_ids(
+                    prompt_text=prompt_text,
+                    prompt_token_ids=prompt_ids,
+                    completion_token_ids=completion_ids,
+                )
+            except Exception as exc:
+                raise ModelAdapterError(
+                    "teacher tokenization has no exact prompt/completion byte "
+                    "boundary and causal split tokenization is not lossless"
+                ) from exc
+            if sequence.text != completion_text:
+                raise ModelAdapterError(
+                    "teacher causal split tokenization changed the student "
+                    "completion text"
+                )
+            self.last_continuation_tokenization_mode = "causal_split"
+            return prompt_ids, sequence
         prompt_ids = full_ids[:boundary]
         completion_ids = full_ids[boundary:]
         sequence = self.continuation_from_generated_ids(
@@ -249,6 +274,7 @@ class TokenizerByteAdapter:
             raise ModelAdapterError(
                 "teacher retokenization changed the student completion text"
             )
+        self.last_continuation_tokenization_mode = "joint_exact_boundary"
         return prompt_ids, sequence
 
 

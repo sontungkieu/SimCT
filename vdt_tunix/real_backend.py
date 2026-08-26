@@ -1062,6 +1062,10 @@ class MaxTextFrozenTeacherScoreBackend:
         tokenized: list[
             tuple[Any, tuple[int, ...], tuple[int, ...], Any]
         ] = []
+        tokenization_mode_counts = {
+            "joint_exact_boundary": 0,
+            "causal_split": 0,
+        }
         for rollout in request.rollouts.samples:
             prompt = prompt_by_id[rollout.prompt_id]
             prompt_ids, completion = (
@@ -1073,6 +1077,14 @@ class MaxTextFrozenTeacherScoreBackend:
             model_prompt_ids = self.model_adapter.tokenizer.with_model_prefix(
                 prompt_ids
             )
+            tokenization_mode = (
+                self.model_adapter.tokenizer.last_continuation_tokenization_mode
+            )
+            if tokenization_mode not in tokenization_mode_counts:
+                raise ModelAdapterError(
+                    "teacher continuation tokenization mode was not recorded"
+                )
+            tokenization_mode_counts[tokenization_mode] += 1
             if len(model_prompt_ids) > self._config.rollout.max_prompt_tokens:
                 raise ModelAdapterError(
                     f"teacher prompt {prompt.prompt_id!r} exceeds max_prompt_tokens"
@@ -1273,6 +1285,12 @@ class MaxTextFrozenTeacherScoreBackend:
             "teacher_sequence_required": required_width,
             "teacher_sequence_bucket": max_width,
             "teacher_completion_bucket": completion_width,
+            "teacher_joint_boundary_records": tokenization_mode_counts[
+                "joint_exact_boundary"
+            ],
+            "teacher_causal_split_records": tokenization_mode_counts[
+                "causal_split"
+            ],
         }
         return result
 

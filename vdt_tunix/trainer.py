@@ -67,6 +67,8 @@ class PreparedSimCTBatch:
     teacher_sequence_required: int = 0
     teacher_sequence_bucket: int = 0
     teacher_completion_bucket: int = 0
+    teacher_joint_boundary_records: int = 0
+    teacher_causal_split_records: int = 0
     alignment_bucket: int = 0
     actual_prompt_tokens: int = 0
     actual_completion_tokens: int = 0
@@ -101,6 +103,8 @@ class UpdateMetrics:
     teacher_sequence_required: int = 0
     teacher_sequence_bucket: int = 0
     teacher_completion_bucket: int = 0
+    teacher_joint_boundary_records: int = 0
+    teacher_causal_split_records: int = 0
     alignment_bucket: int = 0
     shape_signature: int = 0
     shape_signature_changed: int = 0
@@ -367,6 +371,12 @@ def prepare_simct_batch(
             teacher_timing.get("teacher_sequence_bucket", teacher_required)
         ),
         teacher_completion_bucket=teacher_width,
+        teacher_joint_boundary_records=int(
+            teacher_timing.get("teacher_joint_boundary_records", 0)
+        ),
+        teacher_causal_split_records=int(
+            teacher_timing.get("teacher_causal_split_records", 0)
+        ),
         alignment_bucket=len(bounds[0]),
         actual_prompt_tokens=prompt_token_total,
         actual_completion_tokens=student_token_total,
@@ -543,6 +553,8 @@ class PaperSimCTTrainer:
             teacher_sequence_required=batch.teacher_sequence_required,
             teacher_sequence_bucket=batch.teacher_sequence_bucket,
             teacher_completion_bucket=batch.teacher_completion_bucket,
+            teacher_joint_boundary_records=batch.teacher_joint_boundary_records,
+            teacher_causal_split_records=batch.teacher_causal_split_records,
             alignment_bucket=batch.alignment_bucket,
             shape_signature=shape_signature,
             shape_signature_changed=shape_changed,
@@ -760,6 +772,8 @@ class PaperSimpleOPDTrainer:
             teacher_sequence_required=batch.teacher_sequence_required,
             teacher_sequence_bucket=batch.teacher_sequence_bucket,
             teacher_completion_bucket=batch.teacher_completion_bucket,
+            teacher_joint_boundary_records=batch.teacher_joint_boundary_records,
+            teacher_causal_split_records=batch.teacher_causal_split_records,
             alignment_bucket=batch.alignment_bucket,
             shape_signature=shape_signature,
             shape_signature_changed=shape_changed,

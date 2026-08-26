@@ -34,7 +34,12 @@ with student tokens. Prompt token IDs stored in the rollout/score contracts are
 likewise text-only. Native rollout, SFT, teacher scoring, and OPD forwards add
 the tokenizer's BOS model prefix separately, so every loss is conditioned on
 the same model state as Tunix's sampler without introducing a zero-byte special
-token into the byte-alignment coordinate.
+token into the byte-alignment coordinate. Teacher retokenization first uses the
+canonical joint prompt-plus-completion encoding when it exposes an exact byte
+boundary. If byte-level BPE merges across that boundary, it instead uses the
+causal inference state: independently encoded prompt and completion IDs are
+accepted only when their concatenation decodes losslessly to the exact same
+UTF-8 text. Runtime timing evidence records how many samples used each mode.
 
 The configuration contains a singular `teacher` object. Unknown keys, a
 `teachers` list, mutable `main`/`latest` revisions, same-tokenizer configs, and

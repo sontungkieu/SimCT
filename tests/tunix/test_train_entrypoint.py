@@ -197,6 +197,8 @@ def test_optimizer_update_mode_aggregates_micro_calls(tmp_path, config_payload, 
                 aligned_spans=1,
                 rollout_s=1.0,
                 actual_completion_tokens=2,
+                teacher_joint_boundary_records=1,
+                teacher_causal_split_records=2,
             )
 
     class FakeController:
@@ -258,5 +260,7 @@ def test_optimizer_update_mode_aggregates_micro_calls(tmp_path, config_payload, 
     assert optimizer_rows[0]["micro_steps_per_optimizer_update"] == 2
     assert optimizer_rows[0]["actual_completion_tokens"] == 4.0
     assert optimizer_rows[0]["rollout_s"] == 2.0
+    assert optimizer_rows[0]["teacher_joint_boundary_records"] == 2.0
+    assert optimizer_rows[0]["teacher_causal_split_records"] == 4.0
     assert [row["micro_step"] for row in micro_rows] == [1, 2]
     assert [item["completed_steps"] for item in saves] == [2]

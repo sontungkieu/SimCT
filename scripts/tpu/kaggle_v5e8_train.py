@@ -94,6 +94,8 @@ def _aggregate_optimizer_update(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "aligned_units",
         "aligned_spans",
         "truncation_count",
+        "teacher_joint_boundary_records",
+        "teacher_causal_split_records",
     }
     maximum = {
         "maximum_prompt_tokens",

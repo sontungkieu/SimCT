@@ -195,6 +195,8 @@ def test_dependency_injected_adapters_exercise_real_backend_contract(real_config
     assert rollouts.samples[0].completion.pieces == (b"ha", b"pp", b"y")
     assert scores.samples[0].completion.text == "happy"
     assert scores.samples[0].completion.pieces == (b"hap", b"py")
+    assert bundle.teacher.last_phase_timings["teacher_joint_boundary_records"] == 2
+    assert bundle.teacher.last_phase_timings["teacher_causal_split_records"] == 0
 
 
 def test_cached_teacher_scoring_left_pads_prompt_and_masks_completion(real_config):
@@ -286,8 +288,28 @@ def test_cached_teacher_scoring_left_pads_prompt_and_masks_completion(real_confi
 def test_teacher_tokenization_without_prompt_boundary_fails_closed(real_config):
     tokenizer = PieceTokenizer(["P:h", "appy"])
     adapter = TokenizerByteAdapter(tokenizer, real_config.teacher)
-    with pytest.raises(ModelAdapterError, match="no exact prompt/completion"):
+    with pytest.raises(
+        ModelAdapterError,
+        match="no exact prompt/completion.*causal split",
+    ):
         adapter.tokenize_continuation(prompt_text="P:", completion_text="happy")
+
+
+def test_teacher_tokenization_uses_lossless_causal_split_at_merged_boundary(
+    real_config,
+):
+    tokenizer = PieceTokenizer(["P:h", "appy", "P:", "happy"])
+    adapter = TokenizerByteAdapter(tokenizer, real_config.teacher)
+
+    prompt_ids, completion = adapter.tokenize_continuation(
+        prompt_text="P:",
+        completion_text="happy",
+    )
+
+    assert prompt_ids == (tokenizer.id_for("P:"),)
+    assert completion.token_ids == (tokenizer.id_for("happy"),)
+    assert completion.text == "happy"
+    assert adapter.last_continuation_tokenization_mode == "causal_split"
 
 
 def test_model_prompt_prefix_matches_tunix_sampler_without_polluting_text_ids(
