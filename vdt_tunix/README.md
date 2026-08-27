@@ -75,7 +75,10 @@ but skips its full language-model head. It projects only the fixed shared
 vocabulary rows and scans alignment units in rematerialized blocks. This is an
 exact overlap-softmax/reverse-KL computation, including Gemma's final-logit
 softcap, while avoiding persistent `batch x sequence x full-vocabulary` and
-`batch x alignment-unit x overlap` tensors on TPU.
+`batch x alignment-unit x overlap` tensors on TPU. Native trainable Gemma
+restores also use Tunix decoder-layer rematerialization so the reverse pass
+recomputes each decoder layer instead of retaining full-sequence attention
+intermediates from every layer; frozen teacher execution is unchanged.
 
 ## Kaggle v5e-8 canary
 

@@ -293,6 +293,51 @@ def _configure_qwen_compute_dtype(
     return model_params
 
 
+def _configure_gemma_training_remat(model: Any, *, trainable: bool) -> Any:
+    """Enable Tunix decoder rematerialization for a trainable Gemma model.
+
+    Paper-length SimpleOPD backpropagates through every Gemma decoder layer.
+    Tunix defaults native Gemma restores to ``RematConfig.NONE``, which keeps
+    full-sequence attention intermediates from all layers live together.  The
+    exact v5e-8 resource probe showed those intermediates dominating HBM even
+    after the language-model head was made overlap-only.  Decoder remat is a
+    graph-scheduling change only: it recomputes each layer in the reverse pass
+    without changing parameters, logits, or the distillation objective.
+
+    The helper deliberately derives ``DECODER`` from the restored model's enum
+    type instead of importing a second Tunix module path.  That keeps the
+    runtime contract pinned to the exact Tunix model implementation that
+    created the checkpoint graph and fails closed if the expected contract is
+    absent.
+    """
+
+    if not trainable:
+        return model
+    try:
+        config = model.config
+        remat_type = type(config.remat_config)
+        decoder_remat = remat_type.DECODER
+        layers = tuple(model.layers)
+    except (AttributeError, TypeError) as exc:
+        raise RealBackendUnavailable(
+            "trainable Gemma model does not expose Tunix decoder remat"
+        ) from exc
+    if not layers:
+        raise RealBackendUnavailable(
+            "trainable Gemma model exposes no decoder layers for remat"
+        )
+
+    config.remat_config = decoder_remat
+    for layer in layers:
+        try:
+            layer.config.remat_config = decoder_remat
+        except AttributeError as exc:
+            raise RealBackendUnavailable(
+                "trainable Gemma decoder layer does not expose remat config"
+            ) from exc
+    return model
+
+
 def _cached_teacher_forcing_scan(
     initial_state: Any,
     initial_cache: Any,
@@ -756,6 +801,10 @@ def _production_dependencies(config: RunConfig) -> ModelRuntimeDependencies:
                         rng_seed=0,
                         mesh=mesh,
                         model_path=candidates[0].name,
+                    )
+                    model = _configure_gemma_training_remat(
+                        model,
+                        trainable=trainable,
                     )
         except Exception as exc:
             raise RealBackendUnavailable(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import enum
 from types import SimpleNamespace
 
 import numpy as np
@@ -8,6 +9,7 @@ import pytest
 from vdt_tunix.real_backend import (
     RealBackendUnavailable,
     _blocked_teacher_logsumexp,
+    _configure_gemma_training_remat,
     _configure_qwen_compute_dtype,
     _project_gemma_shared_logits,
     _qwen_cached_teacher_statistics,
@@ -32,6 +34,12 @@ class _StopBeforePrefill:
     def build_positions_from_mask(mask):
         del mask
         raise _StopAfterCacheInitialization
+
+
+class _FakeRematConfig(enum.Enum):
+    NONE = enum.auto()
+    BLOCK = enum.auto()
+    DECODER = enum.auto()
 
 
 def test_gemma_simple_opd_projects_only_shared_rows_with_exact_softcap():
@@ -82,6 +90,40 @@ def test_qwen_compute_dtype_configuration_fails_closed_without_contract():
             SimpleNamespace(),
             compute_dtype=np.float16,
         )
+
+
+def test_trainable_gemma_enables_decoder_rematerialization():
+    model_config = SimpleNamespace(remat_config=_FakeRematConfig.NONE)
+    layer_configs = [
+        SimpleNamespace(remat_config=_FakeRematConfig.NONE),
+        SimpleNamespace(remat_config=_FakeRematConfig.NONE),
+    ]
+    model = SimpleNamespace(
+        config=model_config,
+        layers=[SimpleNamespace(config=config) for config in layer_configs],
+    )
+
+    configured = _configure_gemma_training_remat(model, trainable=True)
+
+    assert configured is model
+    assert model.config.remat_config is _FakeRematConfig.DECODER
+    assert all(
+        layer.config.remat_config is _FakeRematConfig.DECODER
+        for layer in model.layers
+    )
+
+
+def test_frozen_gemma_does_not_change_rematerialization():
+    model_config = SimpleNamespace(remat_config=_FakeRematConfig.NONE)
+    model = SimpleNamespace(
+        config=model_config,
+        layers=[SimpleNamespace(config=model_config)],
+    )
+
+    configured = _configure_gemma_training_remat(model, trainable=False)
+
+    assert configured is model
+    assert model.config.remat_config is _FakeRematConfig.NONE
 
 
 def test_qwen_cached_teacher_uses_model_compute_dtype_for_kv_cache():
