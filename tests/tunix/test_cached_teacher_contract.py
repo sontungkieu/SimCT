@@ -100,7 +100,7 @@ def test_qwen_cached_teacher_requires_model_compute_dtype():
         )
 
 
-def test_qwen_cached_teacher_keeps_lm_head_inside_gather_free_barriered_steps():
+def test_qwen_cached_teacher_keeps_lm_head_inside_scalar_indexed_barriered_steps():
     class NoDynamicGatherNumpy:
         def __getattr__(self, name):
             if name == "take_along_axis":
@@ -110,18 +110,20 @@ def test_qwen_cached_teacher_keeps_lm_head_inside_gather_free_barriered_steps():
     class FakeLax:
         def __init__(self) -> None:
             self.barrier_shapes = []
-            self.dot_general_calls = []
+            self.dynamic_index_calls = []
 
         def optimization_barrier(self, value):
             self.barrier_shapes.append(tuple(value.shape))
             return value
 
-        def dot_general(self, lhs, rhs, dimension_numbers):
-            self.dot_general_calls.append(
-                (tuple(lhs.shape), tuple(rhs.shape), dimension_numbers)
+        def dynamic_index_in_dim(self, operand, index, *, axis, keepdims):
+            self.dynamic_index_calls.append(
+                (tuple(operand.shape), int(index), axis, keepdims)
             )
-            assert dimension_numbers == (((1,), (1,)), ((0,), (0,)))
-            return np.einsum("bv,bv->b", lhs, rhs)
+            selected = np.take(operand, int(index), axis=axis)
+            if keepdims:
+                selected = np.expand_dims(selected, axis=axis)
+            return selected
 
         @staticmethod
         def scan(fn, carry, xs):
@@ -210,10 +212,10 @@ def test_qwen_cached_teacher_keeps_lm_head_inside_gather_free_barriered_steps():
 
     shared, selected = _qwen_cached_teacher_statistics(
         module,
-        np.asarray([[1, 2]], dtype=np.int32),
-        np.asarray([[True, True]]),
-        np.asarray([[3, 4, 5]], dtype=np.int32),
-        np.asarray([[True, True, True]]),
+        np.asarray([[1, 2], [2, 3]], dtype=np.int32),
+        np.asarray([[True, True], [True, True]]),
+        np.asarray([[3, 4, 5], [1, 0, 2]], dtype=np.int32),
+        np.asarray([[True, True, True], [True, True, True]]),
         np.asarray([0, 2], dtype=np.int32),
         model_params=model_params,
         configured_cache_size=5,
@@ -223,21 +225,35 @@ def test_qwen_cached_teacher_keeps_lm_head_inside_gather_free_barriered_steps():
         jnp_module=NoDynamicGatherNumpy(),
     )
 
-    assert shared.shape == (1, 3, 2)
-    assert selected.shape == (1, 3)
+    assert shared.shape == (2, 3, 2)
+    assert selected.shape == (2, 3)
     assert module.skip_lm_head_flags == [True, True, True, True]
-    assert fake_lax.barrier_shapes == [(1, 2), (1, 6), (1, 6)] * 3
-    assert fake_lax.dot_general_calls == [
-        ((1, 6), (1, 6), (((1,), (1,)), ((0,), (0,))))
-    ] * 3
-
-    centers = np.asarray([2.0, 6.0, 10.0], dtype=np.float32)[:, None]
-    dense_logits = -np.square(centers - np.arange(6, dtype=np.float32)[None, :])
-    dense_log_probs = dense_logits - FakeSpecial.logsumexp(dense_logits, axis=-1)[
-        :, None
+    assert fake_lax.barrier_shapes == [(2, 2), (2, 6), (2, 6), (2,)] * 3
+    assert fake_lax.dynamic_index_calls == [
+        ((6,), 3, 0, False),
+        ((6,), 1, 0, False),
+        ((6,), 4, 0, False),
+        ((6,), 0, 0, False),
+        ((6,), 5, 0, False),
+        ((6,), 2, 0, False),
     ]
-    np.testing.assert_allclose(shared[0], dense_log_probs[:, [0, 2]])
+
+    centers = np.asarray(
+        [[2.0, 6.0, 10.0], [3.0, 6.0, 6.0]],
+        dtype=np.float32,
+    )[..., None]
+    dense_logits = -np.square(
+        centers - np.arange(6, dtype=np.float32)[None, None, :]
+    )
+    dense_log_probs = dense_logits - FakeSpecial.logsumexp(dense_logits, axis=-1)[
+        ..., None
+    ]
+    np.testing.assert_allclose(shared, dense_log_probs[..., [0, 2]])
     np.testing.assert_allclose(
-        selected[0],
-        dense_log_probs[np.arange(3), [3, 4, 5]],
+        selected,
+        np.take_along_axis(
+            dense_log_probs,
+            np.asarray([[3, 4, 5], [1, 0, 2]], dtype=np.int32)[..., None],
+            axis=-1,
+        )[..., 0],
     )

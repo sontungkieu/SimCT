@@ -68,28 +68,33 @@ def _reduce_teacher_step_statistics(
     values = logits.astype(jnp_module.float32)
     log_normalizer = jax_module.scipy.special.logsumexp(values, axis=-1)
     shared = jnp_module.take(values, overlap_ids, axis=-1)
-    vocabulary_ids = jnp_module.arange(
-        values.shape[-1],
-        dtype=selected_token_ids.dtype,
+    # TPU XLA has independently miscompiled a batched dynamic gather, a
+    # compare/select vocabulary reduction, and a one-hot batch dot when each
+    # was fused into this scan body.  The leading dimensions are compile-time
+    # constants, so select one scalar from each vocabulary row with statically
+    # unrolled dynamic slices.  This keeps every dynamic operation scalar,
+    # avoids a vocabulary contraction for the selected-token path, and still
+    # retains no time-wide logits tensor.
+    selection_values = jax_module.lax.optimization_barrier(values)
+    flat_values = jnp_module.reshape(
+        selection_values,
+        (-1, values.shape[-1]),
     )
-    # TPU XLA can miscompile both a dynamic gather and a compare/select
-    # ``reduce_sum`` when either is fused with the other vocabulary reductions
-    # in this barriered scan body.  A barriered one-hot batch dot selects the
-    # same single finite logit while lowering the contraction to dot_general,
-    # without retaining a time-wide tensor.
-    selector = (
-        vocabulary_ids == selected_token_ids[..., None]
-    ).astype(values.dtype)
-    selector = jax_module.lax.optimization_barrier(selector)
-    batch_dimensions = tuple(range(values.ndim - 1))
-    selected = jax_module.lax.dot_general(
-        values,
-        selector,
-        (
-            ((values.ndim - 1,), (selector.ndim - 1,)),
-            (batch_dimensions, batch_dimensions),
+    flat_token_ids = jnp_module.reshape(selected_token_ids, (-1,))
+    selected = jnp_module.stack(
+        tuple(
+            jax_module.lax.dynamic_index_in_dim(
+                flat_values[row_index],
+                flat_token_ids[row_index],
+                axis=0,
+                keepdims=False,
+            )
+            for row_index in range(flat_values.shape[0])
         ),
+        axis=0,
     )
+    selected = jnp_module.reshape(selected, selected_token_ids.shape)
+    selected = jax_module.lax.optimization_barrier(selected)
     return shared - log_normalizer[..., None], selected - log_normalizer
 
 
