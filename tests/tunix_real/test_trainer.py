@@ -310,11 +310,21 @@ def test_simple_opd_trainer_updates_only_shared_one_to_one_unit():
         logits, _ = module(input_ids)
         return logits
 
+    @nnx.jit
+    def forward_hidden_fn(module, input_ids, positions, segments):
+        return forward_fn(module, input_ids, positions, segments)
+
+    def project_shared_fn(module, hidden, overlap_ids):
+        del module
+        return jnp.take(hidden, overlap_ids, axis=-1)
+
     loaded = _LoadedTunixModel(
         model=model,
         mesh=mesh,
         forward_fn=forward_fn,
         model_config=SimpleNamespace(num_layers=1, num_kv_heads=1, head_dim=1),
+        forward_hidden_fn=forward_hidden_fn,
+        project_shared_fn=project_shared_fn,
     )
     backends = BackendBundle(
         student=FixedStudent(

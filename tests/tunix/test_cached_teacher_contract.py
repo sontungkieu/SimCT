@@ -9,6 +9,7 @@ from vdt_tunix.real_backend import (
     RealBackendUnavailable,
     _blocked_teacher_logsumexp,
     _configure_qwen_compute_dtype,
+    _project_gemma_shared_logits,
     _qwen_cached_teacher_statistics,
 )
 
@@ -31,6 +32,36 @@ class _StopBeforePrefill:
     def build_positions_from_mask(mask):
         del mask
         raise _StopAfterCacheInitialization
+
+
+def test_gemma_simple_opd_projects_only_shared_rows_with_exact_softcap():
+    class FakeLax:
+        @staticmethod
+        def optimization_barrier(value):
+            return value
+
+    weight = np.asarray(
+        [[1.0, 0.0], [0.0, 1.0], [1.5, -0.5], [-1.0, 2.0]],
+        dtype=np.float32,
+    )
+    hidden = np.asarray([[[2.0, -1.0], [0.5, 3.0]]], dtype=np.float32)
+    module = SimpleNamespace(
+        embedder=SimpleNamespace(
+            input_embedding=SimpleNamespace(value=weight)
+        ),
+        final_logits_softcap=2.0,
+    )
+
+    observed = _project_gemma_shared_logits(
+        module,
+        hidden,
+        np.asarray([0, 2, 3], dtype=np.int32),
+        jax_module=SimpleNamespace(lax=FakeLax()),
+        jnp_module=np,
+    )
+    full = np.tanh(np.einsum("btd,vd->btv", hidden, weight) / 2.0) * 2.0
+
+    np.testing.assert_allclose(observed, full[..., [0, 2, 3]])
 
 
 def test_qwen_compute_dtype_is_explicitly_configured_before_restore():

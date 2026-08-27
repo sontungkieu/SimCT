@@ -53,6 +53,8 @@ class _LoadedTunixModel:
     sampler: Any | None = None
     forward_statistics_fn: Any | None = None
     forward_cached_statistics_fn: Any | None = None
+    forward_hidden_fn: Any | None = None
+    project_shared_fn: Any | None = None
 
 
 def _reduce_teacher_step_statistics(
@@ -239,6 +241,41 @@ def _project_qwen_shared_logits(
     shared = jnp_module.einsum("bd,od->bo", hidden, shared_rows)
     shared = jax_module.lax.optimization_barrier(shared)
     return shared.astype(jnp_module.float32)
+
+
+def _project_gemma_shared_logits(
+    module: Any,
+    hidden_state: Any,
+    overlap_ids: Any,
+    *,
+    jax_module: Any,
+    jnp_module: Any,
+) -> Any:
+    """Project only Gemma overlap rows while preserving its final softcap.
+
+    SimpleOPD normalizes over the shared vocabulary, so it never consumes the
+    other Gemma coordinates. Selecting immutable row indices from the tied
+    embedder before projection avoids materializing ``B x T x V`` logits. The
+    projection remains differentiable with respect to both hidden states and
+    the selected trainable embedding rows.
+    """
+
+    try:
+        vocabulary_rows = module.embedder.input_embedding.value
+    except AttributeError as exc:
+        raise RealBackendUnavailable(
+            "SimpleOPD hidden projection requires Gemma tied embedding weights"
+        ) from exc
+    hidden = jnp_module.asarray(hidden_state)
+    rows = jnp_module.asarray(vocabulary_rows[overlap_ids])
+    rows = jax_module.lax.optimization_barrier(rows)
+    shared = jnp_module.einsum("...d,od->...o", hidden, rows).astype(
+        jnp_module.float32
+    )
+    softcap = getattr(module, "final_logits_softcap", None)
+    if softcap is not None:
+        shared = jnp_module.tanh(shared / float(softcap)) * float(softcap)
+    return jax_module.lax.optimization_barrier(shared)
 
 
 def _configure_qwen_compute_dtype(
@@ -488,24 +525,29 @@ def _call_native_tunix_model(
     positions: Any,
     attention_mask: Any,
     segments: Any,
+    skip_lm_head: bool = False,
 ) -> Any:
     """Call the pinned Tunix model with its family-specific signature."""
 
     if family == "gemma2":
+        optional = {"skip_lm_head": True} if skip_lm_head else {}
         logits, _ = module(
             input_ids,
             positions,
             None,
             attention_mask,
+            **optional,
         )
         return logits
     if family == "qwen2p5":
+        optional = {"skip_lm_head": True} if skip_lm_head else {}
         logits, _ = module(
             input_ids,
             positions,
             None,
             attention_mask,
             segment_ids=segments,
+            **optional,
         )
         return logits
     raise RealBackendUnavailable(f"unsupported native Tunix family {family!r}")
@@ -742,6 +784,46 @@ def _production_dependencies(config: RunConfig) -> ModelRuntimeDependencies:
             )
 
         @nnx.jit
+        def forward_hidden_fn(
+            module: Any,
+            input_ids: Any,
+            positions: Any,
+            segments: Any,
+        ):
+            input_mask = segments.astype(jnp.bool_)
+            sequence_length = input_ids.shape[-1]
+            causal_mask = jnp.tril(
+                jnp.ones(
+                    (sequence_length, sequence_length),
+                    dtype=jnp.bool_,
+                )
+            )
+            attention_mask = input_mask[:, None, :] & causal_mask[None, ...]
+            return _call_native_tunix_model(
+                module,
+                family=model_family,
+                input_ids=input_ids,
+                positions=positions,
+                attention_mask=attention_mask,
+                segments=segments,
+                skip_lm_head=True,
+            )
+
+        def project_shared_fn(module: Any, hidden_state: Any, overlap_ids: Any):
+            if model_family != "gemma2":
+                raise RealBackendUnavailable(
+                    "bounded SimpleOPD hidden projection currently supports "
+                    "a Gemma 2 student only"
+                )
+            return _project_gemma_shared_logits(
+                module,
+                hidden_state,
+                overlap_ids,
+                jax_module=jax,
+                jnp_module=jnp,
+            )
+
+        @nnx.jit
         def forward_statistics_fn(
             module: Any,
             input_ids: Any,
@@ -830,6 +912,8 @@ def _production_dependencies(config: RunConfig) -> ModelRuntimeDependencies:
             model_config=model_params,
             forward_statistics_fn=forward_statistics_fn,
             forward_cached_statistics_fn=forward_cached_statistics_fn,
+            forward_hidden_fn=forward_hidden_fn,
+            project_shared_fn=project_shared_fn,
         )
 
     def forward_model(

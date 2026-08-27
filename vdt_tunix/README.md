@@ -70,6 +70,13 @@ python3 -m pytest tests/tunix tests/tunix_real
 the pure-Python `vdt_span` reference. It skips rather than installing JAX when
 the local study environment has no JAX runtime.
 
+The paper-length SimpleOPD update keeps the Gemma transformer hidden states
+but skips its full language-model head. It projects only the fixed shared
+vocabulary rows and scans alignment units in rematerialized blocks. This is an
+exact overlap-softmax/reverse-KL computation, including Gemma's final-logit
+softcap, while avoiding persistent `batch x sequence x full-vocabulary` and
+`batch x alignment-unit x overlap` tensors on TPU.
+
 ## Kaggle v5e-8 canary
 
 Replace every placeholder in the example config, then invoke:

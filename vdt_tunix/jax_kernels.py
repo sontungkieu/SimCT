@@ -504,3 +504,132 @@ def paper_simple_opd_aligned_batch_loss_from_teacher_statistics(
         else jnp.asarray(normalizer, dtype=jnp.float32)
     )
     return numerator / jnp.maximum(denominator, 1.0)
+
+
+def paper_simple_opd_aligned_batch_loss_from_hidden_projection(
+    student_position_hidden: Any,
+    teacher_shared_scores: Any,
+    segment_bounds: Any,
+    segment_mask: Any,
+    span_mask: Any,
+    project_shared_logits: Any,
+    *,
+    temperature: float = 1.0,
+    normalizer: Any | None = None,
+    block_size: int = 32,
+) -> Any:
+    """Memory-bounded exact SimpleOPD loss from student hidden states.
+
+    The overlap support can contain tens of thousands of tokens. Projecting
+    every padded alignment unit at once creates a multi-gigabyte
+    ``batch x unit x overlap`` tensor, even though the loss reduces every row
+    immediately. This kernel scans fixed-size unit blocks and carries only the
+    scalar numerator. Rematerializing the scan body keeps its reverse pass
+    bounded without changing the overlap softmax or reverse-KL objective.
+    """
+
+    jax, jnp = _jax_modules()
+    hidden = jnp.asarray(student_position_hidden)
+    teacher_scores_by_position = jax.lax.stop_gradient(
+        jnp.asarray(teacher_shared_scores, dtype=jnp.float32)
+    )
+    bounds = jnp.asarray(segment_bounds)
+    units = jnp.asarray(segment_mask, dtype=jnp.float32)
+    spans = jnp.asarray(span_mask, dtype=bool)
+
+    _require_rank("student_position_hidden", hidden, 3)
+    _require_rank("teacher_shared_scores", teacher_scores_by_position, 3)
+    _require_rank("segment_bounds", bounds, 3)
+    _require_rank("segment_mask", units, 2)
+    _require_rank("span_mask", spans, 2)
+    if bounds.shape[:2] != units.shape or units.shape != spans.shape:
+        raise ValueError("segment bounds and masks must share batch/unit axes")
+    if bounds.shape[-1] != 4:
+        raise ValueError("segment_bounds must end in four interval coordinates")
+    if teacher_scores_by_position.shape[-1] < 2:
+        raise ValueError("SimpleOPD requires at least two shared-vocabulary tokens")
+    if not isinstance(temperature, (int, float)) or temperature <= 0.0:
+        raise ValueError("temperature must be positive")
+    if not isinstance(block_size, int) or block_size <= 0:
+        raise ValueError("SimpleOPD projection block_size must be positive")
+
+    ts, _, ss, _ = (bounds[..., index] for index in range(4))
+    padding = (-int(bounds.shape[1])) % block_size
+
+    def pad_units(value: Any, *, constant: Any = 0) -> Any:
+        return jnp.pad(
+            value,
+            ((0, 0), (0, padding)),
+            mode="constant",
+            constant_values=constant,
+        )
+
+    ts_blocks = jnp.swapaxes(
+        pad_units(ts).reshape(bounds.shape[0], -1, block_size), 0, 1
+    )
+    ss_blocks = jnp.swapaxes(
+        pad_units(ss).reshape(bounds.shape[0], -1, block_size), 0, 1
+    )
+    unit_blocks = jnp.swapaxes(
+        pad_units(units).reshape(bounds.shape[0], -1, block_size), 0, 1
+    )
+    span_blocks = jnp.swapaxes(
+        pad_units(spans, constant=True).reshape(
+            bounds.shape[0], -1, block_size
+        ),
+        0,
+        1,
+    )
+    batch = jnp.arange(bounds.shape[0], dtype=jnp.int32)[:, None]
+
+    def scan_block(numerator: Any, block: tuple[Any, Any, Any, Any]):
+        teacher_positions, student_positions, block_units, block_spans = block
+        active = block_units * jnp.logical_not(block_spans).astype(jnp.float32)
+
+        def active_numerator(_: None) -> Any:
+            student_block_hidden = hidden[batch, student_positions]
+            student_scores = project_shared_logits(student_block_hidden)
+            teacher_scores = teacher_scores_by_position[
+                batch, teacher_positions
+            ]
+            if student_scores.shape != teacher_scores.shape:
+                raise ValueError(
+                    "student projected and teacher shared-score shapes mismatch"
+                )
+            student_log_probs = jax.nn.log_softmax(
+                student_scores.astype(jnp.float32) / float(temperature),
+                axis=-1,
+            )
+            teacher_log_probs = jax.lax.stop_gradient(
+                jax.nn.log_softmax(
+                    teacher_scores.astype(jnp.float32) / float(temperature),
+                    axis=-1,
+                )
+            )
+            row_kl = jnp.sum(
+                jnp.exp(student_log_probs)
+                * (student_log_probs - teacher_log_probs),
+                axis=-1,
+            )
+            return jnp.sum(row_kl * active)
+
+        block_numerator = jax.lax.cond(
+            jnp.any(active > 0),
+            active_numerator,
+            lambda _: jnp.asarray(0.0, dtype=jnp.float32),
+            operand=None,
+        )
+        return numerator + block_numerator, None
+
+    numerator, _ = jax.lax.scan(
+        jax.checkpoint(scan_block),
+        jnp.asarray(0.0, dtype=jnp.float32),
+        (ts_blocks, ss_blocks, unit_blocks, span_blocks),
+        unroll=1,
+    )
+    denominator = (
+        jnp.sum(units)
+        if normalizer is None
+        else jnp.asarray(normalizer, dtype=jnp.float32)
+    )
+    return numerator / jnp.maximum(denominator, 1.0)

@@ -20,6 +20,8 @@ from vdt_tunix.jax_kernels import (
     paper_candidate_scores,
     paper_simct_reverse_kl,
     paper_simple_opd_aligned_batch_loss,
+    paper_simple_opd_aligned_batch_loss_from_hidden_projection,
+    paper_simple_opd_aligned_batch_loss_from_teacher_statistics,
     paper_teacher_sufficient_statistics,
     reverse_kl_loss_and_student_score_gradient,
 )
@@ -288,3 +290,56 @@ def test_simple_opd_uses_only_one_to_one_units_and_stops_teacher_gradient():
     assert float(observed) == pytest.approx(expected, abs=1e-6)
     assert float(jnp.linalg.norm(student_gradient)) > 0.0
     assert float(jnp.linalg.norm(teacher_gradient)) == pytest.approx(0.0)
+
+
+def test_blocked_hidden_simple_opd_matches_full_logits_and_gradient():
+    hidden = jnp.asarray(
+        [[[1.0, 0.0], [0.5, 1.0], [-1.0, 2.0], [2.0, -0.5]]]
+    )
+    head = jnp.asarray(
+        [[1.0, 0.0], [0.0, 1.0], [1.0, -1.0], [-0.5, 0.25]]
+    )
+    teacher_scores = jnp.asarray(
+        [[[0.0, 2.0, -1.0], [2.0, 0.0, -1.0], [1.0, 0.0, 0.5]]]
+    )
+    bounds = jnp.asarray(
+        [[[0, 1, 0, 1], [1, 2, 1, 2], [2, 3, 2, 4]]]
+    )
+    unit_mask = jnp.asarray([[1.0, 1.0, 1.0]])
+    span_mask = jnp.asarray([[False, False, True]])
+    overlap = jnp.asarray([0, 2, 3])
+
+    def full_loss(hidden_values, head_values):
+        full_logits = jnp.einsum("btd,vd->btv", hidden_values, head_values)
+        return paper_simple_opd_aligned_batch_loss_from_teacher_statistics(
+            full_logits,
+            teacher_scores,
+            overlap,
+            bounds,
+            unit_mask,
+            span_mask,
+        )
+
+    def blocked_loss(hidden_values, head_values):
+        return paper_simple_opd_aligned_batch_loss_from_hidden_projection(
+            hidden_values,
+            teacher_scores,
+            bounds,
+            unit_mask,
+            span_mask,
+            lambda block: jnp.einsum(
+                "...d,od->...o", block, head_values[overlap]
+            ),
+            block_size=2,
+        )
+
+    expected = full_loss(hidden, head)
+    observed = blocked_loss(hidden, head)
+    expected_gradients = jax.grad(full_loss, argnums=(0, 1))(hidden, head)
+    observed_gradients = jax.grad(blocked_loss, argnums=(0, 1))(hidden, head)
+
+    assert float(observed) == pytest.approx(float(expected), abs=1e-6)
+    for observed_gradient, expected_gradient in zip(
+        observed_gradients, expected_gradients, strict=True
+    ):
+        assert bool(jnp.allclose(observed_gradient, expected_gradient, atol=1e-6))

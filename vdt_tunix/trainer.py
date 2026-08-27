@@ -16,7 +16,7 @@ from vdt_tunix.contracts import (
 )
 from vdt_tunix.jax_kernels import (
     paper_simct_aligned_batch_loss_from_teacher_statistics,
-    paper_simple_opd_aligned_batch_loss_from_teacher_statistics,
+    paper_simple_opd_aligned_batch_loss_from_hidden_projection,
     paper_teacher_sufficient_statistics,
 )
 from vdt_tunix.performance import (
@@ -655,7 +655,12 @@ class PaperSimpleOPDTrainer:
 
         student_overlap = jnp.asarray(self.overlap.student_ids, dtype=jnp.int32)
         temperature = config.simct.temperature
-        forward_fn = loaded.forward_fn
+        forward_hidden_fn = loaded.forward_hidden_fn
+        project_shared_fn = loaded.project_shared_fn
+        if not callable(forward_hidden_fn) or not callable(project_shared_fn):
+            raise TrainingError(
+                "SimpleOPD requires the bounded hidden-state overlap projection"
+            )
 
         @nnx.jit
         def update_fn(
@@ -673,18 +678,22 @@ class PaperSimpleOPDTrainer:
             positions = jnp.maximum(jnp.cumsum(segment_ids, axis=-1) - 1, 0)
 
             def loss_fn(candidate_model):
-                full_logits = forward_fn(
+                full_hidden = forward_hidden_fn(
                     candidate_model, input_ids, positions, segment_ids
                 )
                 batch = jnp.arange(input_ids.shape[0], dtype=jnp.int32)[:, None]
-                student_position_logits = full_logits[batch, completion_positions]
-                return paper_simple_opd_aligned_batch_loss_from_teacher_statistics(
-                    student_position_logits,
+                student_position_hidden = full_hidden[
+                    batch, completion_positions
+                ]
+                return paper_simple_opd_aligned_batch_loss_from_hidden_projection(
+                    student_position_hidden,
                     teacher_shared_log_probs,
-                    student_overlap,
                     segment_bounds,
                     segment_mask,
                     span_mask,
+                    lambda hidden: project_shared_fn(
+                        candidate_model, hidden, student_overlap
+                    ),
                     temperature=temperature,
                     normalizer=normalizer,
                 )
