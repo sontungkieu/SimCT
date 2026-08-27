@@ -269,9 +269,12 @@ def validate_resume(config: RunConfig, state: CheckpointState) -> None:
     }
     if mismatches:
         raise CheckpointError(f"resume identity mismatch: {mismatches}")
-    if state.completed_steps > config.training.max_steps:
+    max_completed_steps = config.training.max_steps
+    if config.training.max_steps_unit == "optimizer_update":
+        max_completed_steps *= config.training.gradient_accumulation_steps
+    if state.completed_steps > max_completed_steps:
         raise CheckpointError(
-            "checkpoint completed_steps exceeds training.max_steps"
+            "checkpoint completed_steps exceeds the training trainer-call target"
         )
 
 

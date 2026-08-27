@@ -243,6 +243,9 @@ def test_optimizer_update_mode_aggregates_micro_calls(tmp_path, config_payload, 
         ]
     ) == 0
     summary = json.loads(output.read_text(encoding="utf-8"))
+    assert summary["start_step"] == 0
+    assert summary["start_trainer_call"] == 0
+    assert summary["completed_steps"] == 1
     assert summary["completed_trainer_calls"] == 2
     assert summary["completed_optimizer_steps"] == 1
     assert summary["target_optimizer_steps"] == 1

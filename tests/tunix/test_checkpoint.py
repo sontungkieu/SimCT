@@ -86,3 +86,26 @@ def test_checkpoint_refuses_latest_rollback(run_config, tmp_path):
     save_checkpoint(root, _state(run_config, completed_steps=2))
     with pytest.raises(CheckpointError, match="backwards"):
         save_checkpoint(root, _state(run_config, completed_steps=1))
+
+
+def test_checkpoint_optimizer_update_limit_uses_trainer_call_coordinate(
+    config_payload,
+):
+    payload = copy.deepcopy(config_payload)
+    payload["training"].update(
+        {
+            "max_steps": 1,
+            "max_steps_unit": "optimizer_update",
+            "gradient_accumulation_steps": 2,
+        }
+    )
+    config = RunConfig.from_mapping(payload)
+
+    assert _state(config, completed_steps=2).completed_steps == 2
+    with pytest.raises(CheckpointError, match="trainer-call target"):
+        _state(config, completed_steps=3)
+
+
+def test_checkpoint_trainer_call_limit_is_unchanged(run_config):
+    with pytest.raises(CheckpointError, match="trainer-call target"):
+        _state(run_config, completed_steps=run_config.training.max_steps + 1)

@@ -222,6 +222,15 @@ def main(argv: list[str] | None = None) -> int:
             args.profile_dir.mkdir(parents=True, exist_ok=True)
         if resume.completed_steps > target_trainer_calls:
             raise TrainingError("resume step exceeds the trainer-call target")
+        if (
+            config.training.max_steps_unit == "optimizer_update"
+            and resume.completed_steps
+            % config.training.gradient_accumulation_steps
+            != 0
+        ):
+            raise TrainingError(
+                "optimizer-update resume must start on an accumulation boundary"
+            )
         remaining = target_trainer_calls - resume.completed_steps
         cursor = resume.data_cursor
         completed = resume.completed_steps
@@ -383,7 +392,13 @@ def main(argv: list[str] | None = None) -> int:
             "dataset_manifest_sha256": dataset.manifest.digest(),
             "dataset_id": dataset.manifest.dataset_id,
             "dataset_revision": dataset.manifest.dataset_revision,
-            "start_step": resume.completed_steps,
+            "start_step": (
+                resume.completed_steps
+                // config.training.gradient_accumulation_steps
+                if config.training.max_steps_unit == "optimizer_update"
+                else resume.completed_steps
+            ),
+            "start_trainer_call": resume.completed_steps,
             "initialization": resume.initialization,
             "source_checkpoint_steps": resume.source_checkpoint_steps,
             "source_checkpoint_run_id": resume.source_checkpoint_run_id,
@@ -393,7 +408,11 @@ def main(argv: list[str] | None = None) -> int:
             "source_dataset_manifest_sha256": (
                 resume.source_dataset_manifest_sha256
             ),
-            "completed_steps": completed,
+            "completed_steps": (
+                completed_optimizer_steps
+                if config.training.max_steps_unit == "optimizer_update"
+                else completed
+            ),
             "completed_trainer_calls": completed,
             "completed_optimizer_steps": completed_optimizer_steps,
             "max_steps_unit": config.training.max_steps_unit,
