@@ -100,30 +100,27 @@ def test_qwen_cached_teacher_requires_model_compute_dtype():
         )
 
 
-def test_qwen_cached_teacher_keeps_lm_head_inside_scalar_indexed_barriered_steps():
-    class NoDynamicGatherNumpy:
+def test_qwen_cached_teacher_keeps_lm_head_inside_masked_max_barriered_steps():
+    class RecordingMaskedMaxNumpy:
+        def __init__(self) -> None:
+            self.max_calls = []
+
         def __getattr__(self, name):
             if name == "take_along_axis":
                 raise AssertionError("selected-token reduction used dynamic gather")
             return getattr(np, name)
 
+        def max(self, values, *, axis):
+            self.max_calls.append((tuple(values.shape), axis))
+            return np.max(values, axis=axis)
+
     class FakeLax:
         def __init__(self) -> None:
             self.barrier_shapes = []
-            self.dynamic_index_calls = []
 
         def optimization_barrier(self, value):
             self.barrier_shapes.append(tuple(value.shape))
             return value
-
-        def dynamic_index_in_dim(self, operand, index, *, axis, keepdims):
-            self.dynamic_index_calls.append(
-                (tuple(operand.shape), int(index), axis, keepdims)
-            )
-            selected = np.take(operand, int(index), axis=axis)
-            if keepdims:
-                selected = np.expand_dims(selected, axis=axis)
-            return selected
 
         @staticmethod
         def scan(fn, carry, xs):
@@ -198,6 +195,7 @@ def test_qwen_cached_teacher_keeps_lm_head_inside_scalar_indexed_barriered_steps
             return -np.square(hidden[..., :1] - vocabulary)
 
     fake_lax = FakeLax()
+    fake_jnp = RecordingMaskedMaxNumpy()
     fake_jax = SimpleNamespace(
         lax=fake_lax,
         scipy=SimpleNamespace(special=FakeSpecial()),
@@ -222,21 +220,20 @@ def test_qwen_cached_teacher_keeps_lm_head_inside_scalar_indexed_barriered_steps
         generate_sampler=FakeSampler,
         generate_utils=FakeGenerateUtils,
         jax_module=fake_jax,
-        jnp_module=NoDynamicGatherNumpy(),
+        jnp_module=fake_jnp,
     )
 
     assert shared.shape == (2, 3, 2)
     assert selected.shape == (2, 3)
     assert module.skip_lm_head_flags == [True, True, True, True]
-    assert fake_lax.barrier_shapes == [(2, 2), (2, 6), (2, 6), (2,)] * 3
-    assert fake_lax.dynamic_index_calls == [
-        ((6,), 3, 0, False),
-        ((6,), 1, 0, False),
-        ((6,), 4, 0, False),
-        ((6,), 0, 0, False),
-        ((6,), 5, 0, False),
-        ((6,), 2, 0, False),
-    ]
+    assert fake_lax.barrier_shapes == [
+        (2, 2),
+        (2, 6),
+        (2, 6),
+        (2, 6),
+        (2,),
+    ] * 3
+    assert fake_jnp.max_calls == [((2, 6), -1)] * 3
 
     centers = np.asarray(
         [[2.0, 6.0, 10.0], [3.0, 6.0, 6.0]],

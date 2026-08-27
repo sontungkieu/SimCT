@@ -122,9 +122,9 @@ KV-cache decoding. Prompt prefill skips the vocabulary head and projects only
 the final prompt state. A `jax.lax.scan` carries hidden state and scores each
 realized completion token from a barrier-bracketed one-step `B x 1 x V`
 projection, immediately reducing it to shared-token and selected-token
-log-probabilities. The selected-token path flattens the compile-time leading
-dimensions and uses statically unrolled scalar dynamic slices instead of a
-batched dynamic gather, vocabulary reduction, or batch dot inside the scan.
+log-probabilities. The selected-token path masks every non-realized vocabulary
+entry to negative infinity and takes a barriered maximum instead of using a
+dynamic gather, reduce-sum, batch dot, or dynamic slice inside the scan.
 The barriers keep XLA from lifting the LM head out of the loop and recreating a
 retained `T x B x V` tensor. This also avoids dense
 completion-length attention while preserving the dense causal objective. The
@@ -152,9 +152,12 @@ training phase but failed with a different post-optimization fusion shape
 mismatch at that reduction. A third dot-selected retry reached the same phase
 after the private checkpoint relay and warm-start both passed, but TPU XLA then
 reported the corresponding post-optimization shape mismatch in its fused batch
-dot. The scalar-slice selector above addresses the newly isolated batch-fusion
-failure and is still pending a fresh remote canary. All three failed retries
-logged zero optimizer steps and are not scientific or W&B passes.
+dot. The scalar-slice retry also passed relay-backed warm-start and reached the
+same cached-teacher phase, but TPU XLA then reported another post-optimization
+shape mismatch in the fused scalar slice. The masked-max selector above
+addresses that fourth isolated fusion failure and is still pending a fresh
+remote canary. All four failed retries logged zero optimizer steps and are not
+scientific or W&B passes.
 
 The allowed optimization order is:
 

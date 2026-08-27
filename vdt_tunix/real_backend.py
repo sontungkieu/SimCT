@@ -69,31 +69,23 @@ def _reduce_teacher_step_statistics(
     log_normalizer = jax_module.scipy.special.logsumexp(values, axis=-1)
     shared = jnp_module.take(values, overlap_ids, axis=-1)
     # TPU XLA has independently miscompiled a batched dynamic gather, a
-    # compare/select vocabulary reduction, and a one-hot batch dot when each
-    # was fused into this scan body.  The leading dimensions are compile-time
-    # constants, so select one scalar from each vocabulary row with statically
-    # unrolled dynamic slices.  This keeps every dynamic operation scalar,
-    # avoids a vocabulary contraction for the selected-token path, and still
-    # retains no time-wide logits tensor.
+    # compare/select reduce-sum, a one-hot batch dot, and statically unrolled
+    # scalar dynamic slices when each was fused into this scan body.  Mask all
+    # but the realized token to negative infinity and reduce with max instead.
+    # Exactly one vocabulary entry remains finite, so this is bitwise the
+    # selected logit without a dynamic index, sum, dot, or time-wide tensor.
     selection_values = jax_module.lax.optimization_barrier(values)
-    flat_values = jnp_module.reshape(
+    vocabulary_ids = jnp_module.arange(
+        values.shape[-1],
+        dtype=selected_token_ids.dtype,
+    )
+    masked_values = jnp_module.where(
+        vocabulary_ids == selected_token_ids[..., None],
         selection_values,
-        (-1, values.shape[-1]),
+        jnp_module.asarray(-math.inf, dtype=values.dtype),
     )
-    flat_token_ids = jnp_module.reshape(selected_token_ids, (-1,))
-    selected = jnp_module.stack(
-        tuple(
-            jax_module.lax.dynamic_index_in_dim(
-                flat_values[row_index],
-                flat_token_ids[row_index],
-                axis=0,
-                keepdims=False,
-            )
-            for row_index in range(flat_values.shape[0])
-        ),
-        axis=0,
-    )
-    selected = jnp_module.reshape(selected, selected_token_ids.shape)
+    masked_values = jax_module.lax.optimization_barrier(masked_values)
+    selected = jnp_module.max(masked_values, axis=-1)
     selected = jax_module.lax.optimization_barrier(selected)
     return shared - log_normalizer[..., None], selected - log_normalizer
 
