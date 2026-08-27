@@ -228,15 +228,16 @@ barrier-bracketed one-step LM-head projection is reduced immediately so XLA
 cannot recreate a completion-wide `T x B x V` tensor. Realized-token and
 shared-coordinate logits gather immutable LM-head rows before the full
 vocabulary projection and contract those rows with the one-step hidden state.
-The exact log-normalizer statically blocks the remaining `B x V` reduction and
-combines block normalizers with stable `logaddexp`, so neither dynamic token
-operations nor one vocabulary-wide exponential `reduce_sum` consume projected
-logits. Batched gather, compare/select `reduce_sum`, one-hot batch dot, scalar
-dynamic slice, masked-max, and the full-width exponential reduction each
-failed after reaching their relevant runtime phase due to distinct TPU
-post-optimization fusion shape mismatches. Remote canaries, rather than the
-local parity test alone, determine whether the blocked-normalizer runtime path
-is operationally sufficient.
+The exact log-normalizer scans fixed-width blocks of the remaining `B x V`
+reduction and combines block normalizers with stable `logaddexp`, so neither
+dynamic token operations nor one vocabulary-wide exponential `reduce_sum`
+consume projected logits. Batched gather, compare/select `reduce_sum`, one-hot
+batch dot, scalar dynamic slice, masked-max, the full-width exponential
+reduction, and a Python-unrolled multi-block slice fusion each failed after
+reaching their relevant runtime phase due to distinct TPU post-optimization
+shape mismatches. Remote canaries, rather than the local parity test alone,
+determine whether the runtime-scanned blocked-normalizer path is operationally
+sufficient.
 
 `tests/upstream_parity/test_public_training_contract.py` checks these public
 values and the unresolved wrapper paths without launching a process.

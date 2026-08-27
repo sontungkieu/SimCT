@@ -88,16 +88,17 @@ def _blocked_teacher_logsumexp(
     jnp_module: Any,
     block_size: int = 4096,
 ) -> Any:
-    """Compute an exact one-step vocabulary log-normalizer in static blocks.
+    """Compute an exact one-step vocabulary log-normalizer by scanned blocks.
 
     TPU XLA repeatedly produced invalid post-optimization fusions when the
     exponential reduction consumed the complete Qwen ``B x V`` projection in
     the cached-teacher scan. The projection itself is a bounded one-step
-    tensor, so retain it and split only the reduction into compile-time static
-    vocabulary blocks. Stable ``logaddexp`` composition is mathematically the
-    same log-sum-exp while preventing a single vocabulary-wide ``reduce_sum``
-    fusion. Optimization barriers keep block reductions loop-local and stop
-    XLA from reconstituting the failing full-width reduction.
+    tensor, so retain it and split only the reduction into fixed-width
+    vocabulary blocks. A runtime ``lax.scan`` carries only the accumulated
+    normalizer; this avoids Python-unrolling every block into one multi-operand
+    slice fusion. Stable ``logaddexp`` composition is mathematically the same
+    log-sum-exp, and optimization barriers keep every block reduction local to
+    one scan iteration.
     """
 
     if block_size <= 0:
@@ -105,13 +106,24 @@ def _blocked_teacher_logsumexp(
     vocabulary_size = int(values.shape[-1])
     if vocabulary_size <= 0:
         raise ValueError("teacher logits must have a non-empty vocabulary axis")
-    log_normalizer = jnp_module.full(
+    block_count = math.ceil(vocabulary_size / block_size)
+    padded_size = block_count * block_size
+    padded = jnp_module.pad(
+        values,
+        [(0, 0)] * (values.ndim - 1) + [(0, padded_size - vocabulary_size)],
+        mode="constant",
+        constant_values=-jnp_module.inf,
+    )
+    blocks = padded.reshape((*values.shape[:-1], block_count, block_size))
+    blocks = jnp_module.moveaxis(blocks, -2, 0)
+    blocks = jax_module.lax.optimization_barrier(blocks)
+    initial = jnp_module.full(
         values.shape[:-1],
         -jnp_module.inf,
         dtype=jnp_module.float32,
     )
-    for start in range(0, vocabulary_size, block_size):
-        block = values[..., start : min(start + block_size, vocabulary_size)]
+
+    def reduce_block(log_normalizer: Any, block: Any):
         block = jax_module.lax.optimization_barrier(block)
         block_log_normalizer = jax_module.scipy.special.logsumexp(
             block,
@@ -125,6 +137,14 @@ def _blocked_teacher_logsumexp(
             block_log_normalizer,
         )
         log_normalizer = jax_module.lax.optimization_barrier(log_normalizer)
+        return log_normalizer, None
+
+    log_normalizer, _ = jax_module.lax.scan(
+        reduce_block,
+        initial,
+        blocks,
+        unroll=1,
+    )
     return log_normalizer
 
 

@@ -125,8 +125,8 @@ projection, immediately reducing it to shared-token and selected-token
 log-probabilities. The selected-token and shared-coordinate paths gather their
 immutable LM-head rows before the full vocabulary projection and contract
 those rows with the one-step hidden state. The exact log-normalizer reduces the
-bounded `B x V` projection in compile-time static vocabulary blocks and
-combines them with stable `logaddexp`; no dynamic operation or
+bounded `B x V` projection in fixed-width vocabulary blocks through a runtime
+`lax.scan` and combines them with stable `logaddexp`; no dynamic operation or
 vocabulary-wide exponential `reduce_sum` consumes that tensor inside the scan.
 The barriers keep XLA from lifting the LM head out of the loop and recreating a
 retained `T x B x V` tensor. This also avoids dense
@@ -161,10 +161,11 @@ shape mismatch in the fused scalar slice. A masked-max retry then failed at a
 fused compare/select despite also passing relay-backed warm-start. A direct
 LM-head-row retry passed those selected-coordinate forms, then isolated the
 remaining failure to the full-vocabulary exponential `reduce_sum` used by the
-exact log-normalizer. The statically blocked log-normalizer above addresses
-that sixth isolated fusion failure and is still pending a fresh remote canary.
-All six failed retries logged zero optimizer steps and are not scientific or
-W&B passes.
+exact log-normalizer. A statically unrolled blocked retry then failed after XLA
+fused all block slices into one multi-operand operation. The runtime-scanned
+blocked normalizer above addresses that seventh isolated fusion failure and is
+still pending a fresh remote canary. All seven failed retries logged zero
+optimizer steps and are not scientific or W&B passes.
 
 The allowed optimization order is:
 

@@ -122,17 +122,28 @@ def test_qwen_cached_teacher_projects_selected_lm_head_rows_directly():
     class FakeLax:
         def __init__(self) -> None:
             self.barrier_shapes = []
+            self.scan_shapes = []
 
         def optimization_barrier(self, value):
             self.barrier_shapes.append(tuple(value.shape))
             return value
 
-        @staticmethod
-        def scan(fn, carry, xs):
+        def scan(self, fn, carry, xs, *, unroll=1):
+            assert unroll == 1
+            if isinstance(xs, tuple):
+                self.scan_shapes.append(
+                    tuple(tuple(value.shape) for value in xs)
+                )
+                iterator = zip(*xs, strict=True)
+            else:
+                self.scan_shapes.append(tuple(xs.shape))
+                iterator = iter(xs)
             outputs = []
-            for inputs in zip(*xs, strict=True):
+            for inputs in iterator:
                 carry, output = fn(carry, inputs)
                 outputs.append(output)
+            if outputs and outputs[0] is None:
+                return carry, None
             return carry, tuple(
                 np.stack([output[index] for output in outputs], axis=0)
                 for index in range(2)
@@ -248,7 +259,13 @@ def test_qwen_cached_teacher_projects_selected_lm_head_rows_directly():
     assert selected.shape == (2, 3)
     assert module.skip_lm_head_flags == [True, True, True, True]
     assert module.compute_final_logits_calls == 3
-    assert FakeSpecial.shapes == [(2, 6)] * 3
+    assert FakeSpecial.shapes == [(2, 4096)] * 3
+    assert fake_lax.scan_shapes == [
+        ((3, 2), (3,)),
+        (1, 2, 4096),
+        (1, 2, 4096),
+        (1, 2, 4096),
+    ]
     assert fake_jnp.einsum_calls == [
         ("bd,bd->b", (2, 2), (2, 2)),
         ("bd,od->bo", (2, 2), (2, 2)),
@@ -280,11 +297,22 @@ def test_qwen_cached_teacher_projects_selected_lm_head_rows_directly():
     )
 
 
-def test_teacher_logsumexp_splits_full_vocabulary_reduction_into_static_blocks():
+def test_teacher_logsumexp_scans_fixed_width_vocabulary_blocks_sequentially():
     class FakeLax:
+        def __init__(self) -> None:
+            self.scan_shapes = []
+
         @staticmethod
         def optimization_barrier(value):
             return value
+
+        def scan(self, fn, carry, xs, *, unroll=1):
+            assert unroll == 1
+            self.scan_shapes.append(tuple(xs.shape))
+            for block in xs:
+                carry, output = fn(carry, block)
+                assert output is None
+            return carry, None
 
     class RecordingSpecial:
         shapes = []
@@ -298,8 +326,9 @@ def test_teacher_logsumexp_splits_full_vocabulary_reduction_into_static_blocks()
             )
             return np.squeeze(reduced, axis=axis)
 
+    fake_lax = FakeLax()
     fake_jax = SimpleNamespace(
-        lax=FakeLax(),
+        lax=fake_lax,
         scipy=SimpleNamespace(special=RecordingSpecial()),
     )
     values = np.linspace(-7.0, 9.0, 2 * 8193, dtype=np.float32).reshape(2, 8193)
@@ -315,5 +344,6 @@ def test_teacher_logsumexp_splits_full_vocabulary_reduction_into_static_blocks()
         maximum + np.log(np.sum(np.exp(values - maximum), axis=-1, keepdims=True)),
         axis=-1,
     )
-    assert RecordingSpecial.shapes == [(2, 4096), (2, 4096), (2, 1)]
+    assert fake_lax.scan_shapes == [(3, 2, 4096)]
+    assert RecordingSpecial.shapes == [(2, 4096)] * 3
     np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-6)
