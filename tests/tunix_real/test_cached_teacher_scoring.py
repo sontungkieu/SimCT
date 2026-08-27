@@ -41,6 +41,11 @@ def test_cached_teacher_forcing_matches_dense_causal_statistics():
         overlap_ids,
         decode_one,
         logits_from_state,
+        lambda state, token_ids: jnp.take_along_axis(
+            logits_from_state(state),
+            token_ids[:, None],
+            axis=-1,
+        )[:, 0],
         jax_module=jax,
         jnp_module=jnp,
     )

@@ -100,19 +100,23 @@ def test_qwen_cached_teacher_requires_model_compute_dtype():
         )
 
 
-def test_qwen_cached_teacher_keeps_lm_head_inside_masked_max_barriered_steps():
-    class RecordingMaskedMaxNumpy:
+def test_qwen_cached_teacher_projects_selected_lm_head_rows_directly():
+    class RecordingDirectHeadNumpy:
         def __init__(self) -> None:
-            self.max_calls = []
+            self.einsum_calls = []
 
         def __getattr__(self, name):
-            if name == "take_along_axis":
-                raise AssertionError("selected-token reduction used dynamic gather")
+            if name in {"take_along_axis", "where", "max"}:
+                raise AssertionError(
+                    "selected-token reduction consumed projected vocabulary logits"
+                )
             return getattr(np, name)
 
-        def max(self, values, *, axis):
-            self.max_calls.append((tuple(values.shape), axis))
-            return np.max(values, axis=axis)
+        def einsum(self, equation, left, right):
+            self.einsum_calls.append(
+                (equation, tuple(left.shape), tuple(right.shape))
+            )
+            return np.einsum(equation, left, right)
 
     class FakeLax:
         def __init__(self) -> None:
@@ -167,6 +171,19 @@ def test_qwen_cached_teacher_keeps_lm_head_inside_masked_max_barriered_steps():
     class FakeModule:
         def __init__(self) -> None:
             self.skip_lm_head_flags = []
+            self.config = SimpleNamespace(use_tied_embedding=False)
+            self.lm_head = SimpleNamespace(
+                w=SimpleNamespace(
+                    value=np.asarray(
+                        [
+                            [0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+                            [1.0, -1.0, 0.5, -0.5, 2.0, -2.0],
+                        ],
+                        dtype=np.float32,
+                    )
+                ),
+                dtype=np.float32,
+            )
 
         def __call__(
             self,
@@ -189,13 +206,11 @@ def test_qwen_cached_teacher_keeps_lm_head_inside_masked_max_barriered_steps():
                 hidden = np.stack((state, state + 1), axis=-1)[:, None, :]
             return hidden, {"state": state}
 
-        @staticmethod
-        def compute_final_logits(hidden):
-            vocabulary = np.arange(6, dtype=np.float32)
-            return -np.square(hidden[..., :1] - vocabulary)
+        def compute_final_logits(self, hidden):
+            return np.einsum("btd,dv->btv", hidden, self.lm_head.w.value)
 
     fake_lax = FakeLax()
-    fake_jnp = RecordingMaskedMaxNumpy()
+    fake_jnp = RecordingDirectHeadNumpy()
     fake_jax = SimpleNamespace(
         lax=fake_lax,
         scipy=SimpleNamespace(special=FakeSpecial()),
@@ -229,18 +244,23 @@ def test_qwen_cached_teacher_keeps_lm_head_inside_masked_max_barriered_steps():
     assert fake_lax.barrier_shapes == [
         (2, 2),
         (2, 6),
-        (2, 6),
-        (2, 6),
+        (2, 2),
+        (2, 2),
         (2,),
     ] * 3
-    assert fake_jnp.max_calls == [((2, 6), -1)] * 3
+    assert fake_jnp.einsum_calls == [("bd,bd->b", (2, 2), (2, 2))] * 3
 
-    centers = np.asarray(
-        [[2.0, 6.0, 10.0], [3.0, 6.0, 6.0]],
+    hidden_states = np.asarray(
+        [
+            [[2.0, 3.0], [6.0, 7.0], [10.0, 11.0]],
+            [[3.0, 4.0], [6.0, 7.0], [6.0, 7.0]],
+        ],
         dtype=np.float32,
-    )[..., None]
-    dense_logits = -np.square(
-        centers - np.arange(6, dtype=np.float32)[None, None, :]
+    )
+    dense_logits = np.einsum(
+        "btd,dv->btv",
+        hidden_states,
+        module.lm_head.w.value,
     )
     dense_log_probs = dense_logits - FakeSpecial.logsumexp(dense_logits, axis=-1)[
         ..., None

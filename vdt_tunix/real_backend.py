@@ -57,7 +57,7 @@ class _LoadedTunixModel:
 
 def _reduce_teacher_step_statistics(
     logits: Any,
-    selected_token_ids: Any,
+    selected_logits: Any,
     overlap_ids: Any,
     *,
     jax_module: Any,
@@ -68,26 +68,60 @@ def _reduce_teacher_step_statistics(
     values = logits.astype(jnp_module.float32)
     log_normalizer = jax_module.scipy.special.logsumexp(values, axis=-1)
     shared = jnp_module.take(values, overlap_ids, axis=-1)
-    # TPU XLA has independently miscompiled a batched dynamic gather, a
-    # compare/select reduce-sum, a one-hot batch dot, and statically unrolled
-    # scalar dynamic slices when each was fused into this scan body.  Mask all
-    # but the realized token to negative infinity and reduce with max instead.
-    # Exactly one vocabulary entry remains finite, so this is bitwise the
-    # selected logit without a dynamic index, sum, dot, or time-wide tensor.
-    selection_values = jax_module.lax.optimization_barrier(values)
-    vocabulary_ids = jnp_module.arange(
-        values.shape[-1],
-        dtype=selected_token_ids.dtype,
-    )
-    masked_values = jnp_module.where(
-        vocabulary_ids == selected_token_ids[..., None],
-        selection_values,
-        jnp_module.asarray(-math.inf, dtype=values.dtype),
-    )
-    masked_values = jax_module.lax.optimization_barrier(masked_values)
-    selected = jnp_module.max(masked_values, axis=-1)
-    selected = jax_module.lax.optimization_barrier(selected)
+    selected = selected_logits.astype(jnp_module.float32)
     return shared - log_normalizer[..., None], selected - log_normalizer
+
+
+def _project_qwen_selected_logits(
+    module: Any,
+    hidden_state: Any,
+    token_ids: Any,
+    *,
+    jax_module: Any,
+    jnp_module: Any,
+) -> Any:
+    """Project realized Qwen logits without indexing a ``B x V`` tensor.
+
+    TPU XLA independently miscompiled selected-token gather, reduce-sum,
+    batch-dot, scalar-slice, and compare/select forms after each was fused with
+    the full vocabulary projection inside the cached-teacher scan. Qwen's
+    ordinary input embedding already performs a dynamic row lookup on the
+    immutable parameter table. Reuse that conventional layout here: gather
+    only the realized LM-head row, then contract it with the one-step hidden
+    state. The full projection still supplies the exact log-normalizer and
+    shared coordinates, but no dynamic operation consumes its ``B x V``
+    result.
+    """
+
+    config = getattr(module, "config", None)
+    if config is None or not hasattr(config, "use_tied_embedding"):
+        raise RealBackendUnavailable(
+            "cached teacher selected-logit projection requires Qwen embedding config"
+        )
+    try:
+        if config.use_tied_embedding:
+            weight = module.embedder.input_embedding.value
+            compute_dtype = module.embedder.dtype
+            vocabulary_rows = weight
+        else:
+            weight = module.lm_head.w.value
+            compute_dtype = module.lm_head.dtype
+            vocabulary_rows = jnp_module.swapaxes(weight, 0, 1)
+    except AttributeError as exc:
+        raise RealBackendUnavailable(
+            "cached teacher selected-logit projection requires Qwen LM-head weights"
+        ) from exc
+
+    hidden = jnp_module.asarray(hidden_state, dtype=compute_dtype)
+    hidden = jax_module.lax.optimization_barrier(hidden)
+    selected_rows = jnp_module.asarray(
+        vocabulary_rows[token_ids],
+        dtype=compute_dtype,
+    )
+    selected_rows = jax_module.lax.optimization_barrier(selected_rows)
+    selected = jnp_module.einsum("bd,bd->b", hidden, selected_rows)
+    selected = jax_module.lax.optimization_barrier(selected)
+    return selected.astype(jnp_module.float32)
 
 
 def _configure_qwen_compute_dtype(
@@ -112,6 +146,7 @@ def _cached_teacher_forcing_scan(
     overlap_ids: Any,
     decode_one: Any,
     project_logits: Any,
+    project_selected_logits: Any,
     *,
     jax_module: Any,
     jnp_module: Any,
@@ -132,9 +167,10 @@ def _cached_teacher_forcing_scan(
         current_state, cache = carry
         token_ids, step = inputs
         current_logits = project_logits(current_state)
+        current_selected_logits = project_selected_logits(current_state, token_ids)
         shared, selected = _reduce_teacher_step_statistics(
             current_logits,
-            token_ids,
+            current_selected_logits,
             overlap_ids,
             jax_module=jax_module,
             jnp_module=jnp_module,
@@ -252,6 +288,15 @@ def _qwen_cached_teacher_statistics(
         logits = module.compute_final_logits(hidden_state[:, None, :])[:, 0, :]
         return jax_module.lax.optimization_barrier(logits)
 
+    def project_selected_logits(hidden_state: Any, token_ids: Any):
+        return _project_qwen_selected_logits(
+            module,
+            hidden_state,
+            token_ids,
+            jax_module=jax_module,
+            jnp_module=jnp_module,
+        )
+
     return _cached_teacher_forcing_scan(
         initial_hidden,
         cache,
@@ -259,6 +304,7 @@ def _qwen_cached_teacher_statistics(
         overlap_ids,
         decode_one,
         project_logits,
+        project_selected_logits,
         jax_module=jax_module,
         jnp_module=jnp_module,
     )

@@ -226,12 +226,14 @@ equivalent to dense causal teacher scoring but avoids infeasible dense 4K/8K
 completion-attention allocations. The scan carries hidden states; each
 barrier-bracketed one-step LM-head projection is reduced immediately so XLA
 cannot recreate a completion-wide `T x B x V` tensor. The realized-token logit
-uses a barriered masked maximum rather than a batched dynamic gather,
-compare/select `reduce_sum`, one-hot batch dot, or scalar dynamic slice inside
-that scan. Those four prior forms each failed after reaching their relevant
-runtime phase due to distinct TPU post-optimization fusion shape mismatches.
-Remote canaries, rather than the local parity test alone, determine whether the
-masked-max runtime path is operationally sufficient.
+gathers its immutable LM-head row before the full vocabulary projection and
+contracts that row with the one-step hidden state, so no dynamic operation
+consumes projected `B x V` logits. Batched gather, compare/select `reduce_sum`,
+one-hot batch dot, scalar dynamic slice, and masked-max forms each failed after
+reaching their relevant runtime phase due to distinct TPU post-optimization
+fusion shape mismatches. Remote canaries, rather than the local parity test
+alone, determine whether the direct-head-row runtime path is operationally
+sufficient.
 
 `tests/upstream_parity/test_public_training_contract.py` checks these public
 values and the unresolved wrapper paths without launching a process.
