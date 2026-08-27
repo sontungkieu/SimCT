@@ -7,6 +7,7 @@ import pytest
 
 from vdt_tunix.real_backend import (
     RealBackendUnavailable,
+    _blocked_teacher_logsumexp,
     _configure_qwen_compute_dtype,
     _qwen_cached_teacher_statistics,
 )
@@ -138,8 +139,11 @@ def test_qwen_cached_teacher_projects_selected_lm_head_rows_directly():
             )
 
     class FakeSpecial:
+        shapes = []
+
         @staticmethod
         def logsumexp(values, axis):
+            FakeSpecial.shapes.append(tuple(values.shape))
             maximum = np.max(values, axis=axis, keepdims=True)
             reduced = maximum + np.log(
                 np.sum(np.exp(values - maximum), axis=axis, keepdims=True)
@@ -171,6 +175,7 @@ def test_qwen_cached_teacher_projects_selected_lm_head_rows_directly():
     class FakeModule:
         def __init__(self) -> None:
             self.skip_lm_head_flags = []
+            self.compute_final_logits_calls = 0
             self.config = SimpleNamespace(use_tied_embedding=False)
             self.lm_head = SimpleNamespace(
                 w=SimpleNamespace(
@@ -207,6 +212,7 @@ def test_qwen_cached_teacher_projects_selected_lm_head_rows_directly():
             return hidden, {"state": state}
 
         def compute_final_logits(self, hidden):
+            self.compute_final_logits_calls += 1
             return np.einsum("btd,dv->btv", hidden, self.lm_head.w.value)
 
     fake_lax = FakeLax()
@@ -241,14 +247,12 @@ def test_qwen_cached_teacher_projects_selected_lm_head_rows_directly():
     assert shared.shape == (2, 3, 2)
     assert selected.shape == (2, 3)
     assert module.skip_lm_head_flags == [True, True, True, True]
-    assert fake_lax.barrier_shapes == [
-        (2, 2),
-        (2, 6),
-        (2, 2),
-        (2, 2),
-        (2,),
+    assert module.compute_final_logits_calls == 3
+    assert FakeSpecial.shapes == [(2, 6)] * 3
+    assert fake_jnp.einsum_calls == [
+        ("bd,bd->b", (2, 2), (2, 2)),
+        ("bd,od->bo", (2, 2), (2, 2)),
     ] * 3
-    assert fake_jnp.einsum_calls == [("bd,bd->b", (2, 2), (2, 2))] * 3
 
     hidden_states = np.asarray(
         [
@@ -274,3 +278,42 @@ def test_qwen_cached_teacher_projects_selected_lm_head_rows_directly():
             axis=-1,
         )[..., 0],
     )
+
+
+def test_teacher_logsumexp_splits_full_vocabulary_reduction_into_static_blocks():
+    class FakeLax:
+        @staticmethod
+        def optimization_barrier(value):
+            return value
+
+    class RecordingSpecial:
+        shapes = []
+
+        @staticmethod
+        def logsumexp(values, axis):
+            RecordingSpecial.shapes.append(tuple(values.shape))
+            maximum = np.max(values, axis=axis, keepdims=True)
+            reduced = maximum + np.log(
+                np.sum(np.exp(values - maximum), axis=axis, keepdims=True)
+            )
+            return np.squeeze(reduced, axis=axis)
+
+    fake_jax = SimpleNamespace(
+        lax=FakeLax(),
+        scipy=SimpleNamespace(special=RecordingSpecial()),
+    )
+    values = np.linspace(-7.0, 9.0, 2 * 8193, dtype=np.float32).reshape(2, 8193)
+
+    actual = _blocked_teacher_logsumexp(
+        values,
+        jax_module=fake_jax,
+        jnp_module=np,
+    )
+
+    maximum = np.max(values, axis=-1, keepdims=True)
+    expected = np.squeeze(
+        maximum + np.log(np.sum(np.exp(values - maximum), axis=-1, keepdims=True)),
+        axis=-1,
+    )
+    assert RecordingSpecial.shapes == [(2, 4096), (2, 4096), (2, 1)]
+    np.testing.assert_allclose(actual, expected, rtol=1e-6, atol=1e-6)

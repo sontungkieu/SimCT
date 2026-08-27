@@ -62,14 +62,70 @@ def _reduce_teacher_step_statistics(
     *,
     jax_module: Any,
     jnp_module: Any,
+    shared_logits: Any | None = None,
 ) -> tuple[Any, Any]:
     """Reduce one next-token distribution to exact SimCT statistics."""
 
     values = logits.astype(jnp_module.float32)
-    log_normalizer = jax_module.scipy.special.logsumexp(values, axis=-1)
-    shared = jnp_module.take(values, overlap_ids, axis=-1)
+    log_normalizer = _blocked_teacher_logsumexp(
+        values,
+        jax_module=jax_module,
+        jnp_module=jnp_module,
+    )
+    shared = (
+        jnp_module.take(values, overlap_ids, axis=-1)
+        if shared_logits is None
+        else shared_logits.astype(jnp_module.float32)
+    )
     selected = selected_logits.astype(jnp_module.float32)
     return shared - log_normalizer[..., None], selected - log_normalizer
+
+
+def _blocked_teacher_logsumexp(
+    values: Any,
+    *,
+    jax_module: Any,
+    jnp_module: Any,
+    block_size: int = 4096,
+) -> Any:
+    """Compute an exact one-step vocabulary log-normalizer in static blocks.
+
+    TPU XLA repeatedly produced invalid post-optimization fusions when the
+    exponential reduction consumed the complete Qwen ``B x V`` projection in
+    the cached-teacher scan. The projection itself is a bounded one-step
+    tensor, so retain it and split only the reduction into compile-time static
+    vocabulary blocks. Stable ``logaddexp`` composition is mathematically the
+    same log-sum-exp while preventing a single vocabulary-wide ``reduce_sum``
+    fusion. Optimization barriers keep block reductions loop-local and stop
+    XLA from reconstituting the failing full-width reduction.
+    """
+
+    if block_size <= 0:
+        raise ValueError("teacher logsumexp block_size must be positive")
+    vocabulary_size = int(values.shape[-1])
+    if vocabulary_size <= 0:
+        raise ValueError("teacher logits must have a non-empty vocabulary axis")
+    log_normalizer = jnp_module.full(
+        values.shape[:-1],
+        -jnp_module.inf,
+        dtype=jnp_module.float32,
+    )
+    for start in range(0, vocabulary_size, block_size):
+        block = values[..., start : min(start + block_size, vocabulary_size)]
+        block = jax_module.lax.optimization_barrier(block)
+        block_log_normalizer = jax_module.scipy.special.logsumexp(
+            block,
+            axis=-1,
+        )
+        block_log_normalizer = jax_module.lax.optimization_barrier(
+            block_log_normalizer
+        )
+        log_normalizer = jnp_module.logaddexp(
+            log_normalizer,
+            block_log_normalizer,
+        )
+        log_normalizer = jax_module.lax.optimization_barrier(log_normalizer)
+    return log_normalizer
 
 
 def _project_qwen_selected_logits(
@@ -124,6 +180,47 @@ def _project_qwen_selected_logits(
     return selected.astype(jnp_module.float32)
 
 
+def _project_qwen_shared_logits(
+    module: Any,
+    hidden_state: Any,
+    overlap_ids: Any,
+    *,
+    jax_module: Any,
+    jnp_module: Any,
+) -> Any:
+    """Project fixed shared-vocabulary coordinates from LM-head rows."""
+
+    config = getattr(module, "config", None)
+    if config is None or not hasattr(config, "use_tied_embedding"):
+        raise RealBackendUnavailable(
+            "cached teacher shared-logit projection requires Qwen embedding config"
+        )
+    try:
+        if config.use_tied_embedding:
+            weight = module.embedder.input_embedding.value
+            compute_dtype = module.embedder.dtype
+            vocabulary_rows = weight
+        else:
+            weight = module.lm_head.w.value
+            compute_dtype = module.lm_head.dtype
+            vocabulary_rows = jnp_module.swapaxes(weight, 0, 1)
+    except AttributeError as exc:
+        raise RealBackendUnavailable(
+            "cached teacher shared-logit projection requires Qwen LM-head weights"
+        ) from exc
+
+    hidden = jnp_module.asarray(hidden_state, dtype=compute_dtype)
+    hidden = jax_module.lax.optimization_barrier(hidden)
+    shared_rows = jnp_module.asarray(
+        vocabulary_rows[overlap_ids],
+        dtype=compute_dtype,
+    )
+    shared_rows = jax_module.lax.optimization_barrier(shared_rows)
+    shared = jnp_module.einsum("bd,od->bo", hidden, shared_rows)
+    shared = jax_module.lax.optimization_barrier(shared)
+    return shared.astype(jnp_module.float32)
+
+
 def _configure_qwen_compute_dtype(
     model_params: Any,
     *,
@@ -147,6 +244,7 @@ def _cached_teacher_forcing_scan(
     decode_one: Any,
     project_logits: Any,
     project_selected_logits: Any,
+    project_shared_logits: Any | None = None,
     *,
     jax_module: Any,
     jnp_module: Any,
@@ -168,12 +266,18 @@ def _cached_teacher_forcing_scan(
         token_ids, step = inputs
         current_logits = project_logits(current_state)
         current_selected_logits = project_selected_logits(current_state, token_ids)
+        current_shared_logits = (
+            None
+            if project_shared_logits is None
+            else project_shared_logits(current_state)
+        )
         shared, selected = _reduce_teacher_step_statistics(
             current_logits,
             current_selected_logits,
             overlap_ids,
             jax_module=jax_module,
             jnp_module=jnp_module,
+            shared_logits=current_shared_logits,
         )
         next_state, next_cache = decode_one(cache, token_ids, step)
         return (next_state, next_cache), (shared, selected)
@@ -297,6 +401,15 @@ def _qwen_cached_teacher_statistics(
             jnp_module=jnp_module,
         )
 
+    def project_shared_logits(hidden_state: Any):
+        return _project_qwen_shared_logits(
+            module,
+            hidden_state,
+            overlap_ids,
+            jax_module=jax_module,
+            jnp_module=jnp_module,
+        )
+
     return _cached_teacher_forcing_scan(
         initial_hidden,
         cache,
@@ -305,6 +418,7 @@ def _qwen_cached_teacher_statistics(
         decode_one,
         project_logits,
         project_selected_logits,
+        project_shared_logits,
         jax_module=jax_module,
         jnp_module=jnp_module,
     )

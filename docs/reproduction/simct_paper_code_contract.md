@@ -225,15 +225,18 @@ prompt prefill plus exact token-by-token KV-cache forcing is mathematically
 equivalent to dense causal teacher scoring but avoids infeasible dense 4K/8K
 completion-attention allocations. The scan carries hidden states; each
 barrier-bracketed one-step LM-head projection is reduced immediately so XLA
-cannot recreate a completion-wide `T x B x V` tensor. The realized-token logit
-gathers its immutable LM-head row before the full vocabulary projection and
-contracts that row with the one-step hidden state, so no dynamic operation
-consumes projected `B x V` logits. Batched gather, compare/select `reduce_sum`,
-one-hot batch dot, scalar dynamic slice, and masked-max forms each failed after
-reaching their relevant runtime phase due to distinct TPU post-optimization
-fusion shape mismatches. Remote canaries, rather than the local parity test
-alone, determine whether the direct-head-row runtime path is operationally
-sufficient.
+cannot recreate a completion-wide `T x B x V` tensor. Realized-token and
+shared-coordinate logits gather immutable LM-head rows before the full
+vocabulary projection and contract those rows with the one-step hidden state.
+The exact log-normalizer statically blocks the remaining `B x V` reduction and
+combines block normalizers with stable `logaddexp`, so neither dynamic token
+operations nor one vocabulary-wide exponential `reduce_sum` consume projected
+logits. Batched gather, compare/select `reduce_sum`, one-hot batch dot, scalar
+dynamic slice, masked-max, and the full-width exponential reduction each
+failed after reaching their relevant runtime phase due to distinct TPU
+post-optimization fusion shape mismatches. Remote canaries, rather than the
+local parity test alone, determine whether the blocked-normalizer runtime path
+is operationally sufficient.
 
 `tests/upstream_parity/test_public_training_contract.py` checks these public
 values and the unresolved wrapper paths without launching a process.

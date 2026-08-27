@@ -122,10 +122,12 @@ KV-cache decoding. Prompt prefill skips the vocabulary head and projects only
 the final prompt state. A `jax.lax.scan` carries hidden state and scores each
 realized completion token from a barrier-bracketed one-step `B x 1 x V`
 projection, immediately reducing it to shared-token and selected-token
-log-probabilities. The selected-token path gathers the realized immutable
-LM-head row before the full vocabulary projection and contracts that row with
-the one-step hidden state. No dynamic operation consumes the projected
-`B x V` tensor inside the scan.
+log-probabilities. The selected-token and shared-coordinate paths gather their
+immutable LM-head rows before the full vocabulary projection and contract
+those rows with the one-step hidden state. The exact log-normalizer reduces the
+bounded `B x V` projection in compile-time static vocabulary blocks and
+combines them with stable `logaddexp`; no dynamic operation or
+vocabulary-wide exponential `reduce_sum` consumes that tensor inside the scan.
 The barriers keep XLA from lifting the LM head out of the loop and recreating a
 retained `T x B x V` tensor. This also avoids dense
 completion-length attention while preserving the dense causal objective. The
@@ -156,10 +158,13 @@ reported the corresponding post-optimization shape mismatch in its fused batch
 dot. The scalar-slice retry also passed relay-backed warm-start and reached the
 same cached-teacher phase, but TPU XLA then reported another post-optimization
 shape mismatch in the fused scalar slice. A masked-max retry then failed at a
-fused compare/select despite also passing relay-backed warm-start. The direct
-LM-head-row selector above addresses that fifth isolated fusion failure and is
-still pending a fresh remote canary. All five failed retries logged zero
-optimizer steps and are not scientific or W&B passes.
+fused compare/select despite also passing relay-backed warm-start. A direct
+LM-head-row retry passed those selected-coordinate forms, then isolated the
+remaining failure to the full-vocabulary exponential `reduce_sum` used by the
+exact log-normalizer. The statically blocked log-normalizer above addresses
+that sixth isolated fusion failure and is still pending a fresh remote canary.
+All six failed retries logged zero optimizer steps and are not scientific or
+W&B passes.
 
 The allowed optimization order is:
 
