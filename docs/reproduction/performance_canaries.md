@@ -74,6 +74,15 @@ The run fails closed unless the observed total token length reaches the
 protocol-specific floor. This prevents a short/EOS-terminated output from
 being misreported as proof that 4K or 8K fits.
 
+The fixed `paper4k` dataset uses 192 repeated leading-space `probe` words.
+Gemma tokenizes those close to one token each, leaving headroom below the
+256-token prompt cap while making the realized prompt plus the forced
+3840-token completion exceed the 3968-token fail-closed floor. The earlier
+short sentence produced only eight realized prompt tokens, so its otherwise
+successful cached-teacher pass stopped at `3848 < 3968` before the first
+optimizer step; that run validates the runtime-scanned teacher path but is not
+a resource or scientific pass.
+
 Build fixed prompt datasets and the config matrix:
 
 ```bash
@@ -163,9 +172,10 @@ LM-head-row retry passed those selected-coordinate forms, then isolated the
 remaining failure to the full-vocabulary exponential `reduce_sum` used by the
 exact log-normalizer. A statically unrolled blocked retry then failed after XLA
 fused all block slices into one multi-operand operation. The runtime-scanned
-blocked normalizer above addresses that seventh isolated fusion failure and is
-still pending a fresh remote canary. All seven failed retries logged zero
-optimizer steps and are not scientific or W&B passes.
+blocked normalizer above then passed relay-backed warm-start and cached-teacher
+scoring remotely, exposing only the independent short-probe dataset mismatch
+described above before the first optimizer step. None of these runs is a
+scientific or W&B pass.
 
 The allowed optimization order is:
 

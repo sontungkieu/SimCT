@@ -48,7 +48,11 @@ def main() -> int:
     _write_protocol(
         args.output_dir,
         "paper4k",
-        "Measure this fixed resource probe carefully.",
+        # Gemma tokenizes the leading-space word close to one token per repeat.
+        # Leave headroom under the 256-token prompt cap while ensuring the
+        # realized prompt plus the forced 3840-token completion clears the
+        # checked-in 3968-token fail-closed floor.
+        " probe" * 192,
         args.records,
     )
     # Gemma tokenizes the leading-space word close to one token per repeat.

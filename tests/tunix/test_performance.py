@@ -133,4 +133,11 @@ def test_resource_probe_dataset_is_fixed_and_large_enough(tmp_path):
         .read_text(encoding="utf-8")
         .splitlines()[0]
     )
+    paper_row = json.loads(
+        (output / "paper4k" / "records.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()[0]
+    )
+    assert paper_row["student_prompt"].count(" probe") == 192
+    assert paper_row["teacher_prompt"] == paper_row["student_prompt"]
     assert public_row["student_prompt"].count(" probe") == 4000
