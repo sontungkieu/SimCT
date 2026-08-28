@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vdt-vllm-teacher-plugin"
+version = "0.1.0"
+description = "Exact hidden-state sufficient-statistic endpoint for VDT SimCT"
+requires-python = ">=3.10"
+
+[project.entry-points."vllm.endpoint_plugins"]
+vdt_teacher = "vdt_teacher.plugin:create_plugin"
+
+[tool.setuptools.packages.find]
+include = ["vdt_teacher*"]

@@ -78,6 +78,8 @@ def _aggregate_optimizer_update(rows: list[dict[str, Any]]) -> dict[str, Any]:
         "teacher_score_s",
         "teacher_tokenize_s",
         "teacher_forward_s",
+        "teacher_remote_network_s",
+        "teacher_remote_projection_s",
         "alignment_s",
         "batch_prepare_s",
         "student_update_dispatch_s",

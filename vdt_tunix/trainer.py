@@ -62,6 +62,8 @@ class PreparedSimCTBatch:
     teacher_score_s: float = 0.0
     teacher_tokenize_s: float = 0.0
     teacher_forward_s: float = 0.0
+    teacher_remote_network_s: float = 0.0
+    teacher_remote_projection_s: float = 0.0
     alignment_s: float = 0.0
     batch_prepare_s: float = 0.0
     teacher_sequence_required: int = 0
@@ -94,6 +96,8 @@ class UpdateMetrics:
     teacher_score_s: float = 0.0
     teacher_tokenize_s: float = 0.0
     teacher_forward_s: float = 0.0
+    teacher_remote_network_s: float = 0.0
+    teacher_remote_projection_s: float = 0.0
     alignment_s: float = 0.0
     batch_prepare_s: float = 0.0
     student_update_dispatch_s: float = 0.0
@@ -362,6 +366,12 @@ def prepare_simct_batch(
         teacher_score_s=teacher_score_s,
         teacher_tokenize_s=float(teacher_timing.get("teacher_tokenize_s", 0.0)),
         teacher_forward_s=float(teacher_timing.get("teacher_forward_s", 0.0)),
+        teacher_remote_network_s=float(
+            teacher_timing.get("teacher_remote_network_s", 0.0)
+        ),
+        teacher_remote_projection_s=float(
+            teacher_timing.get("teacher_remote_projection_s", 0.0)
+        ),
         alignment_s=alignment_s,
         batch_prepare_s=time.monotonic() - prepare_started,
         teacher_sequence_required=int(
@@ -544,6 +554,8 @@ class PaperSimCTTrainer:
             teacher_score_s=batch.teacher_score_s,
             teacher_tokenize_s=batch.teacher_tokenize_s,
             teacher_forward_s=batch.teacher_forward_s,
+            teacher_remote_network_s=batch.teacher_remote_network_s,
+            teacher_remote_projection_s=batch.teacher_remote_projection_s,
             alignment_s=batch.alignment_s,
             batch_prepare_s=batch.batch_prepare_s,
             student_update_dispatch_s=dispatch_s,
@@ -772,6 +784,8 @@ class PaperSimpleOPDTrainer:
             teacher_score_s=batch.teacher_score_s,
             teacher_tokenize_s=batch.teacher_tokenize_s,
             teacher_forward_s=batch.teacher_forward_s,
+            teacher_remote_network_s=batch.teacher_remote_network_s,
+            teacher_remote_projection_s=batch.teacher_remote_projection_s,
             alignment_s=batch.alignment_s,
             batch_prepare_s=batch.batch_prepare_s,
             student_update_dispatch_s=dispatch_s,

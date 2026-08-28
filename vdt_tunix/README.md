@@ -17,6 +17,7 @@ keeps the CPU-testable boundary separate from the existing KDFlow and
 | Tunix/MaxText model adapters | implemented, execution pending | lazy local-checkpoint `AutoModel` restore contract, full-sequence causal forward, trainable student and stop-gradient teacher; TP8/PP1 only |
 | Real student rollout canary | implemented, execution pending | native Tunix KV-cached sampler, deterministic rollout coordinate, rollout log-probabilities and exact decoded-byte bridge |
 | Real frozen-teacher scoring | implemented, scanned-block-normalizer cached retry pending | exact completion retokenization; frozen Qwen compute is explicitly BF16 before model construction, and cached teacher forcing carries only hidden state while barrier-bracketed one-step projections are immediately reduced to exact sufficient statistics; realized/shared logits use immutable LM-head rows, while a runtime `lax.scan` reduces fixed-width log-normalizer blocks and composes them with stable `logaddexp` |
+| Remote exact frozen teacher | implemented, end-to-end TPU canary pending | optional operational environment selects one authenticated vLLM Qwen teacher; the paper JSON is unchanged, response identity/hash/causal alignment fail closed, and TPU reconstructs shared scores from native-BF16 hidden states plus immutable overlap LM-head rows |
 | JAX paper-math SimCT update | implemented, TPU execution pending | Eq. (7) mean log-probability scores, finite-candidate softmax, reverse KL, NNX gradient and AdamW update |
 | JAX paper-control SimpleOPD update | implemented, TPU execution pending | reverse KL on normalized overlap vocabulary at exact one-to-one byte-aligned units; no span credit |
 | Tunix/Orbax array save/restore | implemented, TPU execution pending | synchronous model plus optimizer persistence, directory digest, custom metadata cross-check, movable resume root |
@@ -65,6 +66,12 @@ entrypoint never falls back to them:
 ```bash
 python3 -m pytest tests/tunix tests/tunix_real
 ```
+
+The optional remote-teacher implementation, deployment procedure, security
+boundary, and measured RTX 3090 service canaries are documented in
+[`services/vllm_teacher/README.md`](../services/vllm_teacher/README.md). Its
+tests live under `tests/vllm_teacher`; absence of
+`VDT_REMOTE_TEACHER_URL` preserves the existing local-teacher path.
 
 `tests/tunix_real/test_jax_kernels.py` is a true JAX CPU parity suite against
 the pure-Python `vdt_span` reference. It skips rather than installing JAX when

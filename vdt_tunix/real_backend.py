@@ -38,6 +38,8 @@ from vdt_tunix.model_adapters import (
     ModelRuntimeDependencies,
     TokenizerByteAdapter,
 )
+from vdt_tunix.remote_teacher import RemoteTeacherRuntimeConfig
+from vdt_tunix.remote_teacher_backend import RemoteVLLMTeacherScoreBackend
 
 
 class RealBackendUnavailable(RuntimeError):
@@ -1674,8 +1676,14 @@ def build_backends(
         raise RealBackendUnavailable(
             "the bounded real backend currently supports PP1 only"
         )
+    remote_teacher = RemoteTeacherRuntimeConfig.from_environment()
     _validate_model_path(config.student)
-    _validate_model_path(config.teacher)
+    if remote_teacher is None:
+        _validate_model_path(config.teacher)
+    elif dependencies is not None:
+        raise RealBackendUnavailable(
+            "remote teacher mode does not accept injected model dependencies"
+        )
     runtime = dependencies or _production_dependencies(config)
     try:
         runtime.validate_model_spec(config.student)
@@ -1684,8 +1692,16 @@ def build_backends(
             runtime.load_tokenizer(config.student),
             config.student,
         )
+        teacher_tokenizer_config = (
+            config.teacher
+            if remote_teacher is None
+            else dataclasses.replace(
+                config.teacher,
+                tokenizer_path=str(remote_teacher.tokenizer_dir),
+            )
+        )
         teacher_tokenizer = TokenizerByteAdapter(
-            runtime.load_tokenizer(config.teacher),
+            runtime.load_tokenizer(teacher_tokenizer_config),
             config.teacher,
         )
     except RealBackendUnavailable:
@@ -1702,15 +1718,25 @@ def build_backends(
         runtime,
         trainable=True,
     )
-    teacher_adapter = CausalModelForwardAdapter(
-        config.teacher,
-        teacher_tokenizer,
-        runtime,
-        trainable=False,
-    )
+    if remote_teacher is not None:
+        teacher_backend = RemoteVLLMTeacherScoreBackend(
+            config,
+            teacher_tokenizer,
+            remote_teacher,
+        )
+    else:
+        teacher_adapter = CausalModelForwardAdapter(
+            config.teacher,
+            teacher_tokenizer,
+            runtime,
+            trainable=False,
+        )
+        teacher_backend = MaxTextFrozenTeacherScoreBackend(
+            config, teacher_adapter
+        )
     return BackendBundle(
         student=TunixStudentRolloutBackend(config, student_adapter),
-        teacher=MaxTextFrozenTeacherScoreBackend(config, teacher_adapter),
+        teacher=teacher_backend,
     )
 
 
