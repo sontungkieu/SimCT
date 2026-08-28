@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Sequence
@@ -550,6 +551,11 @@ def render_training_notebook(
     warm_start_kernel_source: str | None = None,
     warm_start_kernel_version: int | None = None,
     warm_start_relative_path: str | None = None,
+    remote_teacher_profile_dataset_source: str | None = None,
+    remote_teacher_profile_relative_path: str | None = None,
+    remote_teacher_tokenizer_relative_path: str | None = None,
+    remote_teacher_timeout_s: float = 300.0,
+    remote_teacher_max_parallel_requests: int = 4,
     profile_step: int = 0,
 ) -> dict[str, Any]:
     """Render a provenance-checked SFT or OPD notebook with durable output.
@@ -613,6 +619,51 @@ def render_training_notebook(
     )
     student_source = validate_model_source(student_model_source)
     teacher_source = validate_model_source(teacher_model_source)
+
+    remote_values = (
+        remote_teacher_profile_dataset_source,
+        remote_teacher_profile_relative_path,
+        remote_teacher_tokenizer_relative_path,
+    )
+    remote_teacher_enabled = any(value is not None for value in remote_values)
+    if remote_teacher_enabled and not all(value is not None for value in remote_values):
+        raise KaggleModelSourceError(
+            "remote teacher dataset source, profile path, and tokenizer path "
+            "must be provided together"
+        )
+    if remote_teacher_enabled and phase == "sft":
+        raise KaggleModelSourceError("remote teacher is only supported for OPD phases")
+    if (
+        isinstance(remote_teacher_timeout_s, bool)
+        or not isinstance(remote_teacher_timeout_s, (int, float))
+        or not math.isfinite(float(remote_teacher_timeout_s))
+        or remote_teacher_timeout_s <= 0
+    ):
+        raise KaggleModelSourceError("remote_teacher_timeout_s must be positive")
+    if (
+        isinstance(remote_teacher_max_parallel_requests, bool)
+        or not isinstance(remote_teacher_max_parallel_requests, int)
+        or remote_teacher_max_parallel_requests < 1
+    ):
+        raise KaggleModelSourceError(
+            "remote_teacher_max_parallel_requests must be a positive integer"
+        )
+    if remote_teacher_enabled:
+        remote_owner, remote_slug = _validate_dataset_source(
+            str(remote_teacher_profile_dataset_source),
+            "remote_teacher_profile_dataset_source",
+        )
+        remote_profile_relative = _safe_relative_path(
+            str(remote_teacher_profile_relative_path),
+            "remote_teacher_profile_relative_path",
+        )
+        remote_tokenizer_relative = _safe_relative_path(
+            str(remote_teacher_tokenizer_relative_path),
+            "remote_teacher_tokenizer_relative_path",
+        )
+    else:
+        remote_owner = remote_slug = ""
+        remote_profile_relative = remote_tokenizer_relative = None
 
     if phase == "sft":
         if (
@@ -719,6 +770,11 @@ WARM_START_OWNER = {warm_owner!r}
 WARM_START_SLUG = {warm_slug!r}
 WARM_START_KERNEL_VERSION = {warm_start_kernel_version!r}
 WARM_START_RELATIVE = {None if warm_relative is None else warm_relative.as_posix()!r}
+REMOTE_TEACHER_PROFILE_DATASET_SOURCE = {remote_teacher_profile_dataset_source!r}
+REMOTE_TEACHER_PROFILE_OWNER = {remote_owner!r}
+REMOTE_TEACHER_PROFILE_SLUG = {remote_slug!r}
+REMOTE_TEACHER_PROFILE_RELATIVE = {None if remote_profile_relative is None else remote_profile_relative.as_posix()!r}
+REMOTE_TEACHER_TOKENIZER_RELATIVE = {None if remote_tokenizer_relative is None else remote_tokenizer_relative.as_posix()!r}
 RUNTIME_INPUTS = Path("/kaggle/working/vdt_runtime_inputs")
 
 def resolve_input(source, owner, slug, *, notebook_version=None):
@@ -844,6 +900,40 @@ else:
     WARM_START_ROOT = resolve_relative(
         warm_mount, PurePosixPath(WARM_START_RELATIVE), "warm-start"
     )
+if REMOTE_TEACHER_PROFILE_DATASET_SOURCE is None:
+    REMOTE_TEACHER_PROFILE_ROOT = None
+    REMOTE_TEACHER_TOKENIZER_ROOT = None
+else:
+    remote_teacher_mount = resolve_input(
+        REMOTE_TEACHER_PROFILE_DATASET_SOURCE,
+        REMOTE_TEACHER_PROFILE_OWNER,
+        REMOTE_TEACHER_PROFILE_SLUG,
+    )
+    REMOTE_TEACHER_PROFILE_ROOT = resolve_relative(
+        remote_teacher_mount,
+        PurePosixPath(REMOTE_TEACHER_PROFILE_RELATIVE),
+        "remote-teacher-profile",
+    )
+    REMOTE_TEACHER_TOKENIZER_ROOT = resolve_relative(
+        remote_teacher_mount,
+        PurePosixPath(REMOTE_TEACHER_TOKENIZER_RELATIVE),
+        "remote-teacher-tokenizer",
+    )
+    required_remote_teacher_files = (
+        REMOTE_TEACHER_PROFILE_ROOT / "teacher_overlap_lm_head.manifest.json",
+        REMOTE_TEACHER_PROFILE_ROOT / "teacher_ids.i32le",
+        REMOTE_TEACHER_PROFILE_ROOT / "teacher_overlap_lm_head.bf16le",
+        REMOTE_TEACHER_TOKENIZER_ROOT / "tokenizer.json",
+        REMOTE_TEACHER_TOKENIZER_ROOT / "tokenizer_config.json",
+    )
+    missing_remote_teacher_files = [
+        str(path) for path in required_remote_teacher_files if not path.is_file()
+    ]
+    if missing_remote_teacher_files:
+        raise FileNotFoundError(
+            "remote teacher profile payload is incomplete: "
+            f"{{missing_remote_teacher_files}}"
+        )
 print("VDT_TRAINING_INPUT_PROVENANCE " + json.dumps({{
     "phase": {phase!r},
     "training_dataset_source": TRAINING_DATASET_SOURCE,
@@ -851,11 +941,72 @@ print("VDT_TRAINING_INPUT_PROVENANCE " + json.dumps({{
     "warm_start_kernel_source": WARM_START_KERNEL_SOURCE,
     "warm_start_kernel_version": WARM_START_KERNEL_VERSION,
     "warm_start_root": None if WARM_START_ROOT is None else str(WARM_START_ROOT),
+    "remote_teacher_profile_dataset_source": REMOTE_TEACHER_PROFILE_DATASET_SOURCE,
+    "remote_teacher_profile_root": None if REMOTE_TEACHER_PROFILE_ROOT is None else str(REMOTE_TEACHER_PROFILE_ROOT),
+    "remote_teacher_tokenizer_root": None if REMOTE_TEACHER_TOKENIZER_ROOT is None else str(REMOTE_TEACHER_TOKENIZER_ROOT),
 }}, sort_keys=True))'''
 
     wandb_secret = '''import os
 
 os.environ["WANDB_API_KEY"] = "__KJO_SECRET_WANDB_API_KEY__"'''
+
+    remote_teacher_secret = None
+    if remote_teacher_enabled:
+        remote_teacher_secret = f'''import json
+import os
+from pathlib import Path
+
+REMOTE_TEACHER_URL = "__KJO_SECRET_VDT_REMOTE_TEACHER_URL__"
+REMOTE_TEACHER_TOKEN = "__KJO_SECRET_VDT_REMOTE_TEACHER_TOKEN__"
+REMOTE_TEACHER_SECRET_DIR = Path("/kaggle/working/.vdt-remote-teacher")
+REMOTE_TEACHER_SECRET_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+REMOTE_TEACHER_SECRET_DIR.chmod(0o700)
+REMOTE_TEACHER_TOKEN_FILE = REMOTE_TEACHER_SECRET_DIR / "bearer-token"
+REMOTE_TEACHER_TOKEN_FILE.write_text(REMOTE_TEACHER_TOKEN, encoding="utf-8")
+REMOTE_TEACHER_TOKEN_FILE.chmod(0o600)
+os.environ["VDT_REMOTE_TEACHER_URL"] = REMOTE_TEACHER_URL
+os.environ["VDT_REMOTE_TEACHER_TOKEN_FILE"] = str(REMOTE_TEACHER_TOKEN_FILE)
+os.environ["VDT_REMOTE_TEACHER_PROFILE_DIR"] = str(REMOTE_TEACHER_PROFILE_ROOT)
+os.environ["VDT_REMOTE_TEACHER_TOKENIZER_DIR"] = str(REMOTE_TEACHER_TOKENIZER_ROOT)
+os.environ["VDT_REMOTE_TEACHER_TIMEOUT_S"] = {str(float(remote_teacher_timeout_s))!r}
+os.environ["VDT_REMOTE_TEACHER_MAX_PARALLEL"] = {str(remote_teacher_max_parallel_requests)!r}
+print("VDT_REMOTE_TEACHER_CONFIG_SUMMARY " + json.dumps({{
+    "enabled": True,
+    "max_parallel_requests": {remote_teacher_max_parallel_requests!r},
+    "profile_dataset_source": REMOTE_TEACHER_PROFILE_DATASET_SOURCE,
+    "profile_root": str(REMOTE_TEACHER_PROFILE_ROOT),
+    "timeout_s": {float(remote_teacher_timeout_s)!r},
+    "token_file_mode": oct(REMOTE_TEACHER_TOKEN_FILE.stat().st_mode & 0o777),
+    "tokenizer_root": str(REMOTE_TEACHER_TOKENIZER_ROOT),
+}}, sort_keys=True))
+del REMOTE_TEACHER_TOKEN'''
+
+    if remote_teacher_enabled:
+        teacher_mount_setup = '''TEACHER_MOUNT = None
+for required in (
+    REPO,
+    CONFIG_PATH,
+    TRAINING_MANIFEST,
+    STUDENT_MOUNT,
+    REMOTE_TEACHER_PROFILE_ROOT,
+    REMOTE_TEACHER_TOKENIZER_ROOT,
+):
+    if not required.exists():
+        raise FileNotFoundError(f"required input missing: {required}")'''
+        teacher_runtime_setup = '''teacher_runtime = {
+    "mode": "remote_vllm_exact",
+    "profile_dataset_source": REMOTE_TEACHER_PROFILE_DATASET_SOURCE,
+    "profile_dir": str(REMOTE_TEACHER_PROFILE_ROOT),
+    "tokenizer_dir": str(REMOTE_TEACHER_TOKENIZER_ROOT),
+}'''
+    else:
+        teacher_mount_setup = '''TEACHER_MOUNT = resolve_model_source_mount(TEACHER_SOURCE)
+for required in (REPO, CONFIG_PATH, TRAINING_MANIFEST, STUDENT_MOUNT, TEACHER_MOUNT):
+    if not required.exists():
+        raise FileNotFoundError(f"required input missing: {required}")'''
+        teacher_runtime_setup = '''teacher_runtime = bind_runtime_model_mount(
+    config["teacher"], TEACHER_MOUNT
+)'''
 
     setup = f'''import hashlib
 import json
@@ -878,10 +1029,7 @@ from vdt_tunix.kaggle_model_sources import (
     resolve_model_source_mount,
 )
 STUDENT_MOUNT = resolve_model_source_mount(STUDENT_SOURCE)
-TEACHER_MOUNT = resolve_model_source_mount(TEACHER_SOURCE)
-for required in (REPO, CONFIG_PATH, TRAINING_MANIFEST, STUDENT_MOUNT, TEACHER_MOUNT):
-    if not required.exists():
-        raise FileNotFoundError(f"required input missing: {{required}}")
+{teacher_mount_setup}
 config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
 source_run_id = {source_run_id!r}
 if config["run_id"] != source_run_id:
@@ -897,7 +1045,7 @@ config["checkpoint"]["root"] = str(
     / "checkpoints"
 )
 student_runtime = bind_runtime_model_mount(config["student"], STUDENT_MOUNT)
-teacher_runtime = bind_runtime_model_mount(config["teacher"], TEACHER_MOUNT)
+{teacher_runtime_setup}
 if config["run_id"] != {expected_run_id!r}:
     raise RuntimeError(f"runtime run_id drifted: {{config['run_id']}}")
 expected_algorithm = {("simct" if phase == "sft" else phase)!r}
@@ -1046,8 +1194,7 @@ print("VDT_TRAINING_ARTIFACT " + json.dumps(artifact, sort_keys=True))'''
             "source": [line + "\n" for line in source.splitlines()],
         }
 
-    return {
-        "cells": [
+    cells = [
             {
                 "cell_type": "markdown",
                 "metadata": {},
@@ -1059,10 +1206,19 @@ print("VDT_TRAINING_ARTIFACT " + json.dumps(artifact, sort_keys=True))'''
             code_cell(copy_repo),
             code_cell(resolve_inputs),
             code_cell(wandb_secret),
+    ]
+    if remote_teacher_secret is not None:
+        cells.append(code_cell(remote_teacher_secret))
+    cells.extend(
+        [
             code_cell(setup),
             code_cell(dependencies),
             code_cell(run),
-        ],
+        ]
+    )
+
+    return {
+        "cells": cells,
         "metadata": {
             "kernelspec": {
                 "display_name": "Python 3",

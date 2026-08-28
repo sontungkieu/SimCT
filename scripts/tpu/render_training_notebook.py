@@ -37,6 +37,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--warm-start-kernel-source")
     parser.add_argument("--warm-start-kernel-version", type=int)
     parser.add_argument("--warm-start-relative-path")
+    parser.add_argument("--remote-teacher-profile-dataset-source")
+    parser.add_argument("--remote-teacher-profile-relative-path")
+    parser.add_argument("--remote-teacher-tokenizer-relative-path")
+    parser.add_argument("--remote-teacher-timeout-s", type=float, default=300.0)
+    parser.add_argument(
+        "--remote-teacher-max-parallel-requests", type=int, default=4
+    )
     parser.add_argument("--profile-step", type=int, default=0)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args(argv)
@@ -56,6 +63,19 @@ def main(argv: list[str] | None = None) -> int:
             warm_start_kernel_source=args.warm_start_kernel_source,
             warm_start_kernel_version=args.warm_start_kernel_version,
             warm_start_relative_path=args.warm_start_relative_path,
+            remote_teacher_profile_dataset_source=(
+                args.remote_teacher_profile_dataset_source
+            ),
+            remote_teacher_profile_relative_path=(
+                args.remote_teacher_profile_relative_path
+            ),
+            remote_teacher_tokenizer_relative_path=(
+                args.remote_teacher_tokenizer_relative_path
+            ),
+            remote_teacher_timeout_s=args.remote_teacher_timeout_s,
+            remote_teacher_max_parallel_requests=(
+                args.remote_teacher_max_parallel_requests
+            ),
             profile_step=args.profile_step,
         )
         args.output.parent.mkdir(parents=True, exist_ok=True)

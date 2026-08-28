@@ -434,6 +434,146 @@ def test_training_renderer_can_enable_one_profile_step():
     assert '"--profile-step", str(2)' in source
 
 
+def test_training_renderer_can_use_remote_teacher_without_teacher_model_mount():
+    notebook = render_training_notebook(
+        phase="simct",
+        config_relative_path=(
+            "configs/performance/real-public-simct-student-dynamic.json"
+        ),
+        repo_dataset_source=REPO_DATASET,
+        training_dataset_source="testowner/public-substitute-v1",
+        training_manifest_relative_path="opd/manifest.json",
+        student_model_source=STUDENT,
+        teacher_model_source=TEACHER,
+        warm_start_kernel_source="testowner/public-sft-seed43",
+        warm_start_kernel_version=1,
+        warm_start_relative_path="checkpoints",
+        remote_teacher_profile_dataset_source=(
+            "testowner/remote-teacher-profile-v1"
+        ),
+        remote_teacher_profile_relative_path="profile",
+        remote_teacher_tokenizer_relative_path="profile/tokenizer",
+        remote_teacher_timeout_s=600.0,
+        remote_teacher_max_parallel_requests=2,
+    )
+    source = "".join(
+        "".join(cell.get("source", [])) for cell in notebook["cells"]
+    )
+    assert len(notebook["cells"]) == 8
+    assert "testowner/remote-teacher-profile-v1" in source
+    assert "resolve_model_source_mount(STUDENT_SOURCE)" in source
+    assert "resolve_model_source_mount(TEACHER_SOURCE)" not in source
+    assert '"mode": "remote_vllm_exact"' in source
+    assert "__KJO_SECRET_VDT_REMOTE_TEACHER_URL__" in source
+    assert "__KJO_SECRET_VDT_REMOTE_TEACHER_TOKEN__" in source
+    assert 'REMOTE_TEACHER_SECRET_DIR.mkdir(mode=0o700' in source
+    assert 'REMOTE_TEACHER_TOKEN_FILE.chmod(0o600)' in source
+    assert 'os.environ["VDT_REMOTE_TEACHER_MAX_PARALLEL"] = \'2\'' in source
+    assert "required_remote_teacher_files" in source
+    for index, cell in enumerate(notebook["cells"]):
+        if cell["cell_type"] == "code":
+            compile("".join(cell["source"]), f"<remote-cell-{index}>", "exec")
+
+
+def test_training_renderer_rejects_partial_remote_teacher_contract():
+    with pytest.raises(KaggleModelSourceError, match="must be provided together"):
+        render_training_notebook(
+            phase="simct",
+            config_relative_path="configs/simple-opd.json",
+            repo_dataset_source=REPO_DATASET,
+            training_dataset_source="testowner/public-substitute-v1",
+            training_manifest_relative_path="opd/manifest.json",
+            student_model_source=STUDENT,
+            teacher_model_source=TEACHER,
+            warm_start_kernel_source="testowner/public-sft-seed43",
+            warm_start_kernel_version=1,
+            warm_start_relative_path="checkpoints",
+            remote_teacher_profile_dataset_source=(
+                "testowner/remote-teacher-profile-v1"
+            ),
+        )
+
+
+def test_training_input_cell_resolves_remote_teacher_profile_dataset(
+    tmp_path, monkeypatch
+):
+    notebook = render_training_notebook(
+        phase="simct",
+        config_relative_path=(
+            "configs/performance/real-public-simct-student-dynamic.json"
+        ),
+        repo_dataset_source=REPO_DATASET,
+        training_dataset_source="testowner/public-substitute-v1",
+        training_manifest_relative_path="opd/manifest.json",
+        student_model_source=STUDENT,
+        teacher_model_source=TEACHER,
+        warm_start_kernel_source="testowner/public-sft-seed43",
+        warm_start_kernel_version=1,
+        warm_start_relative_path="checkpoints",
+        remote_teacher_profile_dataset_source=(
+            "testowner/remote-teacher-profile-v1"
+        ),
+        remote_teacher_profile_relative_path="profile",
+        remote_teacher_tokenizer_relative_path="profile/tokenizer",
+    )
+    source = next(
+        "".join(cell.get("source", []))
+        for cell in notebook["cells"]
+        if "TRAINING_DATASET_SOURCE" in "".join(cell.get("source", []))
+    )
+    source = source.replace(
+        'Path("/kaggle/working/vdt_runtime_inputs")',
+        f"Path({str(tmp_path / 'runtime-inputs')!r})",
+    )
+    input_root = tmp_path / "input"
+    training_root = (
+        input_root
+        / "datasets"
+        / "testowner"
+        / "public-substitute-v1"
+        / "versions"
+        / "1"
+    )
+    (training_root / "opd").mkdir(parents=True)
+    (training_root / "opd" / "manifest.json").write_text(
+        "{}\n", encoding="utf-8"
+    )
+    warm_root = (
+        input_root
+        / "notebooks"
+        / "testowner"
+        / "public-sft-seed43"
+        / "versions"
+        / "1"
+        / "checkpoints"
+    )
+    warm_root.mkdir(parents=True)
+    profile_root = (
+        input_root
+        / "datasets"
+        / "testowner"
+        / "remote-teacher-profile-v1"
+        / "versions"
+        / "1"
+        / "profile"
+    )
+    tokenizer_root = profile_root / "tokenizer"
+    tokenizer_root.mkdir(parents=True)
+    for name in (
+        "teacher_overlap_lm_head.manifest.json",
+        "teacher_ids.i32le",
+        "teacher_overlap_lm_head.bf16le",
+    ):
+        (profile_root / name).write_bytes(b"fixture")
+    for name in ("tokenizer.json", "tokenizer_config.json"):
+        (tokenizer_root / name).write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("KJO_KAGGLE_INPUT_ROOT", str(input_root))
+    namespace = {}
+    exec(compile(source, "<remote-training-inputs>", "exec"), namespace)
+    assert namespace["REMOTE_TEACHER_PROFILE_ROOT"] == profile_root
+    assert namespace["REMOTE_TEACHER_TOKENIZER_ROOT"] == tokenizer_root
+
+
 def test_training_renderer_rejects_sft_warm_start():
     with pytest.raises(KaggleModelSourceError, match="may not declare"):
         render_training_notebook(

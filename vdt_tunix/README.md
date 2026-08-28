@@ -262,6 +262,31 @@ runtime-only config. Do not derive model locations from a presumed
 `/kaggle/input` directory layout: Kaggle may change or normalize that mount
 layout independently of the stable model handle.
 
+For OPD runs with the exact external vLLM teacher, the renderer can omit the
+full teacher model attachment from the TPU notebook. Attach an immutable
+private dataset containing `teacher_overlap_lm_head.manifest.json`,
+`teacher_ids.i32le`, `teacher_overlap_lm_head.bf16le`, and the pinned teacher
+tokenizer, then pass:
+
+```bash
+python scripts/tpu/render_training_notebook.py \
+  --phase simct \
+  ... \
+  --remote-teacher-profile-dataset-source <owner>/<profile-dataset> \
+  --remote-teacher-profile-relative-path profile \
+  --remote-teacher-tokenizer-relative-path profile/tokenizer \
+  --remote-teacher-timeout-s 600 \
+  --remote-teacher-max-parallel-requests 2 \
+  --output /path/to/source_notebook.ipynb
+```
+
+The staged notebook must inject exactly the
+`VDT_REMOTE_TEACHER_URL` and `VDT_REMOTE_TEACHER_TOKEN` placeholders in
+addition to the W&B key. It writes the bearer into an owner-only `0600` file
+under an owner-only `0700` directory, never prints either value, and passes
+only the profile/tokenizer paths to the locked training subprocess. The paper
+JSON, sampling parameters, objective, and student model remain unchanged.
+
 Before spending an accelerator session on an unverified Kaggle account, a
 CPU-only private probe can test whether the exact attached model licenses are
 available without loading model tensors:
