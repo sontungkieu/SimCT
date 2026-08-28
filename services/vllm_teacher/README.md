@@ -74,7 +74,15 @@ export VDT_REMOTE_TEACHER_TOKEN_FILE=/run/secrets/vdt_teacher_token
 export VDT_REMOTE_TEACHER_PROFILE_DIR=/kaggle/input/vdt-teacher-profile
 export VDT_REMOTE_TEACHER_TOKENIZER_DIR=/kaggle/input/vdt-teacher-profile/tokenizer
 export VDT_REMOTE_TEACHER_MAX_PARALLEL=4
+export VDT_REMOTE_TEACHER_MAX_ATTEMPTS=3
+export VDT_REMOTE_TEACHER_RETRY_BACKOFF_S=2
 ```
+
+The client retries only pure teacher health/scoring requests after transport
+errors and retryable gateway/rate-limit HTTP statuses. It uses bounded
+exponential backoff, reports the safe HTTP status on terminal failure, and
+emits per-step request-attempt and retry counts. Identity, payload hashes, and
+causal alignment are still validated after every successful response.
 
 The profile directory must contain the exact manifest, `teacher_ids.i32le`,
 `teacher_overlap_lm_head.bf16le`, and the pinned Qwen tokenizer files. The

@@ -64,6 +64,8 @@ class PreparedSimCTBatch:
     teacher_forward_s: float = 0.0
     teacher_remote_network_s: float = 0.0
     teacher_remote_projection_s: float = 0.0
+    teacher_remote_request_attempts: int = 0
+    teacher_remote_retry_count: int = 0
     alignment_s: float = 0.0
     batch_prepare_s: float = 0.0
     teacher_sequence_required: int = 0
@@ -100,6 +102,8 @@ class UpdateMetrics:
     teacher_forward_s: float = 0.0
     teacher_remote_network_s: float = 0.0
     teacher_remote_projection_s: float = 0.0
+    teacher_remote_request_attempts: int = 0
+    teacher_remote_retry_count: int = 0
     alignment_s: float = 0.0
     batch_prepare_s: float = 0.0
     student_update_dispatch_s: float = 0.0
@@ -423,6 +427,12 @@ def prepare_simct_batch(
         teacher_remote_projection_s=float(
             teacher_timing.get("teacher_remote_projection_s", 0.0)
         ),
+        teacher_remote_request_attempts=int(
+            teacher_timing.get("teacher_remote_request_attempts", 0)
+        ),
+        teacher_remote_retry_count=int(
+            teacher_timing.get("teacher_remote_retry_count", 0)
+        ),
         alignment_s=alignment_s,
         batch_prepare_s=time.monotonic() - prepare_started,
         teacher_sequence_required=int(
@@ -629,6 +639,8 @@ class PaperSimCTTrainer:
             teacher_forward_s=batch.teacher_forward_s,
             teacher_remote_network_s=batch.teacher_remote_network_s,
             teacher_remote_projection_s=batch.teacher_remote_projection_s,
+            teacher_remote_request_attempts=batch.teacher_remote_request_attempts,
+            teacher_remote_retry_count=batch.teacher_remote_retry_count,
             alignment_s=batch.alignment_s,
             batch_prepare_s=batch.batch_prepare_s,
             student_update_dispatch_s=dispatch_s,
@@ -861,6 +873,8 @@ class PaperSimpleOPDTrainer:
             teacher_forward_s=batch.teacher_forward_s,
             teacher_remote_network_s=batch.teacher_remote_network_s,
             teacher_remote_projection_s=batch.teacher_remote_projection_s,
+            teacher_remote_request_attempts=batch.teacher_remote_request_attempts,
+            teacher_remote_retry_count=batch.teacher_remote_retry_count,
             alignment_s=batch.alignment_s,
             batch_prepare_s=batch.batch_prepare_s,
             student_update_dispatch_s=dispatch_s,

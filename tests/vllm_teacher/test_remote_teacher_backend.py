@@ -88,7 +88,7 @@ class _FakeClient:
             log_normalizer=np.asarray([1.0] * rows, dtype=np.float32),
             selected_log_probs=np.asarray([-0.5] * rows, dtype=np.float32),
             selected_token_ids=np.asarray(completion_token_ids, dtype=np.int32),
-            header={},
+            header={"_client_request_attempts": 2},
         )
 
 
@@ -152,3 +152,5 @@ def test_remote_backend_reconstructs_paper_statistics_without_teacher_model():
     np.testing.assert_allclose(stats.shared_log_probs, [[10.0, 16.0]])
     np.testing.assert_allclose(stats.selected_log_probs, [-0.5])
     assert backend.last_phase_timings["teacher_remote_profile_id"] == "test-profile"
+    assert backend.last_phase_timings["teacher_remote_request_attempts"] == 2
+    assert backend.last_phase_timings["teacher_remote_retry_count"] == 1

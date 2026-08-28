@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import struct
+import urllib.error
 from pathlib import Path
 
 import numpy as np
@@ -11,6 +13,7 @@ import pytest
 
 from vdt_tunix.remote_teacher import (
     REMOTE_TEACHER_CONTENT_TYPE,
+    RemoteTeacherClient,
     RemoteTeacherError,
     RemoteTeacherProfile,
     RemoteTeacherRuntimeConfig,
@@ -22,6 +25,47 @@ MODEL_ID = "Qwen/Qwen2.5-7B-Instruct"
 MODEL_REVISION = "a09a35458c702b33eeacc393d103063234e8bc28"
 PROFILE_ID = "test-profile"
 IDS_SHA = "1" * 64
+
+
+class _Response:
+    def __init__(self, body: bytes):
+        self._body = body
+        self.headers = {"Content-Type": REMOTE_TEACHER_CONTENT_TYPE}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return None
+
+    def read(self):
+        return self._body
+
+
+def _client(tmp_path, opener, *, max_attempts=3):
+    token = tmp_path / "token"
+    token.write_text("x" * 48, encoding="utf-8")
+    token.chmod(0o600)
+    profile_dir = tmp_path / "profile"
+    profile_dir.mkdir()
+    runtime = RemoteTeacherRuntimeConfig(
+        "https://teacher.example.invalid",
+        token,
+        profile_dir,
+        max_attempts=max_attempts,
+        retry_backoff_s=0.0,
+    )
+    profile = RemoteTeacherProfile(
+        profile_id=PROFILE_ID,
+        model_id=MODEL_ID,
+        model_revision=MODEL_REVISION,
+        teacher_ids_sha256=IDS_SHA,
+        overlap_head_sha256="2" * 64,
+        teacher_ids=np.asarray([1], dtype=np.int32),
+        overlap_head_bits=np.asarray([[1]], dtype=np.uint16),
+        hidden_size=1,
+    )
+    return RemoteTeacherClient(runtime, profile, opener=opener)
 
 
 def _response(prompt_ids=(1, 2), completion_ids=(3, 4)) -> bytes:
@@ -134,6 +178,70 @@ def test_runtime_config_requires_https_or_explicit_local_canary(tmp_path, monkey
         "http://127.0.0.1:18000/", token, profile
     )
     assert configured.url == "http://127.0.0.1:18000"
+
+
+def test_remote_teacher_retries_retryable_gateway_status(tmp_path):
+    calls = 0
+
+    def opener(request, timeout):
+        nonlocal calls
+        del request, timeout
+        calls += 1
+        if calls == 1:
+            raise urllib.error.HTTPError(
+                "https://teacher.example.invalid",
+                502,
+                "bad gateway",
+                {},
+                io.BytesIO(),
+            )
+        return _Response(_response())
+
+    result = _client(tmp_path, opener).score_tokens((1, 2), (3, 4))
+
+    assert calls == 2
+    assert result.header["_client_request_attempts"] == 2
+
+
+def test_remote_teacher_does_not_retry_contract_http_status(tmp_path):
+    calls = 0
+
+    def opener(request, timeout):
+        nonlocal calls
+        del request, timeout
+        calls += 1
+        raise urllib.error.HTTPError(
+            "https://teacher.example.invalid",
+            409,
+            "conflict",
+            {},
+            io.BytesIO(),
+        )
+
+    with pytest.raises(RemoteTeacherError, match="HTTP 409 after 1 attempt"):
+        _client(tmp_path, opener).score_tokens((1, 2), (3, 4))
+    assert calls == 1
+
+
+def test_remote_teacher_reports_retry_exhaustion_without_response_body(tmp_path):
+    calls = 0
+
+    def opener(request, timeout):
+        nonlocal calls
+        del request, timeout
+        calls += 1
+        raise urllib.error.HTTPError(
+            "https://teacher.example.invalid",
+            524,
+            "gateway timeout",
+            {},
+            io.BytesIO(b"sensitive upstream body"),
+        )
+
+    with pytest.raises(RemoteTeacherError, match="HTTP 524 after 3 attempts") as exc:
+        _client(tmp_path, opener).score_tokens((1, 2), (3, 4))
+    assert calls == 3
+    assert "sensitive upstream body" not in str(exc.value)
 
 
 def test_profile_loads_only_when_hashes_and_shapes_match(tmp_path):

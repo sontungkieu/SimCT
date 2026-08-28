@@ -565,6 +565,8 @@ def render_training_notebook(
     remote_teacher_tokenizer_relative_path: str | None = None,
     remote_teacher_timeout_s: float = 300.0,
     remote_teacher_max_parallel_requests: int = 4,
+    remote_teacher_max_attempts: int = 3,
+    remote_teacher_retry_backoff_s: float = 2.0,
     profile_step: int = 0,
 ) -> dict[str, Any]:
     """Render a provenance-checked SFT or OPD notebook with durable output.
@@ -656,6 +658,23 @@ def render_training_notebook(
     ):
         raise KaggleModelSourceError(
             "remote_teacher_max_parallel_requests must be a positive integer"
+        )
+    if (
+        isinstance(remote_teacher_max_attempts, bool)
+        or not isinstance(remote_teacher_max_attempts, int)
+        or remote_teacher_max_attempts < 1
+    ):
+        raise KaggleModelSourceError(
+            "remote_teacher_max_attempts must be a positive integer"
+        )
+    if (
+        isinstance(remote_teacher_retry_backoff_s, bool)
+        or not isinstance(remote_teacher_retry_backoff_s, (int, float))
+        or not math.isfinite(float(remote_teacher_retry_backoff_s))
+        or remote_teacher_retry_backoff_s < 0
+    ):
+        raise KaggleModelSourceError(
+            "remote_teacher_retry_backoff_s must be finite and non-negative"
         )
     if remote_teacher_enabled:
         remote_owner, remote_slug = _validate_dataset_source(
@@ -980,12 +999,16 @@ os.environ["VDT_REMOTE_TEACHER_PROFILE_DIR"] = str(REMOTE_TEACHER_PROFILE_ROOT)
 os.environ["VDT_REMOTE_TEACHER_TOKENIZER_DIR"] = str(REMOTE_TEACHER_TOKENIZER_ROOT)
 os.environ["VDT_REMOTE_TEACHER_TIMEOUT_S"] = {str(float(remote_teacher_timeout_s))!r}
 os.environ["VDT_REMOTE_TEACHER_MAX_PARALLEL"] = {str(remote_teacher_max_parallel_requests)!r}
+os.environ["VDT_REMOTE_TEACHER_MAX_ATTEMPTS"] = {str(remote_teacher_max_attempts)!r}
+os.environ["VDT_REMOTE_TEACHER_RETRY_BACKOFF_S"] = {str(float(remote_teacher_retry_backoff_s))!r}
 print("VDT_REMOTE_TEACHER_CONFIG_SUMMARY " + json.dumps({{
     "enabled": True,
+    "max_attempts": {remote_teacher_max_attempts!r},
     "max_parallel_requests": {remote_teacher_max_parallel_requests!r},
     "profile_dataset_source": REMOTE_TEACHER_PROFILE_DATASET_SOURCE,
     "profile_root": str(REMOTE_TEACHER_PROFILE_ROOT),
     "timeout_s": {float(remote_teacher_timeout_s)!r},
+    "retry_backoff_s": {float(remote_teacher_retry_backoff_s)!r},
     "token_file_mode": oct(REMOTE_TEACHER_TOKEN_FILE.stat().st_mode & 0o777),
     "tokenizer_root": str(REMOTE_TEACHER_TOKENIZER_ROOT),
 }}, sort_keys=True))

@@ -217,11 +217,15 @@ class RemoteVLLMTeacherScoreBackend:
         )
         selected_log_probs = np.zeros_like(log_normalizer)
         widths = []
+        request_attempts = []
         for index, stats in enumerate(statistics):
             width = int(stats.hidden_state_bits.shape[0])
             if stats.hidden_state_bits.shape[1] != self.profile.hidden_size:
                 raise RemoteTeacherError("remote teacher hidden size mismatch")
             widths.append(width)
+            request_attempts.append(
+                int(stats.header.get("_client_request_attempts", 1))
+            )
             hidden_bits[index, :width] = stats.hidden_state_bits
             log_normalizer[index, :width] = stats.log_normalizer
             selected_log_probs[index, :width] = stats.selected_log_probs
@@ -274,6 +278,10 @@ class RemoteVLLMTeacherScoreBackend:
             "teacher_tokenize_s": tokenize_s,
             "teacher_remote_network_s": network_s,
             "teacher_remote_projection_s": project_s,
+            "teacher_remote_request_attempts": sum(request_attempts),
+            "teacher_remote_retry_count": sum(
+                max(0, attempts - 1) for attempts in request_attempts
+            ),
             "teacher_forward_s": network_s + project_s,
             "teacher_sequence_required": max(
                 len(row[2]) + len(row[3].token_ids) for row in tokenized

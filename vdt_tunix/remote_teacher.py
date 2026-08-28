@@ -9,6 +9,7 @@ import math
 import os
 import stat
 import struct
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Mapping, Sequence
@@ -19,6 +20,9 @@ from typing import Any
 REMOTE_TEACHER_CONTRACT_VERSION = 1
 REMOTE_TEACHER_CONTENT_TYPE = (
     "application/vnd.vdt.teacher-hidden-stats-v1"
+)
+_RETRYABLE_HTTP_STATUS_CODES = frozenset(
+    {408, 429, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 530}
 )
 
 
@@ -54,6 +58,8 @@ class RemoteTeacherRuntimeConfig:
     tokenizer_dir: Path | None = None
     timeout_s: float = 300.0
     max_parallel_requests: int = 4
+    max_attempts: int = 3
+    retry_backoff_s: float = 2.0
 
     def __post_init__(self) -> None:
         normalized = self.url.rstrip("/")
@@ -87,6 +93,15 @@ class RemoteTeacherRuntimeConfig:
             raise RemoteTeacherError(
                 "remote teacher max_parallel_requests must be positive"
             )
+        if self.max_attempts < 1:
+            raise RemoteTeacherError("remote teacher max_attempts must be positive")
+        if (
+            not math.isfinite(self.retry_backoff_s)
+            or self.retry_backoff_s < 0
+        ):
+            raise RemoteTeacherError(
+                "remote teacher retry_backoff_s must be finite and non-negative"
+            )
 
     @classmethod
     def from_environment(
@@ -112,6 +127,10 @@ class RemoteTeacherRuntimeConfig:
         try:
             timeout = float(values.get("VDT_REMOTE_TEACHER_TIMEOUT_S", "300"))
             parallel = int(values.get("VDT_REMOTE_TEACHER_MAX_PARALLEL", "4"))
+            attempts = int(values.get("VDT_REMOTE_TEACHER_MAX_ATTEMPTS", "3"))
+            retry_backoff = float(
+                values.get("VDT_REMOTE_TEACHER_RETRY_BACKOFF_S", "2")
+            )
         except ValueError as exc:
             raise RemoteTeacherError(
                 "remote teacher timeout/parallel settings are invalid"
@@ -127,6 +146,8 @@ class RemoteTeacherRuntimeConfig:
             ),
             timeout_s=timeout,
             max_parallel_requests=parallel,
+            max_attempts=attempts,
+            retry_backoff_s=retry_backoff,
         )
 
 
@@ -375,7 +396,11 @@ class RemoteTeacherClient:
         self._authorization = "Bearer " + token
         self._opener = opener or urllib.request.urlopen
 
-    def _request(self, path: str, payload: Mapping[str, Any] | None = None) -> tuple[bytes, str]:
+    def _request(
+        self,
+        path: str,
+        payload: Mapping[str, Any] | None = None,
+    ) -> tuple[bytes, str, int]:
         data = None if payload is None else json.dumps(payload).encode("utf-8")
         headers = {"Authorization": self._authorization}
         if data is not None:
@@ -386,18 +411,34 @@ class RemoteTeacherClient:
             headers=headers,
             method="POST" if data is not None else "GET",
         )
-        try:
-            with self._opener(request, timeout=self.runtime.timeout_s) as response:
-                body = response.read()
-                content_type = response.headers.get("Content-Type", "")
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            raise RemoteTeacherError(
-                f"remote teacher request failed: {type(exc).__name__}"
-            ) from exc
-        return body, content_type
+        for attempt in range(1, self.runtime.max_attempts + 1):
+            try:
+                with self._opener(
+                    request, timeout=self.runtime.timeout_s
+                ) as response:
+                    body = response.read()
+                    content_type = response.headers.get("Content-Type", "")
+                return body, content_type, attempt
+            except urllib.error.HTTPError as exc:
+                retryable = exc.code in _RETRYABLE_HTTP_STATUS_CODES
+                if not retryable or attempt == self.runtime.max_attempts:
+                    raise RemoteTeacherError(
+                        "remote teacher request failed: "
+                        f"HTTP {exc.code} after {attempt} attempts"
+                    ) from exc
+            except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                if attempt == self.runtime.max_attempts:
+                    raise RemoteTeacherError(
+                        "remote teacher request failed: "
+                        f"{type(exc).__name__} after {attempt} attempts"
+                    ) from exc
+            delay = self.runtime.retry_backoff_s * (2 ** (attempt - 1))
+            if delay:
+                time.sleep(delay)
+        raise AssertionError("remote teacher retry loop exhausted unexpectedly")
 
     def health(self) -> Mapping[str, Any]:
-        body, _ = self._request("/v1/vdt/teacher/health")
+        body, _, _ = self._request("/v1/vdt/teacher/health")
         try:
             result = json.loads(body)
         except json.JSONDecodeError as exc:
@@ -423,7 +464,7 @@ class RemoteTeacherClient:
     ) -> TeacherHiddenStats:
         prompt = tuple(int(value) for value in prompt_token_ids)
         completion = tuple(int(value) for value in completion_token_ids)
-        body, content_type = self._request(
+        body, content_type, attempts = self._request(
             "/v1/vdt/teacher/hidden-stats",
             {
                 "prompt_token_ids": prompt,
@@ -432,7 +473,7 @@ class RemoteTeacherClient:
                 "profile_teacher_ids_sha256": self.profile.teacher_ids_sha256,
             },
         )
-        return parse_hidden_stats_response(
+        result = parse_hidden_stats_response(
             body,
             content_type=content_type,
             model_id=self.profile.model_id,
@@ -441,4 +482,8 @@ class RemoteTeacherClient:
             profile_teacher_ids_sha256=self.profile.teacher_ids_sha256,
             prompt_token_ids=prompt,
             completion_token_ids=completion,
+        )
+        return dataclasses.replace(
+            result,
+            header={**result.header, "_client_request_attempts": attempts},
         )

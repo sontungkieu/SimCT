@@ -455,6 +455,8 @@ def test_training_renderer_can_use_remote_teacher_without_teacher_model_mount():
         remote_teacher_tokenizer_relative_path="tokenizer",
         remote_teacher_timeout_s=600.0,
         remote_teacher_max_parallel_requests=2,
+        remote_teacher_max_attempts=3,
+        remote_teacher_retry_backoff_s=2.0,
     )
     source = "".join(
         "".join(cell.get("source", [])) for cell in notebook["cells"]
@@ -469,6 +471,8 @@ def test_training_renderer_can_use_remote_teacher_without_teacher_model_mount():
     assert 'REMOTE_TEACHER_SECRET_DIR.mkdir(mode=0o700' in source
     assert 'REMOTE_TEACHER_TOKEN_FILE.chmod(0o600)' in source
     assert 'os.environ["VDT_REMOTE_TEACHER_MAX_PARALLEL"] = \'2\'' in source
+    assert 'os.environ["VDT_REMOTE_TEACHER_MAX_ATTEMPTS"] = \'3\'' in source
+    assert 'os.environ["VDT_REMOTE_TEACHER_RETRY_BACKOFF_S"] = \'2.0\'' in source
     assert "required_remote_teacher_files" in source
     for index, cell in enumerate(notebook["cells"]):
         if cell["cell_type"] == "code":
