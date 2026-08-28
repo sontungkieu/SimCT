@@ -451,8 +451,8 @@ def test_training_renderer_can_use_remote_teacher_without_teacher_model_mount():
         remote_teacher_profile_dataset_source=(
             "testowner/remote-teacher-profile-v1"
         ),
-        remote_teacher_profile_relative_path="profile",
-        remote_teacher_tokenizer_relative_path="profile/tokenizer",
+        remote_teacher_profile_relative_path=".",
+        remote_teacher_tokenizer_relative_path="tokenizer",
         remote_teacher_timeout_s=600.0,
         remote_teacher_max_parallel_requests=2,
     )
@@ -513,8 +513,8 @@ def test_training_input_cell_resolves_remote_teacher_profile_dataset(
         remote_teacher_profile_dataset_source=(
             "testowner/remote-teacher-profile-v1"
         ),
-        remote_teacher_profile_relative_path="profile",
-        remote_teacher_tokenizer_relative_path="profile/tokenizer",
+        remote_teacher_profile_relative_path=".",
+        remote_teacher_tokenizer_relative_path="tokenizer",
     )
     source = next(
         "".join(cell.get("source", []))
@@ -555,7 +555,6 @@ def test_training_input_cell_resolves_remote_teacher_profile_dataset(
         / "remote-teacher-profile-v1"
         / "versions"
         / "1"
-        / "profile"
     )
     tokenizer_root = profile_root / "tokenizer"
     tokenizer_root.mkdir(parents=True)

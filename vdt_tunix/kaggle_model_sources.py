@@ -528,9 +528,18 @@ def _validate_dataset_source(source: str, context: str) -> tuple[str, str]:
     return owner, slug
 
 
-def _safe_relative_path(value: str, context: str) -> PurePosixPath:
+def _safe_relative_path(
+    value: str,
+    context: str,
+    *,
+    allow_root: bool = False,
+) -> PurePosixPath:
     path = PurePosixPath(value)
-    if path.is_absolute() or ".." in path.parts or path == PurePosixPath("."):
+    if (
+        path.is_absolute()
+        or ".." in path.parts
+        or (path == PurePosixPath(".") and not allow_root)
+    ):
         raise KaggleModelSourceError(f"{context} must stay inside its input root")
     return path
 
@@ -656,6 +665,7 @@ def render_training_notebook(
         remote_profile_relative = _safe_relative_path(
             str(remote_teacher_profile_relative_path),
             "remote_teacher_profile_relative_path",
+            allow_root=True,
         )
         remote_tokenizer_relative = _safe_relative_path(
             str(remote_teacher_tokenizer_relative_path),
