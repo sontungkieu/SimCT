@@ -90,6 +90,13 @@ def build_matrix(baseline: RunConfig) -> dict[str, dict]:
             serialized = json.loads(json.dumps(configured.to_dict()))
             if serialized["training"].get("seed") is None:
                 serialized["training"].pop("seed", None)
+            for optional_buckets in (
+                "student_sequence_buckets",
+                "student_completion_buckets",
+                "alignment_unit_buckets",
+            ):
+                if not serialized["training"].get(optional_buckets):
+                    serialized["training"].pop(optional_buckets, None)
             if serialized["training"].get("teacher_scoring_mode") == "dense":
                 serialized["training"].pop("teacher_scoring_mode", None)
             result[name] = serialized

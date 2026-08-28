@@ -40,12 +40,18 @@ def test_performance_controls_are_opt_in_and_part_of_identity(config_payload):
     payload["training"].update(
         {
             "teacher_sequence_buckets": [128, 256, 512],
+            "student_sequence_buckets": [128, 256, 512],
+            "student_completion_buckets": [64, 128, 256],
+            "alignment_unit_buckets": [32, 64, 128],
             "alignment_bucket_size": 64,
             "synchronize_phase_timings": True,
         }
     )
     configured = RunConfig.from_mapping(payload)
     assert configured.training.teacher_sequence_buckets == (128, 256, 512)
+    assert configured.training.student_sequence_buckets == (128, 256, 512)
+    assert configured.training.student_completion_buckets == (64, 128, 256)
+    assert configured.training.alignment_unit_buckets == (32, 64, 128)
     assert configured.training.alignment_bucket_size == 64
     assert configured.training.synchronize_phase_timings
     assert configured.digest() != legacy.digest()

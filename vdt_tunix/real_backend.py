@@ -57,6 +57,7 @@ class _LoadedTunixModel:
     forward_cached_statistics_fn: Any | None = None
     forward_hidden_fn: Any | None = None
     project_shared_fn: Any | None = None
+    project_selected_statistics_fn: Any | None = None
 
 
 def _reduce_teacher_step_statistics(
@@ -278,6 +279,96 @@ def _project_gemma_shared_logits(
     if softcap is not None:
         shared = jnp_module.tanh(shared / float(softcap)) * float(softcap)
     return jax_module.lax.optimization_barrier(shared)
+
+
+def _project_gemma_selected_statistics(
+    module: Any,
+    hidden_state: Any,
+    token_ids: Any,
+    *,
+    jax_module: Any,
+    jnp_module: Any,
+    vocabulary_block_size: int = 4096,
+) -> tuple[Any, Any]:
+    """Return exact selected log-probs and full-vocabulary normalizers.
+
+    Gemma ties its language-model head to the input embedding. Scanning that
+    matrix in fixed vocabulary blocks preserves the exact softcapped logits
+    and gradients while avoiding a persistent ``batch x token x vocabulary``
+    allocation during the SimCT student reverse pass.
+    """
+
+    if vocabulary_block_size < 1:
+        raise RealBackendUnavailable(
+            "Gemma vocabulary projection block size must be positive"
+        )
+    try:
+        vocabulary_rows = module.embedder.input_embedding.value
+    except AttributeError as exc:
+        raise RealBackendUnavailable(
+            "SimCT hidden projection requires Gemma tied embedding weights"
+        ) from exc
+    hidden = jnp_module.asarray(hidden_state, dtype=vocabulary_rows.dtype)
+    labels = jnp_module.asarray(token_ids, dtype=jnp_module.int32)
+    if hidden.shape[:-1] != labels.shape:
+        raise RealBackendUnavailable(
+            "Gemma hidden states and selected token IDs must match"
+        )
+    vocabulary_size = int(vocabulary_rows.shape[0])
+    block_count = math.ceil(vocabulary_size / vocabulary_block_size)
+    padded_size = block_count * vocabulary_block_size
+    padded_rows = jnp_module.pad(
+        vocabulary_rows,
+        ((0, padded_size - vocabulary_size), (0, 0)),
+    )
+    hidden = jax_module.lax.optimization_barrier(hidden)
+    softcap = getattr(module, "final_logits_softcap", None)
+
+    selected_rows = jnp_module.asarray(vocabulary_rows[labels])
+    selected_logits = jnp_module.sum(hidden * selected_rows, axis=-1).astype(
+        jnp_module.float32
+    )
+    if softcap is not None:
+        selected_logits = (
+            jnp_module.tanh(selected_logits / float(softcap)) * float(softcap)
+        )
+
+    def scan_block(log_normalizer: Any, block_index: Any):
+        start = block_index * vocabulary_block_size
+        rows = jax_module.lax.dynamic_slice_in_dim(
+            padded_rows,
+            start,
+            vocabulary_block_size,
+            axis=0,
+        )
+        rows = jax_module.lax.optimization_barrier(rows)
+        block_logits = jnp_module.einsum(
+            "...d,od->...o", hidden, rows
+        ).astype(jnp_module.float32)
+        if softcap is not None:
+            block_logits = (
+                jnp_module.tanh(block_logits / float(softcap)) * float(softcap)
+            )
+        valid = (
+            jnp_module.arange(vocabulary_block_size, dtype=jnp_module.int32)
+            + start
+            < vocabulary_size
+        )
+        block_logits = jnp_module.where(valid, block_logits, -jnp_module.inf)
+        block_logits = jax_module.lax.optimization_barrier(block_logits)
+        block_normalizer = jax_module.scipy.special.logsumexp(
+            block_logits, axis=-1
+        )
+        return jnp_module.logaddexp(log_normalizer, block_normalizer), None
+
+    initial = jnp_module.full(labels.shape, -jnp_module.inf, dtype=jnp_module.float32)
+    log_normalizer, _ = jax_module.lax.scan(
+        jax_module.checkpoint(scan_block),
+        initial,
+        jnp_module.arange(block_count, dtype=jnp_module.int32),
+        unroll=1,
+    )
+    return selected_logits - log_normalizer, log_normalizer
 
 
 def _configure_qwen_compute_dtype(
@@ -874,6 +965,24 @@ def _production_dependencies(config: RunConfig) -> ModelRuntimeDependencies:
                 jnp_module=jnp,
             )
 
+        def project_selected_statistics_fn(
+            module: Any,
+            hidden_state: Any,
+            token_ids: Any,
+        ):
+            if model_family != "gemma2":
+                raise RealBackendUnavailable(
+                    "bounded SimCT hidden projection currently supports "
+                    "a Gemma 2 student only"
+                )
+            return _project_gemma_selected_statistics(
+                module,
+                hidden_state,
+                token_ids,
+                jax_module=jax,
+                jnp_module=jnp,
+            )
+
         @nnx.jit
         def forward_statistics_fn(
             module: Any,
@@ -965,6 +1074,7 @@ def _production_dependencies(config: RunConfig) -> ModelRuntimeDependencies:
             forward_cached_statistics_fn=forward_cached_statistics_fn,
             forward_hidden_fn=forward_hidden_fn,
             project_shared_fn=project_shared_fn,
+            project_selected_statistics_fn=project_selected_statistics_fn,
         )
 
     def forward_model(

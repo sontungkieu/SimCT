@@ -373,6 +373,9 @@ class TrainingConfig:
     learning_rate: float
     seed: int | None = None
     teacher_sequence_buckets: tuple[int, ...] = ()
+    student_sequence_buckets: tuple[int, ...] = ()
+    student_completion_buckets: tuple[int, ...] = ()
+    alignment_unit_buckets: tuple[int, ...] = ()
     alignment_bucket_size: int | None = None
     synchronize_phase_timings: bool = False
     max_steps_unit: str = "trainer_call"
@@ -386,16 +389,21 @@ class TrainingConfig:
             raise ConfigError("training.learning_rate must be positive and finite")
         if self.seed is not None and self.seed < 0:
             raise ConfigError("training.seed must be non-negative")
-        if any(value < 1 for value in self.teacher_sequence_buckets):
-            raise ConfigError(
-                "training.teacher_sequence_buckets must contain positive integers"
-            )
-        if tuple(sorted(set(self.teacher_sequence_buckets))) != (
-            self.teacher_sequence_buckets
+        for name in (
+            "teacher_sequence_buckets",
+            "student_sequence_buckets",
+            "student_completion_buckets",
+            "alignment_unit_buckets",
         ):
-            raise ConfigError(
-                "training.teacher_sequence_buckets must be strictly increasing"
-            )
+            buckets = getattr(self, name)
+            if any(value < 1 for value in buckets):
+                raise ConfigError(
+                    f"training.{name} must contain positive integers"
+                )
+            if tuple(sorted(set(buckets))) != buckets:
+                raise ConfigError(
+                    f"training.{name} must be strictly increasing"
+                )
         if self.alignment_bucket_size is not None and self.alignment_bucket_size < 1:
             raise ConfigError("training.alignment_bucket_size must be positive")
         if self.max_steps_unit not in {"trainer_call", "optimizer_update"}:
@@ -425,19 +433,30 @@ class TrainingConfig:
             optional={
                 "seed",
                 "teacher_sequence_buckets",
+                "student_sequence_buckets",
+                "student_completion_buckets",
+                "alignment_unit_buckets",
                 "alignment_bucket_size",
                 "synchronize_phase_timings",
                 "max_steps_unit",
                 "teacher_scoring_mode",
             },
         )
-        bucket_values = raw.get("teacher_sequence_buckets") or []
-        if not isinstance(bucket_values, (list, tuple)):
-            raise ConfigError("training.teacher_sequence_buckets must be an array")
-        buckets = tuple(
-            _integer(value, f"training.teacher_sequence_buckets[{index}]")
-            for index, value in enumerate(bucket_values)
+        def parse_buckets(name: str) -> tuple[int, ...]:
+            bucket_values = raw.get(name) or []
+            if not isinstance(bucket_values, (list, tuple)):
+                raise ConfigError(f"training.{name} must be an array")
+            return tuple(
+                _integer(value, f"training.{name}[{index}]")
+                for index, value in enumerate(bucket_values)
+            )
+
+        teacher_buckets = parse_buckets("teacher_sequence_buckets")
+        student_sequence_buckets = parse_buckets("student_sequence_buckets")
+        student_completion_buckets = parse_buckets(
+            "student_completion_buckets"
         )
+        alignment_unit_buckets = parse_buckets("alignment_unit_buckets")
         alignment_bucket_size = raw.get("alignment_bucket_size")
         synchronize_phase_timings = raw.get("synchronize_phase_timings", False)
         if not isinstance(synchronize_phase_timings, bool):
@@ -457,7 +476,10 @@ class TrainingConfig:
                 if raw.get("seed") is None
                 else _integer(raw["seed"], "training.seed")
             ),
-            teacher_sequence_buckets=buckets,
+            teacher_sequence_buckets=teacher_buckets,
+            student_sequence_buckets=student_sequence_buckets,
+            student_completion_buckets=student_completion_buckets,
+            alignment_unit_buckets=alignment_unit_buckets,
             alignment_bucket_size=(
                 None
                 if alignment_bucket_size is None
@@ -693,6 +715,12 @@ class RunConfig:
             payload["training"].pop("seed", None)
         if not self.training.teacher_sequence_buckets:
             payload["training"].pop("teacher_sequence_buckets", None)
+        if not self.training.student_sequence_buckets:
+            payload["training"].pop("student_sequence_buckets", None)
+        if not self.training.student_completion_buckets:
+            payload["training"].pop("student_completion_buckets", None)
+        if not self.training.alignment_unit_buckets:
+            payload["training"].pop("alignment_unit_buckets", None)
         if self.training.alignment_bucket_size is None:
             payload["training"].pop("alignment_bucket_size", None)
         if not self.training.synchronize_phase_timings:

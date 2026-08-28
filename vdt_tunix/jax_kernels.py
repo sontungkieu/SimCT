@@ -343,6 +343,199 @@ def paper_simct_aligned_batch_loss_from_teacher_statistics(
     return numerator / jnp.maximum(denominator, 1.0)
 
 
+def paper_simct_aligned_batch_loss_from_hidden_projection(
+    student_position_hidden: Any,
+    student_token_ids: Any,
+    teacher_shared_log_probs: Any,
+    teacher_selected_log_probs: Any,
+    segment_bounds: Any,
+    segment_mask: Any,
+    span_mask: Any,
+    project_shared_logits: Any,
+    project_selected_statistics: Any,
+    *,
+    temperature: float = 1.0,
+    normalizer: Any | None = None,
+    block_size: int = 8,
+) -> Any:
+    """Memory-bounded exact SimCT loss from student hidden states.
+
+    The student full-vocabulary normalizer is computed by the supplied model
+    projection callback without retaining a ``batch x token x vocabulary``
+    tensor. Alignment units are then scanned in small blocks, so the much
+    narrower shared-vocabulary projection is consumed immediately. Both
+    callbacks remain differentiable; this preserves gradients through the
+    hidden states, selected rows, shared rows, and every vocabulary row that
+    contributes to the exact normalization.
+    """
+
+    jax, jnp = _jax_modules()
+    hidden = jnp.asarray(student_position_hidden)
+    labels = jnp.asarray(student_token_ids)
+    teacher_shared = jax.lax.stop_gradient(
+        jnp.asarray(teacher_shared_log_probs, dtype=jnp.float32)
+    )
+    teacher_selected = jax.lax.stop_gradient(
+        jnp.asarray(teacher_selected_log_probs, dtype=jnp.float32)
+    )
+    bounds = jnp.asarray(segment_bounds)
+    units = jnp.asarray(segment_mask, dtype=jnp.float32)
+    spans = jnp.asarray(span_mask, dtype=bool)
+
+    _require_rank("student_position_hidden", hidden, 3)
+    _require_rank("student_token_ids", labels, 2)
+    _require_rank("teacher_shared_log_probs", teacher_shared, 3)
+    _require_rank("teacher_selected_log_probs", teacher_selected, 2)
+    _require_rank("segment_bounds", bounds, 3)
+    _require_rank("segment_mask", units, 2)
+    _require_rank("span_mask", spans, 2)
+    if hidden.shape[:2] != labels.shape:
+        raise ValueError("student hidden states and token IDs must match")
+    if teacher_shared.shape[:2] != teacher_selected.shape:
+        raise ValueError("teacher sufficient-statistic shapes mismatch")
+    if teacher_shared.shape[-1] < 1:
+        raise ValueError("SimCT requires at least one shared-vocabulary token")
+    if bounds.shape[:2] != units.shape or units.shape != spans.shape:
+        raise ValueError("segment bounds and masks must share batch/unit axes")
+    if bounds.shape[-1] != 4:
+        raise ValueError("segment_bounds must end in four interval coordinates")
+    if not isinstance(temperature, (int, float)) or temperature <= 0.0:
+        raise ValueError("temperature must be positive")
+    if not isinstance(block_size, int) or block_size <= 0:
+        raise ValueError("SimCT projection block_size must be positive")
+
+    student_selected, student_log_normalizer = project_selected_statistics(
+        hidden, labels
+    )
+    student_selected = jnp.asarray(student_selected, dtype=jnp.float32)
+    student_log_normalizer = jnp.asarray(
+        student_log_normalizer, dtype=jnp.float32
+    )
+    if student_selected.shape != labels.shape:
+        raise ValueError("student selected log-probability shape mismatch")
+    if student_log_normalizer.shape != labels.shape:
+        raise ValueError("student log-normalizer shape mismatch")
+
+    ts, te, ss, se = (bounds[..., index] for index in range(4))
+    padding = (-int(bounds.shape[1])) % block_size
+
+    def pad_units(value: Any, *, constant: Any = 0) -> Any:
+        return jnp.pad(
+            value,
+            ((0, 0), (0, padding)),
+            mode="constant",
+            constant_values=constant,
+        )
+
+    blocks = tuple(
+        jnp.swapaxes(
+            pad_units(value, constant=constant).reshape(
+                bounds.shape[0], -1, block_size
+            ),
+            0,
+            1,
+        )
+        for value, constant in (
+            (ts, 0),
+            (te, 0),
+            (ss, 0),
+            (se, 0),
+            (units, 0),
+            (spans, False),
+        )
+    )
+    batch = jnp.arange(bounds.shape[0], dtype=jnp.int32)[:, None]
+
+    def interval_prefix(selected: Any) -> Any:
+        return jnp.pad(jnp.cumsum(selected, axis=-1), ((0, 0), (1, 0)))
+
+    student_prefix = interval_prefix(student_selected)
+    teacher_prefix = interval_prefix(teacher_selected)
+
+    def scan_block(
+        numerator: Any,
+        block: tuple[Any, Any, Any, Any, Any, Any],
+    ):
+        teacher_starts, teacher_ends, student_starts, student_ends, active, is_span = block
+
+        def active_numerator(_: None) -> Any:
+            hidden_at_prefix = hidden[batch, student_starts]
+            student_shared_logits = project_shared_logits(hidden_at_prefix)
+            if student_shared_logits.shape[-1] != teacher_shared.shape[-1]:
+                raise ValueError(
+                    "student projected and teacher shared widths mismatch"
+                )
+            student_shared_scores = (
+                student_shared_logits.astype(jnp.float32)
+                - student_log_normalizer[batch, student_starts][..., None]
+            )
+            teacher_shared_scores = teacher_shared[batch, teacher_starts]
+
+            student_span_total = (
+                student_prefix[batch, student_ends]
+                - student_prefix[batch, student_starts]
+            )
+            teacher_span_total = (
+                teacher_prefix[batch, teacher_ends]
+                - teacher_prefix[batch, teacher_starts]
+            )
+            student_width = jnp.maximum(student_ends - student_starts, 1)
+            teacher_width = jnp.maximum(teacher_ends - teacher_starts, 1)
+            inactive = jnp.asarray(-1.0e30, dtype=jnp.float32)
+            student_span_scores = jnp.where(
+                is_span,
+                student_span_total / student_width.astype(jnp.float32),
+                inactive,
+            )
+            teacher_span_scores = jnp.where(
+                is_span,
+                teacher_span_total / teacher_width.astype(jnp.float32),
+                inactive,
+            )
+            student_scores = jnp.concatenate(
+                (student_shared_scores, student_span_scores[..., None]),
+                axis=-1,
+            )
+            teacher_scores = jnp.concatenate(
+                (teacher_shared_scores, teacher_span_scores[..., None]),
+                axis=-1,
+            )
+            student_log_q = jax.nn.log_softmax(
+                student_scores / float(temperature), axis=-1
+            )
+            teacher_log_q = jax.lax.stop_gradient(
+                jax.nn.log_softmax(
+                    teacher_scores / float(temperature), axis=-1
+                )
+            )
+            row_kl = jnp.sum(
+                jnp.exp(student_log_q) * (student_log_q - teacher_log_q),
+                axis=-1,
+            )
+            return jnp.sum(row_kl * active)
+
+        block_numerator = jax.lax.cond(
+            jnp.any(active > 0),
+            active_numerator,
+            lambda _: jnp.asarray(0.0, dtype=jnp.float32),
+            operand=None,
+        )
+        return numerator + block_numerator, None
+
+    numerator, _ = jax.lax.scan(
+        jax.checkpoint(scan_block),
+        jnp.asarray(0.0, dtype=jnp.float32),
+        blocks,
+        unroll=1,
+    )
+    denominator = (
+        jnp.sum(units)
+        if normalizer is None
+        else jnp.asarray(normalizer, dtype=jnp.float32)
+    )
+    return numerator / jnp.maximum(denominator, 1.0)
+
+
 def paper_simct_aligned_batch_loss(
     student_position_logits: Any,
     student_token_ids: Any,

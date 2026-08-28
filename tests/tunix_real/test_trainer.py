@@ -237,8 +237,19 @@ def _config():
     )
 
 
-def test_paper_trainer_executes_real_gradient_update():
-    config = _config()
+@pytest.mark.parametrize(
+    ("student_sequence_buckets", "expected_sequence_bucket"),
+    [(None, 5), ([4, 5], 4)],
+)
+def test_paper_trainer_executes_real_gradient_update(
+    student_sequence_buckets, expected_sequence_bucket
+):
+    payload = _config().to_dict()
+    if student_sequence_buckets is not None:
+        payload["training"]["student_sequence_buckets"] = (
+            student_sequence_buckets
+        )
+    config = RunConfig.from_mapping(payload)
     student_tokenizer = TokenizerByteAdapter(
         PieceTokenizer({0: "", 1: "", 2: "P:", 3: "ha", 4: "pp", 5: "y"}),
         config.student,
@@ -256,11 +267,30 @@ def test_paper_trainer_executes_real_gradient_update():
         logits, _ = module(input_ids)
         return logits
 
+    @nnx.jit
+    def forward_hidden_fn(module, input_ids, positions, segments):
+        return forward_fn(module, input_ids, positions, segments)
+
+    def project_shared_fn(module, hidden, overlap_ids):
+        del module
+        return jnp.take(hidden, overlap_ids, axis=-1)
+
+    def project_selected_statistics_fn(module, hidden, token_ids):
+        del module
+        log_normalizer = jax.scipy.special.logsumexp(hidden, axis=-1)
+        selected_logits = jnp.take_along_axis(
+            hidden, token_ids[..., None], axis=-1
+        )[..., 0]
+        return selected_logits - log_normalizer, log_normalizer
+
     loaded = _LoadedTunixModel(
         model=model,
         mesh=mesh,
         forward_fn=forward_fn,
         model_config=SimpleNamespace(num_layers=1, num_kv_heads=1, head_dim=1),
+        forward_hidden_fn=forward_hidden_fn,
+        project_shared_fn=project_shared_fn,
+        project_selected_statistics_fn=project_selected_statistics_fn,
     )
     student_adapter = SimpleNamespace(
         tokenizer=student_tokenizer,
@@ -281,6 +311,8 @@ def test_paper_trainer_executes_real_gradient_update():
     assert metrics.loss > 0.0
     assert metrics.gradient_norm > 0.0
     assert metrics.aligned_spans == 1
+    assert metrics.student_sequence_bucket == expected_sequence_bucket
+    assert metrics.student_completion_bucket == 3
     assert not bool(jnp.allclose(before, after))
 
 

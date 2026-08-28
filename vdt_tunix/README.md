@@ -87,6 +87,17 @@ restores also use Tunix decoder-layer rematerialization so the reverse pass
 recomputes each decoder layer instead of retaining full-sequence attention
 intermediates from every layer; frozen teacher execution is unchanged.
 
+The SimCT update now uses the same hidden-state forward path, but preserves its
+paper-math full-vocabulary normalization exactly: selected token rows are
+projected directly, the Gemma vocabulary is reduced in rematerialized blocks,
+and aligned units are consumed in small blocks. This avoids retaining a
+`batch x completion x vocabulary` student-logit tensor without using top-k,
+quantization, truncation, or a changed divergence. Optional
+`student_sequence_buckets`, `student_completion_buckets`, and
+`alignment_unit_buckets` choose the smallest configured static shape that
+contains each real batch. When those arrays are absent, the prior fixed
+maximum shapes remain in force, preventing accidental recompilation churn.
+
 ## Kaggle v5e-8 canary
 
 Replace every placeholder in the example config, then invoke:

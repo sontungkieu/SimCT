@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,6 +17,7 @@ from vdt_span.scoring import (
 from vdt_tunix.jax_kernels import (
     candidate_log_probs,
     paper_simct_aligned_batch_loss,
+    paper_simct_aligned_batch_loss_from_hidden_projection,
     paper_simct_aligned_batch_loss_from_teacher_statistics,
     paper_candidate_scores,
     paper_simct_reverse_kl,
@@ -25,6 +27,7 @@ from vdt_tunix.jax_kernels import (
     paper_teacher_sufficient_statistics,
     reverse_kl_loss_and_student_score_gradient,
 )
+from vdt_tunix.real_backend import _project_gemma_selected_statistics
 
 
 def _python_log_softmax(row):
@@ -222,6 +225,135 @@ def test_teacher_sufficient_statistics_preserve_exact_aligned_loss():
     assert teacher_shared.shape == (1, 2, 2)
     assert teacher_selected.shape == (1, 2)
     assert float(observed) == pytest.approx(float(expected), abs=1e-6)
+
+
+def test_blocked_hidden_simct_matches_full_logits_and_gradient():
+    hidden = jnp.asarray(
+        [[[1.0, 0.0], [0.5, 1.0], [-1.0, 2.0]]]
+    )
+    head = jnp.asarray(
+        [[1.0, 0.0], [0.0, 1.0], [1.0, -1.0], [-0.5, 0.25]]
+    )
+    labels = jnp.asarray([[1, 2, 3]])
+    teacher_logits = jnp.asarray(
+        [[[0.0, 2.0, -1.0, 1.0, 0.5], [2.0, 0.0, 1.0, -1.0, 0.2]]]
+    )
+    teacher_labels = jnp.asarray([[1, 4]])
+    student_overlap = jnp.asarray([0, 3])
+    teacher_overlap = jnp.asarray([1, 4])
+    bounds = jnp.asarray([[[0, 1, 0, 2], [1, 2, 2, 3]]])
+    unit_mask = jnp.asarray([[1.0, 1.0]])
+    span_mask = jnp.asarray([[True, False]])
+    teacher_shared, teacher_selected = paper_teacher_sufficient_statistics(
+        teacher_logits,
+        teacher_labels,
+        teacher_overlap,
+    )
+
+    def full_loss(hidden_values, head_values):
+        logits = jnp.einsum("btd,vd->btv", hidden_values, head_values)
+        return paper_simct_aligned_batch_loss_from_teacher_statistics(
+            logits,
+            labels,
+            teacher_shared,
+            teacher_selected,
+            student_overlap,
+            bounds,
+            unit_mask,
+            span_mask,
+        )
+
+    def blocked_loss(hidden_values, head_values):
+        def selected_statistics(block, block_labels):
+            logits = jnp.einsum("btd,vd->btv", block, head_values)
+            log_normalizer = jax.scipy.special.logsumexp(logits, axis=-1)
+            selected_logits = jnp.take_along_axis(
+                logits, block_labels[..., None], axis=-1
+            )[..., 0]
+            return selected_logits - log_normalizer, log_normalizer
+
+        return paper_simct_aligned_batch_loss_from_hidden_projection(
+            hidden_values,
+            labels,
+            teacher_shared,
+            teacher_selected,
+            bounds,
+            unit_mask,
+            span_mask,
+            lambda block: jnp.einsum(
+                "...d,od->...o", block, head_values[student_overlap]
+            ),
+            selected_statistics,
+            block_size=1,
+        )
+
+    expected = full_loss(hidden, head)
+    observed = blocked_loss(hidden, head)
+    expected_gradients = jax.grad(full_loss, argnums=(0, 1))(hidden, head)
+    observed_gradients = jax.grad(blocked_loss, argnums=(0, 1))(hidden, head)
+
+    assert float(observed) == pytest.approx(float(expected), abs=1e-6)
+    for observed_gradient, expected_gradient in zip(
+        observed_gradients, expected_gradients, strict=True
+    ):
+        assert bool(jnp.allclose(observed_gradient, expected_gradient, atol=1e-6))
+
+
+def test_blocked_gemma_normalizer_matches_exact_softcapped_head_and_gradient():
+    hidden = jnp.asarray(
+        [[[1.0, -0.5], [0.25, 2.0]]], dtype=jnp.float32
+    )
+    weight = jnp.asarray(
+        [
+            [1.0, 0.0],
+            [0.0, 1.0],
+            [1.5, -0.5],
+            [-1.0, 2.0],
+            [0.25, 0.75],
+        ],
+        dtype=jnp.float32,
+    )
+    labels = jnp.asarray([[2, 4]], dtype=jnp.int32)
+
+    def blocked_loss(hidden_values, weight_values):
+        module = SimpleNamespace(
+            embedder=SimpleNamespace(
+                input_embedding=SimpleNamespace(value=weight_values)
+            ),
+            final_logits_softcap=2.0,
+        )
+        selected, normalizer = _project_gemma_selected_statistics(
+            module,
+            hidden_values,
+            labels,
+            jax_module=jax,
+            jnp_module=jnp,
+            vocabulary_block_size=2,
+        )
+        return jnp.sum(selected) + 0.125 * jnp.sum(normalizer)
+
+    def full_loss(hidden_values, weight_values):
+        logits = jnp.einsum("btd,vd->btv", hidden_values, weight_values)
+        logits = jnp.tanh(logits / 2.0) * 2.0
+        normalizer = jax.scipy.special.logsumexp(logits, axis=-1)
+        selected_logits = jnp.take_along_axis(
+            logits, labels[..., None], axis=-1
+        )[..., 0]
+        selected = selected_logits - normalizer
+        return jnp.sum(selected) + 0.125 * jnp.sum(normalizer)
+
+    expected = full_loss(hidden, weight)
+    observed = blocked_loss(hidden, weight)
+    expected_gradients = jax.grad(full_loss, argnums=(0, 1))(hidden, weight)
+    observed_gradients = jax.grad(blocked_loss, argnums=(0, 1))(
+        hidden, weight
+    )
+
+    assert float(observed) == pytest.approx(float(expected), abs=1e-6)
+    for observed_gradient, expected_gradient in zip(
+        observed_gradients, expected_gradients, strict=True
+    ):
+        assert bool(jnp.allclose(observed_gradient, expected_gradient, atol=1e-6))
 
 
 def test_aligned_batch_loss_stops_teacher_gradient_and_uses_padding_mask():

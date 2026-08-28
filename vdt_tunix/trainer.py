@@ -15,7 +15,7 @@ from vdt_tunix.contracts import (
     TeacherScoreRequest,
 )
 from vdt_tunix.jax_kernels import (
-    paper_simct_aligned_batch_loss_from_teacher_statistics,
+    paper_simct_aligned_batch_loss_from_hidden_projection,
     paper_simple_opd_aligned_batch_loss_from_hidden_projection,
     paper_teacher_sufficient_statistics,
 )
@@ -71,6 +71,8 @@ class PreparedSimCTBatch:
     teacher_completion_bucket: int = 0
     teacher_joint_boundary_records: int = 0
     teacher_causal_split_records: int = 0
+    student_sequence_bucket: int = 0
+    student_completion_bucket: int = 0
     alignment_bucket: int = 0
     actual_prompt_tokens: int = 0
     actual_completion_tokens: int = 0
@@ -109,6 +111,8 @@ class UpdateMetrics:
     teacher_completion_bucket: int = 0
     teacher_joint_boundary_records: int = 0
     teacher_causal_split_records: int = 0
+    student_sequence_bucket: int = 0
+    student_completion_bucket: int = 0
     alignment_bucket: int = 0
     shape_signature: int = 0
     shape_signature_changed: int = 0
@@ -330,13 +334,60 @@ def prepare_simct_batch(
     padded_teacher_selected = _pad_device_rows(
         teacher_selected_scores, teacher_width, jnp
     )
-    bounds, unit_mask, spans = pad_layouts(
-        layouts, width=config.training.alignment_bucket_size
-    )
     aligned_units = sum(len(layout.units) for layout in layouts)
     aligned_spans = sum(sum(layout.span_mask) for layout in layouts)
     maximum_total_tokens = max(total_token_counts)
     minimum_total_tokens = min(total_token_counts)
+    maximum_completion_tokens = max(completion_token_counts)
+    maximum_alignment_units = max(len(layout.units) for layout in layouts)
+    try:
+        student_sequence_width = (
+            select_length_bucket(
+                maximum_total_tokens,
+                config.training.student_sequence_buckets,
+            )
+            if config.training.student_sequence_buckets
+            else total_length
+        )
+        student_completion_width = (
+            select_length_bucket(
+                maximum_completion_tokens,
+                config.training.student_completion_buckets,
+            )
+            if config.training.student_completion_buckets
+            else config.rollout.max_completion_tokens
+        )
+        alignment_width = (
+            select_length_bucket(
+                maximum_alignment_units,
+                config.training.alignment_unit_buckets,
+            )
+            if config.training.alignment_unit_buckets
+            else config.training.alignment_bucket_size
+        )
+    except PerformanceContractError as exc:
+        raise TrainingError(str(exc)) from exc
+    if student_sequence_width > total_length:
+        raise TrainingError(
+            "student sequence bucket exceeds the configured static capacity"
+        )
+    if student_completion_width > config.rollout.max_completion_tokens:
+        raise TrainingError(
+            "student completion bucket exceeds max_completion_tokens"
+        )
+    if (
+        alignment_width is not None
+        and config.training.alignment_bucket_size is not None
+        and alignment_width > config.training.alignment_bucket_size
+    ):
+        raise TrainingError(
+            "dynamic alignment bucket exceeds alignment_bucket_size"
+        )
+    student_input_ids = student_input_ids[:, :student_sequence_width]
+    student_segment_ids = student_segment_ids[:, :student_sequence_width]
+    completion_positions = completion_positions[:, :student_completion_width]
+    completion_ids = completion_ids[:, :student_completion_width]
+    bounds, unit_mask, spans = pad_layouts(layouts, width=alignment_width)
     minimum_required = config.rollout.minimum_actual_sequence_tokens
     if minimum_required is not None and minimum_total_tokens < minimum_required:
         raise TrainingError(
@@ -387,12 +438,14 @@ def prepare_simct_batch(
         teacher_causal_split_records=int(
             teacher_timing.get("teacher_causal_split_records", 0)
         ),
+        student_sequence_bucket=student_sequence_width,
+        student_completion_bucket=student_completion_width,
         alignment_bucket=len(bounds[0]),
         actual_prompt_tokens=prompt_token_total,
         actual_completion_tokens=student_token_total,
         actual_total_tokens=prompt_token_total + student_token_total,
         maximum_prompt_tokens=max(prompt_token_counts),
-        maximum_completion_tokens=max(completion_token_counts),
+        maximum_completion_tokens=maximum_completion_tokens,
         maximum_total_tokens=maximum_total_tokens,
         minimum_total_tokens=minimum_total_tokens,
         truncation_count=truncation_count,
@@ -439,7 +492,20 @@ class PaperSimCTTrainer:
 
         student_overlap = jnp.asarray(self.overlap.student_ids, dtype=jnp.int32)
         temperature = config.simct.temperature
-        forward_fn = loaded.forward_fn
+        forward_hidden_fn = loaded.forward_hidden_fn
+        project_shared_fn = loaded.project_shared_fn
+        project_selected_statistics_fn = loaded.project_selected_statistics_fn
+        if not all(
+            callable(value)
+            for value in (
+                forward_hidden_fn,
+                project_shared_fn,
+                project_selected_statistics_fn,
+            )
+        ):
+            raise TrainingError(
+                "SimCT requires bounded hidden-state student projections"
+            )
 
         @nnx.jit
         def update_fn(
@@ -459,20 +525,27 @@ class PaperSimCTTrainer:
             positions = jnp.maximum(jnp.cumsum(segment_ids, axis=-1) - 1, 0)
 
             def loss_fn(candidate_model):
-                full_logits = forward_fn(
+                full_hidden = forward_hidden_fn(
                     candidate_model, input_ids, positions, segment_ids
                 )
                 batch = jnp.arange(input_ids.shape[0], dtype=jnp.int32)[:, None]
-                student_position_logits = full_logits[batch, completion_positions]
-                return paper_simct_aligned_batch_loss_from_teacher_statistics(
-                    student_position_logits,
+                student_position_hidden = full_hidden[
+                    batch, completion_positions
+                ]
+                return paper_simct_aligned_batch_loss_from_hidden_projection(
+                    student_position_hidden,
                     completion_token_ids,
                     teacher_shared_log_probs,
                     teacher_selected_log_probs,
-                    student_overlap,
                     segment_bounds,
                     segment_mask,
                     span_mask,
+                    lambda hidden: project_shared_fn(
+                        candidate_model, hidden, student_overlap
+                    ),
+                    lambda hidden, labels: project_selected_statistics_fn(
+                        candidate_model, hidden, labels
+                    ),
                     temperature=temperature,
                     normalizer=normalizer,
                 )
@@ -567,6 +640,8 @@ class PaperSimCTTrainer:
             teacher_completion_bucket=batch.teacher_completion_bucket,
             teacher_joint_boundary_records=batch.teacher_joint_boundary_records,
             teacher_causal_split_records=batch.teacher_causal_split_records,
+            student_sequence_bucket=batch.student_sequence_bucket,
+            student_completion_bucket=batch.student_completion_bucket,
             alignment_bucket=batch.alignment_bucket,
             shape_signature=shape_signature,
             shape_signature_changed=shape_changed,
@@ -797,6 +872,8 @@ class PaperSimpleOPDTrainer:
             teacher_completion_bucket=batch.teacher_completion_bucket,
             teacher_joint_boundary_records=batch.teacher_joint_boundary_records,
             teacher_causal_split_records=batch.teacher_causal_split_records,
+            student_sequence_bucket=batch.student_sequence_bucket,
+            student_completion_bucket=batch.student_completion_bucket,
             alignment_bucket=batch.alignment_bucket,
             shape_signature=shape_signature,
             shape_signature_changed=shape_changed,

@@ -108,6 +108,40 @@ def test_checked_in_performance_matrix_matches_builder():
         assert checked_in == payload
 
 
+def test_real_record_student_benchmark_pair_changes_only_shape_policy():
+    repo = Path(__file__).resolve().parents[2]
+    configured = {}
+    for policy in ("static", "dynamic"):
+        path = (
+            repo
+            / "configs/performance"
+            / f"real-public-simct-student-{policy}.json"
+        )
+        configured[policy] = RunConfig.from_mapping(
+            json.loads(path.read_text(encoding="utf-8"))
+        )
+
+    static = configured["static"]
+    dynamic = configured["dynamic"]
+    assert static.student == dynamic.student
+    assert static.teacher == dynamic.teacher
+    assert static.simct == dynamic.simct
+    assert static.rollout == dynamic.rollout
+    assert static.tpu == dynamic.tpu
+    assert static.training.seed == dynamic.training.seed == 43
+    assert static.training.max_steps == dynamic.training.max_steps == 10
+    assert static.training.learning_rate == dynamic.training.learning_rate
+    assert static.training.teacher_sequence_buckets == (
+        dynamic.training.teacher_sequence_buckets
+    )
+    assert static.training.student_sequence_buckets == (512,)
+    assert dynamic.training.student_sequence_buckets == (128, 256, 512)
+    assert static.training.student_completion_buckets == (256,)
+    assert dynamic.training.student_completion_buckets == (64, 128, 256)
+    assert static.training.alignment_unit_buckets == (1024,)
+    assert dynamic.training.alignment_unit_buckets == (128, 256, 512, 1024)
+
+
 def test_resource_probe_dataset_is_fixed_and_large_enough(tmp_path):
     output = tmp_path / "resource-probes"
     subprocess.run(
