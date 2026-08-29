@@ -31,9 +31,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--source-run-id")
     parser.add_argument("--expected-run-id")
     parser.add_argument("--training-seed", type=int)
-    parser.add_argument(
-        "--wandb-group", default="public-substitute-one-seed"
-    )
+    parser.add_argument("--wandb-group", default="public-substitute-one-seed")
+    parser.add_argument("--warm-start-dataset-source")
     parser.add_argument("--warm-start-kernel-source")
     parser.add_argument("--warm-start-kernel-version", type=int)
     parser.add_argument("--warm-start-relative-path")
@@ -43,6 +42,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--remote-teacher-timeout-s", type=float, default=300.0)
     parser.add_argument(
         "--remote-teacher-max-parallel-requests", type=int, default=4
+    )
+    parser.add_argument("--remote-teacher-max-attempts", type=int, default=3)
+    parser.add_argument(
+        "--remote-teacher-retry-backoff-s", type=float, default=2.0
     )
     parser.add_argument("--profile-step", type=int, default=0)
     parser.add_argument("--output", required=True, type=Path)
@@ -60,6 +63,7 @@ def main(argv: list[str] | None = None) -> int:
             expected_run_id=args.expected_run_id,
             training_seed=args.training_seed,
             wandb_group=args.wandb_group,
+            warm_start_dataset_source=args.warm_start_dataset_source,
             warm_start_kernel_source=args.warm_start_kernel_source,
             warm_start_kernel_version=args.warm_start_kernel_version,
             warm_start_relative_path=args.warm_start_relative_path,
@@ -76,6 +80,8 @@ def main(argv: list[str] | None = None) -> int:
             remote_teacher_max_parallel_requests=(
                 args.remote_teacher_max_parallel_requests
             ),
+            remote_teacher_max_attempts=args.remote_teacher_max_attempts,
+            remote_teacher_retry_backoff_s=args.remote_teacher_retry_backoff_s,
             profile_step=args.profile_step,
         )
         args.output.parent.mkdir(parents=True, exist_ok=True)

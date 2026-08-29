@@ -557,6 +557,7 @@ def render_training_notebook(
     expected_run_id: str | None = None,
     training_seed: int | None = None,
     wandb_group: str = "public-substitute-one-seed",
+    warm_start_dataset_source: str | None = None,
     warm_start_kernel_source: str | None = None,
     warm_start_kernel_version: int | None = None,
     warm_start_relative_path: str | None = None,
@@ -696,7 +697,8 @@ def render_training_notebook(
 
     if phase == "sft":
         if (
-            warm_start_kernel_source is not None
+            warm_start_dataset_source is not None
+            or warm_start_kernel_source is not None
             or warm_start_kernel_version is not None
             or warm_start_relative_path is not None
         ):
@@ -704,22 +706,34 @@ def render_training_notebook(
         warm_owner = warm_slug = ""
         warm_relative = None
     else:
-        if (
-            warm_start_kernel_source is None
-            or warm_start_kernel_version is None
-            or warm_start_relative_path is None
-        ):
-            raise KaggleModelSourceError(
-                "OPD phases require a completed SFT kernel source, positive "
-                "version, and relative path"
+        warm_source_count = sum(
+            source is not None
+            for source in (
+                warm_start_dataset_source,
+                warm_start_kernel_source,
             )
-        warm_owner, warm_slug = _validate_dataset_source(
-            warm_start_kernel_source, "warm_start_kernel_source"
         )
-        if warm_start_kernel_version < 1:
+        if warm_source_count != 1 or warm_start_relative_path is None:
             raise KaggleModelSourceError(
-                "warm_start_kernel_version must be a positive integer"
+                "OPD phases require exactly one completed SFT dataset or "
+                "kernel source and a relative path"
             )
+        if warm_start_dataset_source is not None:
+            warm_owner, warm_slug = _validate_dataset_source(
+                warm_start_dataset_source, "warm_start_dataset_source"
+            )
+            if warm_start_kernel_version is not None:
+                raise KaggleModelSourceError(
+                    "dataset warm-start may not declare a kernel version"
+                )
+        else:
+            warm_owner, warm_slug = _validate_dataset_source(
+                str(warm_start_kernel_source), "warm_start_kernel_source"
+            )
+            if warm_start_kernel_version is None or warm_start_kernel_version < 1:
+                raise KaggleModelSourceError(
+                    "warm_start_kernel_version must be a positive integer"
+                )
         warm_relative = _safe_relative_path(
             warm_start_relative_path, "warm_start_relative_path"
         )
@@ -795,6 +809,7 @@ TRAINING_DATASET_OWNER = {data_owner!r}
 TRAINING_DATASET_SLUG = {data_slug!r}
 TRAINING_MANIFEST_RELATIVE = PurePosixPath({manifest_relative.as_posix()!r})
 WARM_START_KERNEL_SOURCE = {warm_start_kernel_source!r}
+WARM_START_DATASET_SOURCE = {warm_start_dataset_source!r}
 WARM_START_OWNER = {warm_owner!r}
 WARM_START_SLUG = {warm_slug!r}
 WARM_START_KERNEL_VERSION = {warm_start_kernel_version!r}
@@ -917,14 +932,18 @@ training_root = resolve_input(
 TRAINING_MANIFEST = resolve_relative(
     training_root, TRAINING_MANIFEST_RELATIVE, "training-data"
 )
-if WARM_START_KERNEL_SOURCE is None:
+if WARM_START_KERNEL_SOURCE is None and WARM_START_DATASET_SOURCE is None:
     WARM_START_ROOT = None
 else:
     warm_mount = resolve_input(
-        WARM_START_KERNEL_SOURCE,
+        WARM_START_KERNEL_SOURCE or WARM_START_DATASET_SOURCE,
         WARM_START_OWNER,
         WARM_START_SLUG,
-        notebook_version=WARM_START_KERNEL_VERSION,
+        notebook_version=(
+            WARM_START_KERNEL_VERSION
+            if WARM_START_KERNEL_SOURCE is not None
+            else None
+        ),
     )
     WARM_START_ROOT = resolve_relative(
         warm_mount, PurePosixPath(WARM_START_RELATIVE), "warm-start"
@@ -967,6 +986,7 @@ print("VDT_TRAINING_INPUT_PROVENANCE " + json.dumps({{
     "phase": {phase!r},
     "training_dataset_source": TRAINING_DATASET_SOURCE,
     "training_manifest": str(TRAINING_MANIFEST),
+    "warm_start_dataset_source": WARM_START_DATASET_SOURCE,
     "warm_start_kernel_source": WARM_START_KERNEL_SOURCE,
     "warm_start_kernel_version": WARM_START_KERNEL_VERSION,
     "warm_start_root": None if WARM_START_ROOT is None else str(WARM_START_ROOT),
@@ -1201,6 +1221,7 @@ artifact = {{
     "run_id": config["run_id"],
     "source_repo_dataset": KJO_REPO_DATASET_SOURCE,
     "training_dataset_source": TRAINING_DATASET_SOURCE,
+    "warm_start_dataset_source": WARM_START_DATASET_SOURCE,
     "warm_start_kernel_source": WARM_START_KERNEL_SOURCE,
     "summary_sha256": hashlib.sha256(SUMMARY.read_bytes()).hexdigest(),
     "metrics_sha256": hashlib.sha256(METRICS.read_bytes()).hexdigest(),

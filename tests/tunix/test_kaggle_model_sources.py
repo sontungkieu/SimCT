@@ -594,7 +594,10 @@ def test_training_renderer_rejects_sft_warm_start():
 
 
 def test_training_renderer_requires_opd_warm_start():
-    with pytest.raises(KaggleModelSourceError, match="require a completed SFT"):
+    with pytest.raises(
+        KaggleModelSourceError,
+        match="require exactly one completed SFT",
+    ):
         render_training_notebook(
             phase="simct",
             config_relative_path="configs/simct.json",
@@ -603,6 +606,79 @@ def test_training_renderer_requires_opd_warm_start():
             training_manifest_relative_path="opd/manifest.json",
             student_model_source=STUDENT,
             teacher_model_source=TEACHER,
+        )
+
+
+def test_training_input_cell_resolves_dataset_warm_start(tmp_path, monkeypatch):
+    notebook = render_training_notebook(
+        phase="simct",
+        config_relative_path="configs/simct.json",
+        repo_dataset_source=REPO_DATASET,
+        training_dataset_source="testowner/public-substitute-v1",
+        training_manifest_relative_path="opd/manifest.json",
+        student_model_source=STUDENT,
+        teacher_model_source=TEACHER,
+        warm_start_dataset_source="testowner/public-sft-relay-v1",
+        warm_start_relative_path="checkpoints",
+    )
+    source = next(
+        "".join(cell.get("source", []))
+        for cell in notebook["cells"]
+        if "TRAINING_DATASET_SOURCE" in "".join(cell.get("source", []))
+    )
+    source = source.replace(
+        'Path("/kaggle/working/vdt_runtime_inputs")',
+        f"Path({str(tmp_path / 'runtime-inputs')!r})",
+    )
+    input_root = tmp_path / "input"
+    training_root = (
+        input_root
+        / "datasets"
+        / "testowner"
+        / "public-substitute-v1"
+        / "versions"
+        / "1"
+    )
+    (training_root / "opd").mkdir(parents=True)
+    (training_root / "opd" / "manifest.json").write_text(
+        "{}\n", encoding="utf-8"
+    )
+    checkpoint = (
+        input_root
+        / "datasets"
+        / "testowner"
+        / "public-sft-relay-v1"
+        / "versions"
+        / "1"
+        / "checkpoints"
+    )
+    checkpoint.mkdir(parents=True)
+    (checkpoint / "latest.json").write_text("{}\n", encoding="utf-8")
+    monkeypatch.setenv("KJO_KAGGLE_INPUT_ROOT", str(input_root))
+    namespace = {}
+    exec(compile(source, "<dataset-warm-start>", "exec"), namespace)
+
+    assert namespace["WARM_START_ROOT"] == checkpoint
+    assert namespace["WARM_START_DATASET_SOURCE"] == (
+        "testowner/public-sft-relay-v1"
+    )
+    assert namespace["WARM_START_KERNEL_SOURCE"] is None
+
+
+def test_training_renderer_rejects_ambiguous_warm_start_sources():
+    with pytest.raises(KaggleModelSourceError, match="exactly one"):
+        render_training_notebook(
+            phase="simct",
+            config_relative_path="configs/simct.json",
+            repo_dataset_source=REPO_DATASET,
+            training_dataset_source="testowner/public-substitute-v1",
+            training_manifest_relative_path="opd/manifest.json",
+            student_model_source=STUDENT,
+            teacher_model_source=TEACHER,
+            warm_start_dataset_source="testowner/public-sft-relay-v1",
+            warm_start_kernel_source="testowner/public-sft-screen-v1",
+            warm_start_kernel_version=1,
+            warm_start_relative_path="checkpoints",
         )
 
 
