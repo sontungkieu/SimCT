@@ -596,6 +596,7 @@ class CheckpointConfig:
     save_every_steps: int
     resume_from: str | None = None
     warm_start_from: str | None = None
+    retention_policy: str = "latest_two"
 
     def __post_init__(self) -> None:
         _string(self.root, "checkpoint.root")
@@ -605,6 +606,10 @@ class CheckpointConfig:
             _string(self.resume_from, "checkpoint.resume_from")
         if self.warm_start_from is not None:
             _string(self.warm_start_from, "checkpoint.warm_start_from")
+        if self.retention_policy not in {"latest_two", "rolling_single"}:
+            raise ConfigError(
+                "checkpoint.retention_policy must be latest_two or rolling_single"
+            )
         if self.resume_from is not None and self.warm_start_from is not None:
             raise ConfigError(
                 "checkpoint.resume_from and warm_start_from are mutually exclusive"
@@ -618,7 +623,7 @@ class CheckpointConfig:
             raw,
             context=context,
             required={"root", "save_every_steps"},
-            optional={"resume_from", "warm_start_from"},
+            optional={"resume_from", "warm_start_from", "retention_policy"},
         )
         resume_from = raw.get("resume_from")
         if resume_from is not None:
@@ -635,6 +640,10 @@ class CheckpointConfig:
             ),
             resume_from=resume_from,
             warm_start_from=warm_start_from,
+            retention_policy=_string(
+                raw.get("retention_policy", "latest_two"),
+                "checkpoint.retention_policy",
+            ),
         )
 
 
@@ -729,7 +738,10 @@ class RunConfig:
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return dataclasses.asdict(self)
+        payload = dataclasses.asdict(self)
+        if self.checkpoint.retention_policy == "latest_two":
+            payload["checkpoint"].pop("retention_policy", None)
+        return payload
 
     def identity_dict(self) -> dict[str, Any]:
         """Return training identity without environment-local storage paths."""

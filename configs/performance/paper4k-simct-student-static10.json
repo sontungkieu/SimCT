@@ -66,6 +66,7 @@
   "checkpoint": {
     "root": "/kaggle/working/vdt_paper4k_simct_student_static10/checkpoints",
     "save_every_steps": 1,
+    "retention_policy": "rolling_single",
     "resume_from": null,
     "warm_start_from": "/kaggle/input/attached-sft-source/vdt_public_sft_screen/checkpoints"
   },

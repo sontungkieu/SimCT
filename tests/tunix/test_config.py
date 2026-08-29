@@ -19,6 +19,22 @@ def test_config_round_trip_and_digest_are_stable(config_payload, tmp_path):
     assert len(config.digest()) == 64
 
 
+def test_checkpoint_retention_is_operational_not_training_identity(config_payload):
+    default = RunConfig.from_mapping(copy.deepcopy(config_payload))
+    payload = copy.deepcopy(config_payload)
+    payload["checkpoint"]["retention_policy"] = "rolling_single"
+    rolling = RunConfig.from_mapping(payload)
+
+    assert default.checkpoint.retention_policy == "latest_two"
+    assert rolling.checkpoint.retention_policy == "rolling_single"
+    assert rolling.digest() == default.digest()
+
+    invalid = copy.deepcopy(payload)
+    invalid["checkpoint"]["retention_policy"] = "keep_everything"
+    with pytest.raises(ConfigError, match="retention_policy"):
+        RunConfig.from_mapping(invalid)
+
+
 def test_explicit_training_seed_changes_identity_without_drifting_legacy(config_payload):
     legacy = RunConfig.from_mapping(copy.deepcopy(config_payload))
     seeded_payload = copy.deepcopy(config_payload)

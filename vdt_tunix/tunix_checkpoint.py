@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import shutil
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -71,7 +72,9 @@ def _metadata(
     }
 
 
-def _default_manager(root: Path, save_every_steps: int) -> Any:
+def _default_manager(
+    root: Path, save_every_steps: int, retention_policy: str
+) -> Any:
     """Construct the pinned Tunix manager lazily on the TPU runtime."""
 
     try:
@@ -87,7 +90,9 @@ def _default_manager(root: Path, save_every_steps: int) -> Any:
                 save_every_steps
             )
         ),
-        preservation_policy=ocp.training.preservation_policies.LatestN(n=2),
+        preservation_policy=ocp.training.preservation_policies.LatestN(
+            n=1 if retention_policy == "rolling_single" else 2
+        ),
         enable_async_checkpointing=False,
     )
     return checkpoint_manager.CheckpointManager(
@@ -139,11 +144,73 @@ class TunixCheckpointController:
             if config.checkpoint.warm_start_from is None
             else Path(config.checkpoint.warm_start_from).resolve()
         )
-        self._manager_factory = manager_factory or _default_manager
+        self._manager_factory = manager_factory
         self._save_manager: Any | None = None
 
     def _manager(self, root: Path) -> Any:
-        return self._manager_factory(root, self.config.checkpoint.save_every_steps)
+        if self._manager_factory is not None:
+            return self._manager_factory(
+                root, self.config.checkpoint.save_every_steps
+            )
+        return _default_manager(
+            root,
+            self.config.checkpoint.save_every_steps,
+            self.config.checkpoint.retention_policy,
+        )
+
+    def _prepare_rolling_single_save(self, completed_steps: int) -> None:
+        """Free the previous local checkpoint before a low-disk save.
+
+        Orbax normally writes the next checkpoint before applying LatestN
+        retention. A full model plus optimizer can therefore require two
+        checkpoints of transient disk even when LatestN(1) is selected. The
+        explicit ``rolling_single`` policy accepts a smaller rollback window
+        and removes only validated checkpoint children under the configured
+        output root before the next save.
+        """
+
+        if self.config.checkpoint.retention_policy != "rolling_single":
+            return
+        if self._save_manager is not None:
+            self._save_manager.close()
+            self._save_manager = None
+        self.root.mkdir(parents=True, exist_ok=True)
+        root = self.root.resolve()
+        for child in list(root.iterdir()):
+            name = child.name
+            is_array_checkpoint = name.isdigit()
+            is_incomplete_checkpoint = (
+                name.endswith(".orbax-checkpoint-tmp")
+                and name[: -len(".orbax-checkpoint-tmp")].isdigit()
+            )
+            is_resume_manifest = (
+                name.startswith("step_") and name[5:].isdigit()
+            )
+            existing_step = None
+            if is_array_checkpoint:
+                existing_step = int(name)
+            elif is_resume_manifest:
+                existing_step = int(name[5:])
+            if existing_step is not None and existing_step >= completed_steps:
+                raise TunixCheckpointError(
+                    "rolling checkpoint save would replace a non-older coordinate"
+                )
+            if not (
+                is_array_checkpoint
+                or is_incomplete_checkpoint
+                or is_resume_manifest
+                or name in {"latest.json", "latest.json.tmp"}
+            ):
+                continue
+            resolved = child.resolve()
+            if resolved.parent != root or child.is_symlink():
+                raise TunixCheckpointError(
+                    f"unsafe rolling checkpoint child: {child}"
+                )
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
 
     def restore_if_requested(self) -> ResumeState:
         if self.config.checkpoint.resume_from is None:
@@ -284,6 +351,7 @@ class TunixCheckpointController:
     ) -> CheckpointState:
         if completed_steps < 1:
             raise TunixCheckpointError("completed_steps must be positive when saving")
+        self._prepare_rolling_single_save(completed_steps)
         if self._save_manager is None:
             self._save_manager = self._manager(self.root)
         metadata = _metadata(

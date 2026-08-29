@@ -56,7 +56,13 @@ checkpoint downloaded from one Kaggle output can resume under a new input
 mount. Tunix writes student parameters and optimizer state synchronously before
 the manifest publishes their content digest. Teacher weights are immutable
 configuration inputs, not mutable checkpoint payloads in this single-teacher
-contract.
+contract. `checkpoint.retention_policy=latest_two` keeps the normal two-step
+rollback window. On runtimes whose working disk cannot hold the old and new
+full model-plus-optimizer checkpoints simultaneously, the explicit
+`rolling_single` policy removes only older checkpoint coordinates before each
+save and retains one resumable coordinate. This storage policy is excluded
+from the training-identity digest because it does not change optimization, but
+it intentionally trades rollback safety for bounded transient disk use.
 
 ## Local CPU checks
 

@@ -92,6 +92,37 @@ def test_tunix_checkpoint_save_and_restore(config_payload):
     }
 
 
+def test_rolling_single_prunes_only_older_checkpoint_coordinates(config_payload):
+    payload = copy.deepcopy(config_payload)
+    payload["checkpoint"]["retention_policy"] = "rolling_single"
+    config = RunConfig.from_mapping(payload)
+    store = {}
+    controller = TunixCheckpointController(
+        config,
+        model="student-state",
+        optimizer="optimizer-state",
+        dataset_manifest_sha256="d" * 64,
+        manager_factory=_factory(store),
+    )
+
+    controller.save(
+        completed_steps=1,
+        data_cursor=DataCursor(epoch=0, next_prompt_index=2),
+        rng_state={"rollout": "seed-1"},
+    )
+    controller.save(
+        completed_steps=2,
+        data_cursor=DataCursor(epoch=0, next_prompt_index=4),
+        rng_state={"rollout": "seed-2"},
+    )
+    controller.close()
+
+    assert not (controller.root / "1").exists()
+    assert not (controller.root / "step_00000001").exists()
+    assert (controller.root / "2" / "model.bin").is_file()
+    assert (controller.root / "step_00000002" / "resume_manifest.json").is_file()
+
+
 def test_tunix_checkpoint_detects_artifact_tampering(config_payload):
     store = {}
     config = RunConfig.from_mapping(copy.deepcopy(config_payload))
