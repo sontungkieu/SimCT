@@ -142,6 +142,40 @@ def test_real_record_student_benchmark_pair_changes_only_shape_policy():
     assert dynamic.training.alignment_unit_buckets == (128, 256, 512, 1024)
 
 
+def test_paper4k_static10_canary_keeps_paper_shape_and_schedule_horizon():
+    repo = Path(__file__).resolve().parents[2]
+    config = RunConfig.from_mapping(
+        json.loads(
+            (
+                repo
+                / "configs/performance/paper4k-simct-student-static10.json"
+            ).read_text(encoding="utf-8")
+        )
+    )
+
+    assert config.simct.algorithm == "simct"
+    assert config.simct.reproduction_mode == "paper_math"
+    assert config.rollout.max_prompt_tokens == 256
+    assert config.rollout.max_completion_tokens == 3840
+    assert config.rollout.max_sequence_tokens == 4096
+    assert config.rollout.temperature == 0.6
+    assert config.rollout.top_p == 0.95
+    assert config.training.max_steps == 10
+    assert config.training.max_steps_unit == "optimizer_update"
+    assert config.training.lr_schedule_optimizer_steps == 314
+    assert config.rollout.prompt_batch_size == 2
+    assert config.training.gradient_accumulation_steps == 32
+    assert (
+        config.rollout.prompt_batch_size
+        * config.training.gradient_accumulation_steps
+        == 64
+    )
+    assert config.training.learning_rate == 1e-6
+    assert config.training.student_sequence_buckets == (4096,)
+    assert config.training.student_completion_buckets == (3840,)
+    assert config.training.alignment_unit_buckets == (8192,)
+
+
 def test_resource_probe_dataset_is_fixed_and_large_enough(tmp_path):
     output = tmp_path / "resource-probes"
     subprocess.run(

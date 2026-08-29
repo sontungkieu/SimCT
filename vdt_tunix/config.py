@@ -371,6 +371,7 @@ class TrainingConfig:
     micro_batch_size: int
     gradient_accumulation_steps: int
     learning_rate: float
+    lr_schedule_optimizer_steps: int | None = None
     seed: int | None = None
     teacher_sequence_buckets: tuple[int, ...] = ()
     student_sequence_buckets: tuple[int, ...] = ()
@@ -387,6 +388,22 @@ class TrainingConfig:
                 raise ConfigError(f"training.{name} must be positive")
         if not math.isfinite(self.learning_rate) or self.learning_rate <= 0:
             raise ConfigError("training.learning_rate must be positive and finite")
+        executed_optimizer_steps = (
+            self.max_steps
+            if self.max_steps_unit == "optimizer_update"
+            else max(
+                1,
+                math.ceil(self.max_steps / self.gradient_accumulation_steps),
+            )
+        )
+        if (
+            self.lr_schedule_optimizer_steps is not None
+            and self.lr_schedule_optimizer_steps < executed_optimizer_steps
+        ):
+            raise ConfigError(
+                "training.lr_schedule_optimizer_steps cannot be smaller than "
+                "the executed optimizer-step target"
+            )
         if self.seed is not None and self.seed < 0:
             raise ConfigError("training.seed must be non-negative")
         for name in (
@@ -432,6 +449,7 @@ class TrainingConfig:
             required=required,
             optional={
                 "seed",
+                "lr_schedule_optimizer_steps",
                 "teacher_sequence_buckets",
                 "student_sequence_buckets",
                 "student_completion_buckets",
@@ -471,6 +489,14 @@ class TrainingConfig:
                 "training.gradient_accumulation_steps",
             ),
             learning_rate=_number(raw["learning_rate"], "training.learning_rate"),
+            lr_schedule_optimizer_steps=(
+                None
+                if raw.get("lr_schedule_optimizer_steps") is None
+                else _integer(
+                    raw["lr_schedule_optimizer_steps"],
+                    "training.lr_schedule_optimizer_steps",
+                )
+            ),
             seed=(
                 None
                 if raw.get("seed") is None
@@ -713,6 +739,8 @@ class RunConfig:
         # New multi-seed configs include an explicit seed in their digest.
         if self.training.seed is None:
             payload["training"].pop("seed", None)
+        if self.training.lr_schedule_optimizer_steps is None:
+            payload["training"].pop("lr_schedule_optimizer_steps", None)
         if not self.training.teacher_sequence_buckets:
             payload["training"].pop("teacher_sequence_buckets", None)
         if not self.training.student_sequence_buckets:

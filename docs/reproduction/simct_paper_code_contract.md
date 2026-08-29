@@ -215,6 +215,13 @@ optimizer updates at effective batch 64 (20,096 response consumptions), so the
 small final-epoch overshoot is explicit rather than silently calling 314 updates
 an exact 20,000-example traversal.
 
+Short execution canaries may set `training.max_steps` below 314 while keeping
+`training.lr_schedule_optimizer_steps=314`. This separates the stop condition
+from the learning-rate horizon, so the canary observes the same initial
+warmup/cosine coordinates as the corresponding full template. Such a canary is
+still not a full paper reproduction, especially when it uses a substitute
+dataset or fewer than two epochs.
+
 The separate `public8k` protocol freezes the released launch semantics:
 `max_len=8192`, rollout cap 4096, LR `5e-7`, one epoch (157 effective-batch-64
 updates), and the omitted top-p flag's default 1.0. It is a public-code

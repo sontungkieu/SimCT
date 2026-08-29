@@ -159,19 +159,22 @@ def _build_optimizer(config: RunConfig, model: Any, nnx: Any, optax: Any) -> Any
             ),
         )
     )
-    warmup_steps = int(optimizer_steps * 0.05)
+    schedule_optimizer_steps = (
+        config.training.lr_schedule_optimizer_steps or optimizer_steps
+    )
+    warmup_steps = int(schedule_optimizer_steps * 0.05)
     if warmup_steps > 0:
         schedule = optax.warmup_cosine_decay_schedule(
             init_value=0.0,
             peak_value=config.training.learning_rate,
             warmup_steps=warmup_steps,
-            decay_steps=optimizer_steps,
+            decay_steps=schedule_optimizer_steps,
             end_value=0.0,
         )
     else:
         schedule = optax.cosine_decay_schedule(
             init_value=config.training.learning_rate,
-            decay_steps=optimizer_steps,
+            decay_steps=schedule_optimizer_steps,
         )
     transform = optax.adamw(
         learning_rate=schedule,

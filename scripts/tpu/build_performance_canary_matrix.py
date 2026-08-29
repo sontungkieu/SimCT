@@ -90,6 +90,8 @@ def build_matrix(baseline: RunConfig) -> dict[str, dict]:
             serialized = json.loads(json.dumps(configured.to_dict()))
             if serialized["training"].get("seed") is None:
                 serialized["training"].pop("seed", None)
+            if serialized["training"].get("lr_schedule_optimizer_steps") is None:
+                serialized["training"].pop("lr_schedule_optimizer_steps", None)
             for optional_buckets in (
                 "student_sequence_buckets",
                 "student_completion_buckets",

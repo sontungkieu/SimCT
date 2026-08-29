@@ -112,6 +112,28 @@ def test_sequence_probe_and_optimizer_update_contracts_are_explicit(config_paylo
         RunConfig.from_mapping(invalid)
 
 
+def test_lr_schedule_horizon_can_exceed_a_short_execution_target(config_payload):
+    legacy = RunConfig.from_mapping(copy.deepcopy(config_payload))
+    payload = copy.deepcopy(config_payload)
+    payload["training"].update(
+        {
+            "max_steps": 10,
+            "max_steps_unit": "optimizer_update",
+            "lr_schedule_optimizer_steps": 314,
+        }
+    )
+    configured = RunConfig.from_mapping(payload)
+
+    assert legacy.training.lr_schedule_optimizer_steps is None
+    assert configured.training.lr_schedule_optimizer_steps == 314
+    assert configured.digest() != legacy.digest()
+
+    invalid = copy.deepcopy(payload)
+    invalid["training"]["lr_schedule_optimizer_steps"] = 9
+    with pytest.raises(ConfigError, match="cannot be smaller"):
+        RunConfig.from_mapping(invalid)
+
+
 def test_contract_is_single_teacher_and_rejects_unknown_teachers(config_payload):
     payload = copy.deepcopy(config_payload)
     payload["teachers"] = [payload["teacher"]]
