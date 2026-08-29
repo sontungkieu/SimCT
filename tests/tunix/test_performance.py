@@ -174,6 +174,7 @@ def test_paper4k_static10_canary_keeps_paper_shape_and_schedule_horizon():
     assert config.training.student_sequence_buckets == (4096,)
     assert config.training.student_completion_buckets == (3840,)
     assert config.training.alignment_unit_buckets == (8192,)
+    assert config.checkpoint.save_every_steps == 1
 
 
 def test_resource_probe_dataset_is_fixed_and_large_enough(tmp_path):
