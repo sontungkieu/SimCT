@@ -413,6 +413,66 @@ def test_training_renderer_accepts_resource_canary_source_run_id():
     ) in source
 
 
+def test_training_renderer_can_resume_exact_versioned_kernel_checkpoint():
+    notebook = render_training_notebook(
+        phase="simct",
+        config_relative_path="configs/performance/paper4k-static10.json",
+        repo_dataset_source=REPO_DATASET,
+        training_dataset_source="testowner/public-substitute-v1",
+        training_manifest_relative_path="opd/manifest.json",
+        student_model_source=STUDENT,
+        teacher_model_source=TEACHER,
+        source_run_id="vdt-paper4k-static10",
+        expected_run_id="vdt-paper4k-static10",
+        warm_start_kernel_source="testowner/paper4k-static10-r1",
+        warm_start_kernel_version=1,
+        warm_start_relative_path="run/checkpoints",
+        checkpoint_initialization="resume",
+        expected_resume_trainer_calls=32,
+    )
+    source = "".join(
+        "".join(cell.get("source", [])) for cell in notebook["cells"]
+    )
+    assert "CHECKPOINT_INITIALIZATION = 'resume'" in source
+    assert "EXPECTED_RESUME_TRAINER_CALLS = 32" in source
+    assert 'config["checkpoint"]["resume_from"] = str(WARM_START_ROOT)' in source
+    assert 'config["checkpoint"]["warm_start_from"] = None' in source
+    assert 'payload.get("initialization") != "resume"' in source
+    assert 'payload.get("source_checkpoint_steps")' in source
+    assert 'payload.get("source_checkpoint_run_id") != config["run_id"]' in source
+    assert '"start_step": EXPECTED_START_STEP' in source
+    assert '"start_trainer_call": EXPECTED_RESUME_TRAINER_CALLS' in source
+    for index, cell in enumerate(notebook["cells"]):
+        if cell["cell_type"] == "code":
+            compile("".join(cell["source"]), f"<resume-cell-{index}>", "exec")
+
+
+def test_training_renderer_rejects_resume_without_exact_kernel_coordinate():
+    common = {
+        "phase": "simct",
+        "config_relative_path": "configs/simct.json",
+        "repo_dataset_source": REPO_DATASET,
+        "training_dataset_source": "testowner/public-substitute-v1",
+        "training_manifest_relative_path": "opd/manifest.json",
+        "student_model_source": STUDENT,
+        "teacher_model_source": TEACHER,
+        "warm_start_relative_path": "checkpoints",
+        "checkpoint_initialization": "resume",
+    }
+    with pytest.raises(KaggleModelSourceError, match="versioned kernel"):
+        render_training_notebook(
+            **common,
+            warm_start_dataset_source="testowner/checkpoint-relay-v1",
+            expected_resume_trainer_calls=32,
+        )
+    with pytest.raises(KaggleModelSourceError, match="expected_resume"):
+        render_training_notebook(
+            **common,
+            warm_start_kernel_source="testowner/paper4k-static10-r1",
+            warm_start_kernel_version=1,
+        )
+
+
 def test_training_renderer_can_enable_one_profile_step():
     notebook = render_training_notebook(
         phase="simple_opd",

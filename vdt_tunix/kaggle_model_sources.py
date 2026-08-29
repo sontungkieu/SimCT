@@ -561,6 +561,8 @@ def render_training_notebook(
     warm_start_kernel_source: str | None = None,
     warm_start_kernel_version: int | None = None,
     warm_start_relative_path: str | None = None,
+    checkpoint_initialization: str = "warm_start",
+    expected_resume_trainer_calls: int | None = None,
     remote_teacher_profile_dataset_source: str | None = None,
     remote_teacher_profile_relative_path: str | None = None,
     remote_teacher_tokenizer_relative_path: str | None = None,
@@ -616,6 +618,18 @@ def render_training_notebook(
         raise KaggleModelSourceError("profile_step must be a non-negative integer")
     if phase == "sft" and profile_step:
         raise KaggleModelSourceError("profile_step is only supported for OPD canaries")
+    if checkpoint_initialization not in {"warm_start", "resume"}:
+        raise KaggleModelSourceError(
+            "checkpoint_initialization must be warm_start or resume"
+        )
+    if expected_resume_trainer_calls is not None and (
+        isinstance(expected_resume_trainer_calls, bool)
+        or not isinstance(expected_resume_trainer_calls, int)
+        or expected_resume_trainer_calls < 1
+    ):
+        raise KaggleModelSourceError(
+            "expected_resume_trainer_calls must be a positive integer"
+        )
     config_relative = _safe_relative_path(
         config_relative_path, "config_relative_path"
     )
@@ -701,8 +715,12 @@ def render_training_notebook(
             or warm_start_kernel_source is not None
             or warm_start_kernel_version is not None
             or warm_start_relative_path is not None
+            or checkpoint_initialization != "warm_start"
+            or expected_resume_trainer_calls is not None
         ):
-            raise KaggleModelSourceError("SFT may not declare a warm-start source")
+            raise KaggleModelSourceError(
+                "SFT may not declare a checkpoint initialization source"
+            )
         warm_owner = warm_slug = ""
         warm_relative = None
     else:
@@ -737,6 +755,19 @@ def render_training_notebook(
         warm_relative = _safe_relative_path(
             warm_start_relative_path, "warm_start_relative_path"
         )
+        if checkpoint_initialization == "resume":
+            if warm_start_kernel_source is None:
+                raise KaggleModelSourceError(
+                    "resume requires a versioned kernel checkpoint source"
+                )
+            if expected_resume_trainer_calls is None:
+                raise KaggleModelSourceError(
+                    "resume requires expected_resume_trainer_calls"
+                )
+        elif expected_resume_trainer_calls is not None:
+            raise KaggleModelSourceError(
+                "expected_resume_trainer_calls is only valid for resume"
+            )
 
     copy_repo = f'''from pathlib import Path
 import json
@@ -814,6 +845,8 @@ WARM_START_OWNER = {warm_owner!r}
 WARM_START_SLUG = {warm_slug!r}
 WARM_START_KERNEL_VERSION = {warm_start_kernel_version!r}
 WARM_START_RELATIVE = {None if warm_relative is None else warm_relative.as_posix()!r}
+CHECKPOINT_INITIALIZATION = {checkpoint_initialization!r}
+EXPECTED_RESUME_TRAINER_CALLS = {expected_resume_trainer_calls!r}
 REMOTE_TEACHER_PROFILE_DATASET_SOURCE = {remote_teacher_profile_dataset_source!r}
 REMOTE_TEACHER_PROFILE_OWNER = {remote_owner!r}
 REMOTE_TEACHER_PROFILE_SLUG = {remote_slug!r}
@@ -990,6 +1023,8 @@ print("VDT_TRAINING_INPUT_PROVENANCE " + json.dumps({{
     "warm_start_kernel_source": WARM_START_KERNEL_SOURCE,
     "warm_start_kernel_version": WARM_START_KERNEL_VERSION,
     "warm_start_root": None if WARM_START_ROOT is None else str(WARM_START_ROOT),
+    "checkpoint_initialization": CHECKPOINT_INITIALIZATION,
+    "expected_resume_trainer_calls": EXPECTED_RESUME_TRAINER_CALLS,
     "remote_teacher_profile_dataset_source": REMOTE_TEACHER_PROFILE_DATASET_SOURCE,
     "remote_teacher_profile_root": None if REMOTE_TEACHER_PROFILE_ROOT is None else str(REMOTE_TEACHER_PROFILE_ROOT),
     "remote_teacher_tokenizer_root": None if REMOTE_TEACHER_TOKENIZER_ROOT is None else str(REMOTE_TEACHER_TOKENIZER_ROOT),
@@ -1107,10 +1142,21 @@ if config["simct"]["algorithm"] != expected_algorithm:
 WORK = Path(config["checkpoint"]["root"]).parent
 WORK.mkdir(parents=True, exist_ok=True)
 config["checkpoint"]["root"] = str(WORK / "checkpoints")
-config["checkpoint"]["resume_from"] = None
-config["checkpoint"]["warm_start_from"] = (
-    None if WARM_START_ROOT is None else str(WARM_START_ROOT)
-)
+if CHECKPOINT_INITIALIZATION == "resume":
+    accumulation = config["training"]["gradient_accumulation_steps"]
+    if EXPECTED_RESUME_TRAINER_CALLS % accumulation:
+        raise RuntimeError(
+            "resume checkpoint is not on an optimizer-update boundary"
+        )
+    EXPECTED_START_STEP = EXPECTED_RESUME_TRAINER_CALLS // accumulation
+    config["checkpoint"]["resume_from"] = str(WARM_START_ROOT)
+    config["checkpoint"]["warm_start_from"] = None
+else:
+    EXPECTED_START_STEP = 0
+    config["checkpoint"]["resume_from"] = None
+    config["checkpoint"]["warm_start_from"] = (
+        None if WARM_START_ROOT is None else str(WARM_START_ROOT)
+    )
 RUNTIME_CONFIG = WORK / "runtime_config.json"
 RUNTIME_CONFIG.write_text(
     json.dumps(config, indent=2, sort_keys=True) + "\\n", encoding="utf-8"
@@ -1148,12 +1194,36 @@ RUNTIME_SUBPROCESS_ENV = runtime_subprocess_environment(REPO, LOCKED_ENVIRONMENT
     objective_contract = (
         "" if phase == "sft" else f'    "objective": {phase!r},\n'
     )
-    warm_start_contract = (
-        ""
-        if phase == "sft"
-        else '''if payload.get("initialization") != "warm_start":
+    if phase == "sft":
+        initialization_contract = ""
+    elif checkpoint_initialization == "warm_start":
+        initialization_contract = '''if payload.get("initialization") != "warm_start":
     drift["initialization"] = (payload.get("initialization"), "warm_start")
 '''
+    else:
+        initialization_contract = '''if payload.get("initialization") != "resume":
+    drift["initialization"] = (payload.get("initialization"), "resume")
+'''
+    resume_contract = (
+        ""
+        if checkpoint_initialization != "resume"
+        else '''if payload.get("source_checkpoint_steps") != EXPECTED_RESUME_TRAINER_CALLS:
+    drift["source_checkpoint_steps"] = (
+        payload.get("source_checkpoint_steps"), EXPECTED_RESUME_TRAINER_CALLS
+    )
+if payload.get("source_checkpoint_run_id") != config["run_id"]:
+    drift["source_checkpoint_run_id"] = (
+        payload.get("source_checkpoint_run_id"), config["run_id"]
+    )
+'''
+    )
+    start_step_contract = (
+        "EXPECTED_START_STEP" if checkpoint_initialization == "resume" else "0"
+    )
+    start_trainer_call_contract = (
+        "EXPECTED_RESUME_TRAINER_CALLS"
+        if checkpoint_initialization == "resume"
+        else "0"
     )
 
     run = f'''import hashlib
@@ -1201,7 +1271,8 @@ expected = {{
     "phase": {expected_phase!r},
     "status": "complete",
     "run_id": config["run_id"],
-    "start_step": 0,
+    "start_step": {start_step_contract},
+    "start_trainer_call": {start_trainer_call_contract},
     "completed_steps": config["training"]["max_steps"],
     "scientific_evidence": False,
 {objective_contract}}}
@@ -1213,7 +1284,7 @@ drift = {{
 parameter_sha = payload.get("final_student_parameters_sha256")
 if not isinstance(parameter_sha, str) or len(parameter_sha) != 64:
     drift["final_student_parameters_sha256"] = (parameter_sha, "sha256")
-{warm_start_contract}if drift:
+{initialization_contract}{resume_contract}if drift:
     raise RuntimeError(f"VDT training evidence contract mismatch: {{drift}}")
 artifact = {{
     "contract_version": 1,
@@ -1223,6 +1294,8 @@ artifact = {{
     "training_dataset_source": TRAINING_DATASET_SOURCE,
     "warm_start_dataset_source": WARM_START_DATASET_SOURCE,
     "warm_start_kernel_source": WARM_START_KERNEL_SOURCE,
+    "checkpoint_initialization": CHECKPOINT_INITIALIZATION,
+    "source_checkpoint_steps": payload.get("source_checkpoint_steps"),
     "summary_sha256": hashlib.sha256(SUMMARY.read_bytes()).hexdigest(),
     "metrics_sha256": hashlib.sha256(METRICS.read_bytes()).hexdigest(),
     "final_student_parameters_sha256": parameter_sha,

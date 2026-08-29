@@ -217,6 +217,13 @@ checkpoint root. This restores only the verified student model arrays. A true
 resume instead sets `checkpoint.resume_from` and restores model, optimizer,
 data cursor, and RNG metadata; the two fields are mutually exclusive.
 
+The Kaggle training renderer exposes that distinction as
+`checkpoint_initialization="resume"`. A rendered resume must use an exact
+versioned kernel output and declare `expected_resume_trainer_calls`; the
+notebook rejects checkpoints that are not on a gradient-accumulation boundary
+and verifies the resumed coordinate and source run in its final evidence
+contract.
+
 Every completed training summary records the final student-parameter SHA-256.
 OPD summaries additionally record the source SFT run ID, step, dataset-manifest
 digest, and student-parameter SHA-256. This proves that SimpleOPD and SimCT
