@@ -63,6 +63,34 @@ The quick-tunnel URL is operational and can change after a container/tunnel
 restart. Keep the resulting JSON and bearer token outside Git; rerun the tool
 to recover the current URL rather than hard-coding it in a paper config.
 
+## Modal scale-to-zero deployment
+
+`modal_app.py` deploys the same pinned vLLM 0.27.1 patch and endpoint plugin on
+one 48-GiB L40S. It is an independent fallback for the Vast service: model,
+revision, BF16 arithmetic, tokenizer/profile identities, endpoint payload, and
+route authentication are unchanged. Modal handles the public TLS URL while the
+plugin still requires its own bearer and hides all stock vLLM routes.
+
+The deployment is intentionally limited to one container with target
+concurrency one. It scales to zero after ten idle minutes, while named Volumes
+retain the Hugging Face model and vLLM compile caches. Create the Modal secret
+from an owner-only temporary file; never pass the bearer on the command line:
+
+```bash
+python services/vllm_teacher/modal_secret.py \
+  --profile no1ceboy \
+  --secret-name vdt-teacher-no1ceboy \
+  --token-file ~/.codex/state/modal-gpu-ops/secrets/no1ceboy-vdt-teacher-token
+MODAL_PROFILE=no1ceboy uvx --from modal modal deploy \
+  services/vllm_teacher/modal_app.py
+```
+
+Run the repository's Modal billing guard before deploy or GPU-backed probes.
+The Modal endpoint must independently pass unauthorized HTTP 401, authenticated
+identity, binary payload hash, and causal alignment checks before a TPU job can
+select it. Do not load-test it while another benchmark is using the Vast
+teacher; cross-provider parity is a separate post-run gate.
+
 ## TPU runtime activation
 
 Keep the scientific JSON unchanged. Supply operational state through files and
