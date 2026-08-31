@@ -42,6 +42,25 @@ causal inference state: independently encoded prompt and completion IDs are
 accepted only when their concatenation decodes losslessly to the exact same
 UTF-8 text. Runtime timing evidence records how many samples used each mode.
 
+One nonempty byte piece is retained for **each original token ID**. Individual
+pieces may end inside a UTF-8 character; only their concatenation must be valid
+UTF-8. The active native SentencePiece adapter reads typed byte-fallback pieces
+and converts the normal metaspace marker in continuation context. The HF fast
+ByteLevel adapter inverts its byte alphabet. Neither infers token boundaries
+from lossy intermediate Unicode strings, which can temporarily contain `�` or
+produce no new character while a multibyte sequence is unfinished. ByteLevel
+joint prompt boundaries are located in raw bytes as well.
+
+The reconstructed bytes must match the full prompt-conditioned decoder output
+exactly. Unknown decoder families keep the strict prefix-difference fallback;
+special/zero-byte tokens, invalid or truncated final UTF-8, and decoder
+mismatches still fail closed. Generated student IDs are never dropped,
+regrouped, re-encoded or resampled; their log-probability positions are retained.
+Teacher retokenization still prefers a valid joint boundary over causal split,
+including after Unicode in the prompt. The SimCT objective is unchanged.
+Failure diagnostics identify the decoder family and failing index
+or byte offset without logging prompt text, token IDs or operational secrets.
+
 The configuration contains a singular `teacher` object. Unknown keys, a
 `teachers` list, mutable `main`/`latest` revisions, same-tokenizer configs, and
 non-v5e-8 layouts fail validation. `algorithm=simct` requires shared tokens plus
@@ -72,6 +91,21 @@ entrypoint never falls back to them:
 ```bash
 python3 -m pytest tests/tunix tests/tunix_real
 ```
+
+`tests/tunix_real/test_tokenizer_bytes.py` includes multibyte Unicode, literal
+replacement characters, whitespace, malformed/truncated bytes, and joint
+prompt-boundary regressions. Optional tests exercise the real `tokenizers` and
+`sentencepiece` libraries using tiny in-memory tokenizers (no model weights).
+To additionally test an existing pinned Qwen tokenizer offline:
+
+```bash
+VDT_TEST_QWEN_TOKENIZER_JSON=/absolute/path/to/pinned/tokenizer.json \
+  python3 -m pytest tests/tunix_real/test_tokenizer_bytes.py
+```
+
+The optional tests skip when their library or explicitly supplied local asset
+is absent; they never download assets. These CPU checks establish byte-contract
+behavior, not a replay of an unrecorded failed rollout or a completed TPU run.
 
 The optional remote-teacher implementation, deployment procedure, security
 boundary, and measured RTX 3090 service canaries are documented in

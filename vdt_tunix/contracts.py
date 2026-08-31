@@ -34,6 +34,8 @@ class TokenSequence:
     ``pieces`` exclude padding and terminal special tokens. Concatenating their
     UTF-8 bytes must reproduce ``text`` exactly, which gives SimCT a tokenizer-
     independent alignment coordinate without assuming one-to-one tokens.
+    Individual byte pieces need not be valid UTF-8: a single character may
+    span multiple tokens. Each original token still owns one nonempty piece.
     """
 
     text: str

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 import dataclasses
+import json
 from typing import Any
 
 from vdt_tunix.config import ModelConfig
@@ -63,8 +64,21 @@ def _as_token_ids(value: Any) -> tuple[int, ...]:
     return tuple(value)
 
 
+def _byte_level_inverse_alphabet() -> dict[str, int]:
+    """Invert the GPT-2/Tokenizers ByteLevel bijection, not Unicode decoding."""
+
+    visible = list(range(33, 127)) + list(range(161, 173)) + list(range(174, 256))
+    result = {chr(value): value for value in visible}
+    for index, value in enumerate(value for value in range(256) if value not in visible):
+        result[chr(256 + index)] = value
+    return result
+
+
+_BYTE_LEVEL_INVERSE = _byte_level_inverse_alphabet()
+
+
 class TokenizerByteAdapter:
-    """Expose exact continuation pieces as decoded UTF-8 byte increments."""
+    """Expose one exact byte piece per token, even inside a UTF-8 character."""
 
     def __init__(self, tokenizer: Any, config: ModelConfig):
         self._tokenizer = tokenizer
@@ -79,6 +93,83 @@ class TokenizerByteAdapter:
         if self.bos_token_id is not None:
             explicit_special.add(self.bos_token_id)
         self.special_token_ids = self.special_token_ids | explicit_special
+        self._byte_decoder = self._detect_byte_decoder()
+
+    def _detect_byte_decoder(self) -> str:
+        # Tunix delegates these native SentencePiece APIs to its processor.
+        if self.config.tokenizer_type == "sentencepiece" and all(
+            callable(getattr(self._tokenizer, name, None))
+            for name in ("id_to_piece", "is_byte")
+        ):
+            return "sentencepiece"
+        backend = getattr(self._tokenizer, "backend_tokenizer", None)
+        decoder = getattr(backend, "decoder", None)
+        if decoder is not None and callable(getattr(backend, "id_to_token", None)):
+            try:
+                state = json.loads(decoder.__getstate__())
+            except (TypeError, ValueError, AttributeError):
+                state = None
+            if isinstance(state, dict) and state.get("type") == "ByteLevel":
+                return "byte_level"
+        # Do not guess raw-byte semantics from a token's spelling. Unknown
+        # decoder pipelines retain the original strict prefix-difference path.
+        return "prefix_decode"
+
+    def _alignment_error(self, message: str) -> ModelAdapterError:
+        # Deliberately exclude text, token IDs, paths and operational secrets.
+        return ModelAdapterError(f"{message} (byte_decoder={self._byte_decoder})")
+
+    def _raw_token_pieces(self, token_ids: tuple[int, ...]) -> tuple[bytes, ...] | None:
+        if self._byte_decoder == "prefix_decode":
+            return None
+        pieces = []
+        for index, token_id in enumerate(token_ids):
+            if self._byte_decoder == "byte_level":
+                token = self._tokenizer.backend_tokenizer.id_to_token(token_id)
+                if not isinstance(token, str):
+                    raise self._alignment_error(
+                        f"missing token spelling at token_index={index}"
+                    )
+                # Tokenizers' ByteLevel decoder falls back to the whole literal
+                # token if any character is outside its alphabet (added tokens).
+                piece = (
+                    bytes(_BYTE_LEVEL_INVERSE[char] for char in token)
+                    if all(char in _BYTE_LEVEL_INVERSE for char in token)
+                    else token.encode("utf-8")
+                )
+            else:
+                for name in ("is_control", "is_unknown", "is_unused"):
+                    predicate = getattr(self._tokenizer, name, None)
+                    if callable(predicate) and predicate(token_id):
+                        raise self._alignment_error(
+                            f"non-text SentencePiece token at token_index={index}"
+                        )
+                token = self._tokenizer.id_to_piece(token_id)
+                if not isinstance(token, str):
+                    raise self._alignment_error(
+                        f"missing token spelling at token_index={index}"
+                    )
+                if self._tokenizer.is_byte(token_id):
+                    if not (
+                        len(token) == 6
+                        and token.startswith("<0x")
+                        and token.endswith(">")
+                        and all(char in "0123456789abcdefABCDEF" for char in token[3:5])
+                    ):
+                        raise self._alignment_error(
+                            f"invalid SentencePiece byte spelling at token_index={index}"
+                        )
+                    piece = bytes([int(token[3:5], 16)])
+                else:
+                    # These are continuation pieces after a nonempty prompt;
+                    # SentencePiece's initial dummy-space removal does not apply.
+                    piece = token.replace("▁", " ").encode("utf-8")
+            if not piece:
+                raise self._alignment_error(
+                    f"zero-byte completion token at token_index={index}"
+                )
+            pieces.append(piece)
+        return tuple(pieces)
 
     @property
     def raw_tokenizer(self) -> Any:
@@ -172,6 +263,8 @@ class TokenizerByteAdapter:
 
         prompt_ids = tuple(int(value) for value in prompt_token_ids)
         completion_ids = tuple(int(value) for value in completion_token_ids)
+        if not prompt_text or not prompt_ids:
+            raise ModelAdapterError("byte alignment requires a nonempty prompt")
         if not completion_ids:
             raise ModelAdapterError("generated completion contains no text tokens")
         if any(value in self.special_token_ids for value in completion_ids):
@@ -183,32 +276,41 @@ class TokenizerByteAdapter:
             raise ModelAdapterError(
                 "prompt ids do not reproduce the exact prompt UTF-8 bytes"
             )
-        previous = prompt_bytes
-        pieces: list[bytes] = []
-        for width in range(1, len(completion_ids) + 1):
-            decoded = self._decode(prompt_ids + completion_ids[:width]).encode(
-                "utf-8"
-            )
-            if not decoded.startswith(previous):
-                raise ModelAdapterError(
-                    "tokenizer decode is not prefix-monotone at a token boundary"
-                )
-            piece = decoded[len(previous) :]
-            if not piece:
-                raise ModelAdapterError(
-                    "zero-byte completion token is unsupported by byte alignment"
-                )
-            pieces.append(piece)
-            previous = decoded
-        if not previous.startswith(prompt_bytes):
-            raise ModelAdapterError("decoded sequence lost the prompt prefix")
-        completion_bytes = previous[len(prompt_bytes) :]
+        raw_pieces = self._raw_token_pieces(completion_ids)
+        if raw_pieces is not None:
+            pieces = raw_pieces
+            completion_bytes = b"".join(pieces)
+        else:
+            previous = prompt_bytes
+            increments = []
+            for width in range(1, len(completion_ids) + 1):
+                decoded = self._decode(prompt_ids + completion_ids[:width]).encode("utf-8")
+                if not decoded.startswith(previous):
+                    raise self._alignment_error(
+                        "tokenizer decode is not prefix-monotone at a token boundary; "
+                        f"completion_index={width - 1}"
+                    )
+                piece = decoded[len(previous) :]
+                if not piece:
+                    raise self._alignment_error(
+                        "zero-byte completion token is unsupported by byte alignment; "
+                        f"completion_index={width - 1}"
+                    )
+                increments.append(piece)
+                previous = decoded
+            pieces = tuple(increments)
+            completion_bytes = b"".join(pieces)
         try:
             completion_text = completion_bytes.decode("utf-8")
         except UnicodeDecodeError as exc:
-            raise ModelAdapterError(
-                "completion bytes are not complete UTF-8 text"
-            ) from exc
+            raise self._alignment_error(
+                "completion bytes are not complete UTF-8 text; "
+                f"byte_offset={exc.start}, completion_tokens={len(completion_ids)}"
+            ) from None
+        if self._decode(prompt_ids + completion_ids) != prompt_text + completion_text:
+            raise self._alignment_error(
+                "raw token bytes do not match the full contextual decode"
+            )
         return TokenSequence(
             text=completion_text,
             token_ids=completion_ids,
@@ -228,13 +330,34 @@ class TokenizerByteAdapter:
         full_ids = self.encode(prompt_text + completion_text)
         prompt_bytes = prompt_text.encode("utf-8")
         boundary = None
-        for width in range(1, len(full_ids) + 1):
-            decoded = self._decode(full_ids[:width]).encode("utf-8")
-            if decoded == prompt_bytes:
-                boundary = width
-                break
-            if len(decoded) > len(prompt_bytes) or not prompt_bytes.startswith(decoded):
-                break
+        if self._byte_decoder == "byte_level":
+            # Prefix text can temporarily contain U+FFFD inside a multibyte
+            # character. Find the joint boundary in raw bytes, not that text.
+            raw_pieces = self._raw_token_pieces(full_ids)
+            assert raw_pieces is not None
+            if b"".join(raw_pieces) != (prompt_text + completion_text).encode("utf-8"):
+                raise self._alignment_error("joint raw token bytes do not reproduce text")
+            offset = 0
+            for width, piece in enumerate(raw_pieces, start=1):
+                offset += len(piece)
+                if offset == len(prompt_bytes):
+                    boundary = width
+                    break
+                if offset > len(prompt_bytes):
+                    break
+        else:
+            for width in range(1, len(full_ids) + 1):
+                decoded = self._decode(full_ids[:width]).encode("utf-8")
+                if decoded == prompt_bytes:
+                    boundary = width
+                    break
+                # U+FFFD may represent an incomplete prefix, not a mismatch.
+                # Do not let it hide an exact boundary after the next token.
+                if b"\xef\xbf\xbd" not in decoded and (
+                    len(decoded) > len(prompt_bytes)
+                    or not prompt_bytes.startswith(decoded)
+                ):
+                    break
         if boundary is None or boundary == len(full_ids):
             # A byte-level BPE may merge the final prompt bytes with the first
             # completion bytes when the concatenated text is tokenized in one
