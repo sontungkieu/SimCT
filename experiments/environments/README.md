@@ -5,6 +5,12 @@ These **checked-in `pyproject.toml` + `uv.lock` pairs** extend the historical
 CUDA 13 upstream install on a driver-570 RTX 3090 host. The root SimCT
 `pyproject.toml` and both algorithms remain unchanged.
 
+The recovered **single-GPU CUDA 13 setup** is preserved separately in the
+[historical archive](archive/single-3090-cu130-20260903/README.md), including
+original workspace manifests/locks, installed package snapshots and scripts.
+It must not be mixed into these CUDA 12.8 projects. Old SimCT was incomplete;
+the archive does not invent a successful install or a missing native lockfile.
+
 | Project | Python | PyTorch | Transformers | Scope |
 |---|---|---|---|---|
 | `xtoken/` | 3.13.15 | 2.11.0+cu128 | 5.12.1 | NeMo dense HF/SDPA, off-policy smoke |
