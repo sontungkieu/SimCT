@@ -1,5 +1,11 @@
 # X-Token: isolated native uv setup
 
+**For the two-RTX-3090 / CUDA 12.8 setup, use the newer
+[independent native projects and lockfiles](../environments/README.md).**
+This page documents the earlier upstream CUDA 13 harness; its historical
+limitations below are not the current native-environment status. The two
+install paths are alternatives, not steps to mix in one environment.
+
 This experiment lives on `vdt/experiments/xtoken`, based on the SimCT fork's
 `main`. It packages the single-RTX-3090 setup harness; it does not port X-Token
 into KDFlow, modify Tunix, or implement on-policy distillation.

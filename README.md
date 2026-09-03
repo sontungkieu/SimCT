@@ -7,7 +7,10 @@ This repository contains the code for reproducing the experiments in our paper *
 The `vdt/experiments/xtoken` branch adds an isolated
 [X-Token setup and diagnostic harness](experiments/xtoken/README.md) using a
 commit-pinned NVIDIA NeMo-RL checkout and its own uv environment. It does not
-change KDFlow/SimCT dependencies or algorithms. Existing evidence covers unit
+change the root KDFlow/SimCT dependencies or algorithms. The separate
+[native CUDA 12.8 projects](experiments/environments/README.md) contain actual
+checked-in `pyproject.toml`/`uv.lock` pairs for **both X-Token and SimCT**.
+Existing evidence covers unit
 tests and synthetic CUDA/loss checks, **not** end-to-end model training, OPD, or
 reproduction of either paper's quality results.
 
