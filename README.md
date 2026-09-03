@@ -2,6 +2,15 @@
 
 This repository contains the code for reproducing the experiments in our paper *"SimCT: Recovering Lost Supervision for Cross-Tokenizer On-Policy Distillation"*.
 
+## Fork experiment: X-Token native uv
+
+The `vdt/experiments/xtoken` branch adds an isolated
+[X-Token setup and diagnostic harness](experiments/xtoken/README.md) using a
+commit-pinned NVIDIA NeMo-RL checkout and its own uv environment. It does not
+change KDFlow/SimCT dependencies or algorithms. Existing evidence covers unit
+tests and synthetic CUDA/loss checks, **not** end-to-end model training, OPD, or
+reproduction of either paper's quality results.
+
 ---
 
 ## 📑 Table of Contents
