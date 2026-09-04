@@ -134,6 +134,45 @@ MP_OPD_MODE=fixed MP_OPD_FIXED_SPAN_LENGTH=2 \
 
 Do not start both runs concurrently on the same output or W&B run ID.
 
+### Live TensorBoard from Jupyter
+
+The B200 launcher enables TensorBoard in parallel with W&B and writes the same
+namespaced scalar train metrics plus the 15-second `system/*` GPU telemetry to
+`$TENSORBOARD_LOG_DIR`. The default is
+`$MP_OPD_OUTPUT_ROOT/tensorboard`. Event files are flushed on every explicit
+publication, so completed data remains inspectable after an interrupted job.
+
+From a Jupyter notebook attached to the company server:
+
+```python
+%load_ext tensorboard
+%tensorboard --logdir /workspace/outputs/mp-opd-b200-100step/tensorboard --port 6006
+```
+
+Or start the server from a Jupyter terminal after activating the locked uv
+environment:
+
+```bash
+tensorboard \
+  --logdir "$TENSORBOARD_LOG_DIR" \
+  --host 0.0.0.0 \
+  --port 6006
+```
+
+Use a path visible to the persistent workspace, not `/tmp`. To opt in for any
+other KDFlow SFT, off-policy, or on-policy command, add:
+
+```bash
+--use_tensorboard True \
+--tensorboard_log_dir /workspace/outputs/<run-id>/tensorboard \
+--tensorboard_flush_secs 10
+```
+
+TensorBoard mirrors metrics that the trainer actually emits; it does not
+invent an evaluation split. The current 100-update MP-OPD launcher is a bounded
+training/implementation validation and needs a separate held-out evaluation
+command before making quality or efficacy claims.
+
 ## 6. Terminal evidence gate
 
 A valid 100-step systems result needs all of:
@@ -166,8 +205,8 @@ checking out a dedicated branch. Its immutable contract is:
 - one epoch, rollout/train batch 64 and one sample per prompt, giving exactly
   100 optimizer updates;
 - a 100-step cosine scheduler with five warmup updates;
-- one final checkpoint, complete local logs, runtime/source/data manifests and
-  native W&B telemetry; and
+- one final checkpoint, complete local/TensorBoard logs, runtime/source/data
+  manifests and native W&B telemetry; and
 - `retries=0`, so a failed paid run is diagnosed rather than silently repeated.
 
 Before submitting, run the `modal-gpu-ops` billing snapshot and quota guard for

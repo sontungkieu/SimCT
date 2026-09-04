@@ -104,6 +104,9 @@ python -m kdflow.cli.train_kd_on_policy \
   --mp_opd_partition_temperature "$MP_OPD_PARTITION_TEMPERATURE" \
   --save_steps 100 \
   --logging_steps 1 \
+  --use_tensorboard True \
+  --tensorboard_log_dir "${TENSORBOARD_LOG_DIR:-$MP_OPD_OUTPUT_ROOT/tensorboard}" \
+  --tensorboard_flush_secs 10 \
   --use_wandb True \
   --wandb_org "${WANDB_ENTITY:?set WANDB_ENTITY}" \
   --wandb_project "${WANDB_PROJECT:-vdt-simct-tunix-reproduction}" \

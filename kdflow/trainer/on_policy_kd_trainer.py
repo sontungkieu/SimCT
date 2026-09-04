@@ -16,6 +16,7 @@ import torch.distributed as dist
 
 from kdflow.datasets.utils import get_tokenizer_or_processor
 from kdflow.utils.logging_utils import init_logger
+from kdflow.utils.tensorboard_utils import create_tensorboard_logger
 from kdflow.utils.utils import zero_pad_sequences
 
 
@@ -93,8 +94,12 @@ class OnPolicyKDTrainer:
         self._init_loggers()
     
     def _init_loggers(self) -> None:
-        """Initialize wandb loggers."""
+        """Initialize optional experiment loggers."""
         self._wandb = None
+        self._tensorboard = create_tensorboard_logger(
+            self.args,
+            default_log_dir=os.path.join(self.args.train.save_path, "tensorboard"),
+        )
         
         if self.args.log.use_wandb:
             import wandb
@@ -132,24 +137,29 @@ class OnPolicyKDTrainer:
         while not self._resource_stop.is_set():
             try:
                 sampled = self._sample_gpu_resources()
+                payload = {
+                    "system/sample_index": self._resource_sample_index,
+                    "system/wall_time_seconds": time.time() - self.start_time,
+                }
+                payload.update({f"system/{key}": value for key, value in sampled.items()})
                 if self._wandb is not None:
-                    payload = {
-                        "system/sample_index": self._resource_sample_index,
-                        "system/wall_time_seconds": time.time() - self.start_time,
-                    }
-                    payload.update({f"system/{key}": value for key, value in sampled.items()})
                     self._wandb.log(payload)
+                if self._tensorboard is not None:
+                    self._tensorboard.log(payload, step=self._resource_sample_index)
                 self._resource_sample_index += 1
             except Exception as error:
                 logger.warning("GPU resource sampler failed: %s", error)
             self._resource_stop.wait(15)
 
     def _start_resource_logger(self) -> None:
-        if self._wandb is None or self._resource_thread is not None:
+        if (
+            (self._wandb is None and self._tensorboard is None)
+            or self._resource_thread is not None
+        ):
             return
         self._resource_thread = threading.Thread(
             target=self._resource_logging_loop,
-            name="wandb-gpu-resource-sampler",
+            name="experiment-gpu-resource-sampler",
             daemon=True,
         )
         self._resource_thread.start()
@@ -360,14 +370,27 @@ class OnPolicyKDTrainer:
             handle.write("\n")
         os.replace(summary_path + ".pending", summary_path)
 
-        if self._wandb is not None:
+        if self._wandb is not None or self._tensorboard is not None:
             self._stop_resource_logger()
+        if self._wandb is not None:
             self._wandb.run.summary["optimizer_updates"] = self.completed_optimizer_updates
             self._wandb.run.summary["rollout_iterations"] = self.global_step
             self._wandb.run.summary["training_completed"] = True
             self._wandb.run.summary["total_time_seconds"] = total_time
             self._wandb.run.summary["resource_samples"] = self._resource_sample_index
             self._wandb.finish()
+        if self._tensorboard is not None:
+            self._tensorboard.log(
+                {
+                    "summary/optimizer_updates": self.completed_optimizer_updates,
+                    "summary/rollout_iterations": self.global_step,
+                    "summary/training_completed": 1,
+                    "summary/total_time_seconds": total_time,
+                    "summary/resource_samples": self._resource_sample_index,
+                },
+                step=self.global_step,
+            )
+            self._tensorboard.close()
             
     def rollout(self, prompt_batch: List[Dict[str, str]], **kwargs) -> List[dict]:
         """Generate samples using rollout engine.
@@ -614,11 +637,14 @@ class OnPolicyKDTrainer:
             log_str = progress_str + log_str
             self.strategy.log(log_str)
 
-            if self._wandb is not None:
+            if self._wandb is not None or self._tensorboard is not None:
                 logs = {"train/global_step": self.global_step}
                 for k in self.log_state:
                     logs[f"train/{k}"] = self.log_state[k]
+            if self._wandb is not None:
                 self._wandb.log(logs)
+            if self._tensorboard is not None:
+                self._tensorboard.log(logs, step=self.global_step)
 
             for k in self.log_state:
                 self.log_state[k] = []

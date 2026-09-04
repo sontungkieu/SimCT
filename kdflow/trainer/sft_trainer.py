@@ -11,6 +11,7 @@ from collections import defaultdict
 
 from kdflow.algorithms.sft import SFT
 from kdflow.utils.logging_utils import init_logger
+from kdflow.utils.tensorboard_utils import create_tensorboard_logger
 
 
 logger = init_logger(__name__)
@@ -45,9 +46,11 @@ class SFTTrainer:
         self._init_loggers()
     
     def _init_loggers(self) -> None:
-        """Initialize wandb loggers."""
+        """Initialize optional experiment loggers on the coordinator rank."""
         self._wandb = None
-        if self.args.log.use_wandb and dist.get_rank() == 0:
+        self._tensorboard = None
+        is_coordinator = dist.get_rank() == 0
+        if self.args.log.use_wandb and is_coordinator:
             import wandb
 
             self._wandb = wandb
@@ -68,6 +71,11 @@ class SFTTrainer:
             wandb.define_metric("train/*", step_metric="train/global_step", step_sync=True)
             wandb.define_metric("eval/global_step")
             wandb.define_metric("eval/*", step_metric="eval/global_step", step_sync=True)
+        if is_coordinator:
+            self._tensorboard = create_tensorboard_logger(
+                self.args,
+                default_log_dir=os.path.join(self.args.train.save_path, "tensorboard"),
+            )
     
     def _print_training_config(self) -> None:
         """Log training configuration before training starts."""
@@ -142,6 +150,8 @@ class SFTTrainer:
 
         if self._wandb is not None and dist.get_rank() == 0:
             self._wandb.finish()
+        if self._tensorboard is not None and dist.get_rank() == 0:
+            self._tensorboard.close()
             
     def logging(self, step, current_log_state):
         for key in current_log_state:
@@ -180,11 +190,14 @@ class SFTTrainer:
                 log_str = progress_str + log_str
                 self.strategy.log(log_str)
 
-                if self._wandb is not None:
+                if self._wandb is not None or self._tensorboard is not None:
                     logs = {"train/global_step": self.global_step}
                     for k in self.log_state:
                         logs[f"train/{k}"] = self.log_state[k]
+                if self._wandb is not None:
                     self._wandb.log(logs)
+                if self._tensorboard is not None:
+                    self._tensorboard.log(logs, step=self.global_step)
 
             for k in self.log_state:
                 self.log_state[k] = []

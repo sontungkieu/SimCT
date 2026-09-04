@@ -19,6 +19,7 @@ dependencies = [
   "ninja",
   "packaging",
   "psutil",
+  "tensorboard>=2.20,<3",
 ]
 
 [tool.uv]

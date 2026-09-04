@@ -11,6 +11,7 @@ import torch.distributed as dist
 from tqdm import tqdm
 
 from kdflow.utils.logging_utils import init_logger
+from kdflow.utils.tensorboard_utils import create_tensorboard_logger
 
 
 logger = init_logger(__name__)
@@ -58,8 +59,12 @@ class OffPolicyKDTrainer:
         self._init_loggers()
     
     def _init_loggers(self) -> None:
-        """Initialize wandb loggers."""
+        """Initialize optional experiment loggers."""
         self._wandb = None
+        self._tensorboard = create_tensorboard_logger(
+            self.args,
+            default_log_dir=os.path.join(self.args.train.save_path, "tensorboard"),
+        )
         
         if self.args.log.use_wandb:
             import wandb
@@ -186,6 +191,8 @@ class OffPolicyKDTrainer:
 
         if self._wandb is not None:
             self._wandb.finish()
+        if self._tensorboard is not None:
+            self._tensorboard.close()
             
     def logging(self):
         if self.global_step % self.args.log.logging_steps == 0:
@@ -218,11 +225,14 @@ class OffPolicyKDTrainer:
             log_str = progress_str + log_str
             self.strategy.log(log_str)
             
-            if self._wandb is not None:
+            if self._wandb is not None or self._tensorboard is not None:
                 logs = {"train/global_step": self.global_step}
                 for k in self.log_state:
                     logs[f"train/{k}"] = self.log_state[k]
+            if self._wandb is not None:
                 self._wandb.log(logs)
+            if self._tensorboard is not None:
+                self._tensorboard.log(logs, step=self.global_step)
             
             for k in self.log_state:
                 self.log_state[k] = []

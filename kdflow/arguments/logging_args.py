@@ -10,6 +10,23 @@ class LoggingArguments:
         default=10,
         metadata={"help": "Log results every n steps."}
     )
+    use_tensorboard: bool = field(
+        default=False,
+        metadata={"help": "Write the same scalar metrics to TensorBoard event files."},
+    )
+    tensorboard_log_dir: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": (
+                "TensorBoard event directory. Defaults to "
+                "<save_path>/tensorboard when TensorBoard is enabled."
+            )
+        },
+    )
+    tensorboard_flush_secs: int = field(
+        default=10,
+        metadata={"help": "Maximum TensorBoard background flush interval in seconds."},
+    )
     use_wandb: bool = field(
         default=False,
         metadata={"help": "Use wandb for logging."}

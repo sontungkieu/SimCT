@@ -12,6 +12,7 @@ huggingface_hub
 torchdata
 peft
 wandb   
+tensorboard>=2.20,<3
 triton
 ring_flash_attn
 

@@ -18,6 +18,7 @@ lora = [
 all = [
     "peft",
     "wandb",
+    "tensorboard>=2.20,<3",
     "triton",
     "flash_attn",
     "ring_flash_attn",
