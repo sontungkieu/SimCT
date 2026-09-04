@@ -26,7 +26,14 @@ REGISTRY_SECRET_NAME = validate_secret_name(
 )
 
 registry_secret = modal.Secret.from_name(REGISTRY_SECRET_NAME)
-runtime_image = modal.Image.from_registry(IMAGE_REF, secret=registry_secret)
+runtime_image = modal.Image.from_registry(IMAGE_REF, secret=registry_secret).env(
+    {
+        # Modal imports this module again inside the runtime container. Carry
+        # the already validated, non-secret identifiers into that import.
+        "SIMCT_B200_IMAGE": IMAGE_REF,
+        "SIMCT_DOCKER_REGISTRY_SECRET": REGISTRY_SECRET_NAME,
+    }
+)
 app = modal.App(APP_NAME)
 
 
