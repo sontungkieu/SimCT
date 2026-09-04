@@ -22,19 +22,23 @@ SOURCE_VOLUME_NAME = "vdt-xtoken-phase-a-no1ceboy-20260904-r14"
 WANDB_SECRET_NAME = "vdt-xtoken-wandb-no1ceboy"
 WANDB_ENTITY = "kieusontung8-hanoi-university-of-science-and-technology"
 WANDB_PROJECT = "vdt-simct-tunix-reproduction"
-WANDB_RUN_ID = "mp-opd-b200-atomic-r6-708d4bb"
+WANDB_RUN_ID = "mp-opd-b200-atomic-r6-69fbf29"
 WANDB_RUN_NAME = "mp-opd-b200-atomic-100update-r6"
 
 STUDENT_REVISION = "4e20de362430cd3b72f300e6b0f18e50e7166e08"
 TEACHER_REVISION = "1cfa9a7208912126459214e8b04321603b3df60c"
 SOURCE_DATA_SHA256 = "9f2a6a657e5e7575eb90bce59df5e385a68efdd37ce165b881e757f993a10b5c"
-B200_LOCK_SHA256 = "87c3488ab5d22671a12b97289162c0312e6f8a2984ccfe81dd6959033e18a09b"
+B200_LOCK_SHA256 = "ae9d1c9acf536a1b2e65e515207c4386cd3f6bcb33155446def0b64cb98444e3"
 MP_OPD_SHA256 = "61adc81fea034de5da56845488ddb54cd73a7890d98f515a3ef02d056efed37a"
 MP_OPD_ATOMS_SHA256 = "4f6ce015ab81ea62a1bc2aa5d2bd66a47e2dbb986e01e9813b3a1527be35ce61"
 MP_OPD_CREDIT_SHA256 = "c9421290454ef85cd99cbbd166a38e386bc6d28c350aeebd5d5fdc51b06408df"
 MP_OPD_SEMIMARKOV_SHA256 = "b8880fed36bbf724ae7053de47df39f251ddff9822b2927f3a85a670f1c69044"
 RING_ATTN_UTILS_SHA256 = "02e55701ec24de36e7512675c8e3ce94480702120c4b6cdfcc3a90bf0bf2e19b"
-REPO_BASE_HEAD = "708d4bb1468fb2e206ccd5071ef1ee2eab3f9aa9"
+LOGGING_ARGS_SHA256 = "19b125ad7d5e3935a56a6f325108c1c2ecdbb47bfb66c39987113faad436fad0"
+TENSORBOARD_UTILS_SHA256 = "30327d6986eb9223a11a8726a40cfc0609948ab147401468ff6993ceaf2c9429"
+ON_POLICY_TRAINER_SHA256 = "1046b5d45bd3d6846c485b5d98fe711d7d8b6f261d0d8b96208f52eed0bdc48a"
+TENSORBOARD_TEST_SHA256 = "1625f729e3485576dfb8bf05874263666c3aa118a999e46325d811c7a28d69e6"
+REPO_BASE_HEAD = "69fbf29364d8073820e3136b1322bc9c93ce8989"
 
 REMOTE_REPO = Path("/opt/repo")
 LOCAL_ROOT = Path(__file__).resolve().parents[2] if modal.is_local() else REMOTE_REPO
@@ -103,6 +107,8 @@ def scientific_contract() -> dict[str, object]:
         "seed": 43,
         "kd_ratio": 1.0,
         "mp_opd_max_span_length": 4,
+        "tensorboard_enabled": True,
+        "tensorboard_log_dir": str(OUTPUT_ROOT / "tensorboard"),
         "data_source_sha256": SOURCE_DATA_SHA256,
         "unique_prompt_rows": UNIQUE_PROMPTS,
         "deterministic_prompt_repeats": PROMPT_REPEATS,
@@ -364,6 +370,7 @@ def cpu_preflight() -> dict[str, object]:
                 "tests/test_span_ctkd_metrics.py",
                 "tests/test_xtoken_algorithm.py",
                 "tests/test_ring_attn_utils.py",
+                "tests/test_tensorboard_logging.py",
             ],
             cwd=REMOTE_REPO,
             env=environment,
@@ -437,17 +444,20 @@ def train(preflight_result: dict[str, object]) -> dict[str, object]:
         if sha256(SOURCE_DATA) != SOURCE_DATA_SHA256:
             raise RuntimeError("source data SHA mismatch")
         source_hashes = {
-            "mp_opd.py": MP_OPD_SHA256,
-            "_mp_opd_atoms.py": MP_OPD_ATOMS_SHA256,
-            "_mp_opd_credit.py": MP_OPD_CREDIT_SHA256,
-            "_mp_opd_semimarkov.py": MP_OPD_SEMIMARKOV_SHA256,
+            "kdflow/algorithms/mp_opd.py": MP_OPD_SHA256,
+            "kdflow/algorithms/_mp_opd_atoms.py": MP_OPD_ATOMS_SHA256,
+            "kdflow/algorithms/_mp_opd_credit.py": MP_OPD_CREDIT_SHA256,
+            "kdflow/algorithms/_mp_opd_semimarkov.py": MP_OPD_SEMIMARKOV_SHA256,
+            "kdflow/models/ring_attn_utils.py": RING_ATTN_UTILS_SHA256,
+            "kdflow/arguments/logging_args.py": LOGGING_ARGS_SHA256,
+            "kdflow/utils/tensorboard_utils.py": TENSORBOARD_UTILS_SHA256,
+            "kdflow/trainer/on_policy_kd_trainer.py": ON_POLICY_TRAINER_SHA256,
+            "tests/test_tensorboard_logging.py": TENSORBOARD_TEST_SHA256,
         }
         for name, expected in source_hashes.items():
-            actual = sha256(REMOTE_REPO / "kdflow/algorithms" / name)
+            actual = sha256(REMOTE_REPO / name)
             if actual != expected:
-                raise RuntimeError(f"MP-OPD source SHA mismatch for {name}")
-        if sha256(REMOTE_REPO / "kdflow/models/ring_attn_utils.py") != RING_ATTN_UTILS_SHA256:
-            raise RuntimeError("ring-attention compatibility source SHA mismatch")
+                raise RuntimeError(f"source SHA mismatch for {name}")
         if sha256(REMOTE_REPO / "experiments/environments/simct-b200/uv.lock") != B200_LOCK_SHA256:
             raise RuntimeError("native B200 environment lock SHA mismatch")
 
@@ -588,6 +598,12 @@ def train(preflight_result: dict[str, object]) -> dict[str, object]:
             str(OPTIMIZER_UPDATES),
             "--logging_steps",
             "1",
+            "--use_tensorboard",
+            "True",
+            "--tensorboard_log_dir",
+            str(OUTPUT_ROOT / "tensorboard"),
+            "--tensorboard_flush_secs",
+            "10",
             "--use_wandb",
             "True",
             "--wandb_org",
@@ -654,6 +670,15 @@ def train(preflight_result: dict[str, object]) -> dict[str, object]:
             atomic_json(OUTPUT_ROOT / "result.json", result)
             output_volume.commit()
     return result
+
+
+@app.local_entrypoint()
+def preflight() -> None:
+    """Run and print the CPU-only gate without allocating a B200."""
+    result = cpu_preflight.remote()
+    print("MP_OPD_CPU_PREFLIGHT_JSON=" + json.dumps(result, sort_keys=True), flush=True)
+    if result["status"] != "pass":
+        raise SystemExit(1)
 
 
 @app.local_entrypoint()
