@@ -114,5 +114,8 @@ final checkpoint. It runs the CUDA-13 B200 gate and MP-OPD tests before
 training, has `retries=0`, and records full logs plus W&B identity. At the time
 of staging, the Modal budget guard was `WARN` ($11.67103215 reported current,
 $15 conservative estimate and $1 reserve; $27.67103215 projected against the
-$23.60 warning threshold and $28.025 hard limit). Therefore no paid B200 job
-was submitted without the required explicit approval.
+$23.60 warning threshold and $28.025 hard limit). The user explicitly approved
+that warning. Attempt r1 then stopped at its pre-training source-integrity gate
+because three hashes predated final whitespace cleanup; it performed zero
+optimizer updates. The diagnosed r2 launcher pins the committed hashes and a
+new app, output-volume, run and W&B identity. It retains `retries=0`.

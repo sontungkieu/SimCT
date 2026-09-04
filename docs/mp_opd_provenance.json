@@ -40,8 +40,21 @@
     "experiments/mp_opd/results/toy_oracle_v0.json"
   ],
   "toy_result_sha256": "7da4c22d8d5fda34f3a8b84cd1a403390e14fba889dd8f16d2ae24f1cbd3d97c",
-  "modal_b200_runner_sha256": "fa3d64be85dac10af65757dd75c221eb26eeb21026bd7fbf9eec6e59e38b3296",
-  "modal_b200_submission_performed": false,
+  "modal_b200_runner_sha256": "d118d4e7d38c4990a20b83d796f214a997f08c30f0c33943cedbad847320718f",
+  "modal_b200_submission_performed": true,
+  "modal_b200_attempts": [
+    {
+      "run_id": "mp-opd-b200-atomic-100update-20260904-r1",
+      "status": "stopped_pre_training",
+      "optimizer_updates": 0,
+      "reason": "source integrity hash predated final whitespace cleanup"
+    },
+    {
+      "run_id": "mp-opd-b200-atomic-100update-20260904-r2",
+      "status": "staged_after_diagnosis",
+      "retry_policy": "retries=0"
+    }
+  ],
   "commit_created": true,
   "push_performed": true
 }

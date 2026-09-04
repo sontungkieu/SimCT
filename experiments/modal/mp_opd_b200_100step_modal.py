@@ -15,25 +15,25 @@ import traceback
 import modal
 
 
-APP_NAME = "vdt-mp-opd-b200-atomic-no1ceboy-20260904-r1"
-RUN_ID = "mp-opd-b200-atomic-100update-20260904-r1"
-VOLUME_NAME = "vdt-mp-opd-b200-atomic-no1ceboy-20260904-r1"
+APP_NAME = "vdt-mp-opd-b200-atomic-no1ceboy-20260904-r2"
+RUN_ID = "mp-opd-b200-atomic-100update-20260904-r2"
+VOLUME_NAME = "vdt-mp-opd-b200-atomic-no1ceboy-20260904-r2"
 SOURCE_VOLUME_NAME = "vdt-xtoken-phase-a-no1ceboy-20260904-r14"
 WANDB_SECRET_NAME = "vdt-xtoken-wandb-no1ceboy"
 WANDB_ENTITY = "kieusontung8-hanoi-university-of-science-and-technology"
 WANDB_PROJECT = "vdt-simct-tunix-reproduction"
-WANDB_RUN_ID = "mp-opd-b200-atomic-r1-6dfb9dd"
-WANDB_RUN_NAME = "mp-opd-b200-atomic-100update-r1"
+WANDB_RUN_ID = "mp-opd-b200-atomic-r2-c0e8a30"
+WANDB_RUN_NAME = "mp-opd-b200-atomic-100update-r2"
 
 STUDENT_REVISION = "4e20de362430cd3b72f300e6b0f18e50e7166e08"
 TEACHER_REVISION = "1cfa9a7208912126459214e8b04321603b3df60c"
 SOURCE_DATA_SHA256 = "9f2a6a657e5e7575eb90bce59df5e385a68efdd37ce165b881e757f993a10b5c"
 B200_LOCK_SHA256 = "2075e8acbf6ab3c439f779718bd5b716424e47ce7e7b106525261818ec2ac75e"
 MP_OPD_SHA256 = "a6526e9916d83d1c726e1dbba0996a5bc07bd29df7026c267604f1b01c646d4e"
-MP_OPD_ATOMS_SHA256 = "d76fd5b72c07ccb2c22d28ed36d8a90463234f963274a89440321ca3e19357b0"
-MP_OPD_CREDIT_SHA256 = "5d8abef9b4faba0f4c8aeaf2dc6c334d68174f0991b474552cee6fc7a77024c7"
-MP_OPD_SEMIMARKOV_SHA256 = "b8b5461b1fde49c315c1d4a02a847d30308750cc2269434e6698096d03b4650a"
-REPO_BASE_HEAD = "6dfb9dd2accd8e37e9e35134c6a9d60f6afbbe07"
+MP_OPD_ATOMS_SHA256 = "1572f3c0d435449eccc32a46cd6778680193fdf7a335c8adf4f8be0ef8676587"
+MP_OPD_CREDIT_SHA256 = "c9421290454ef85cd99cbbd166a38e386bc6d28c350aeebd5d5fdc51b06408df"
+MP_OPD_SEMIMARKOV_SHA256 = "b8880fed36bbf724ae7053de47df39f251ddff9822b2927f3a85a670f1c69044"
+REPO_BASE_HEAD = "c0e8a30ff3c027ddf8374df2f87930dee396f804"
 
 REMOTE_REPO = Path("/opt/repo")
 LOCAL_ROOT = Path(__file__).resolve().parents[2] if modal.is_local() else REMOTE_REPO
@@ -313,6 +313,11 @@ def train() -> dict[str, object]:
         "scientific": scientific_contract(),
         "operational": {
             "repo_base_head": REPO_BASE_HEAD,
+            "retry_of": "mp-opd-b200-atomic-100update-20260904-r1",
+            "retry_reason": (
+                "r1 stopped at the pre-training integrity gate because source "
+                "hashes predated whitespace cleanup; no optimizer update occurred"
+            ),
             "native_lock_sha256": B200_LOCK_SHA256,
             "gpu": "B200:1",
             "wandb_entity": WANDB_ENTITY,
