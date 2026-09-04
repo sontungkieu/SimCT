@@ -15,15 +15,15 @@ import traceback
 import modal
 
 
-APP_NAME = "vdt-mp-opd-b200-atomic-no1ceboy-20260904-r4"
-RUN_ID = "mp-opd-b200-atomic-100update-20260904-r4"
-VOLUME_NAME = "vdt-mp-opd-b200-atomic-no1ceboy-20260904-r4"
+APP_NAME = "vdt-mp-opd-b200-atomic-no1ceboy-20260904-r5"
+RUN_ID = "mp-opd-b200-atomic-100update-20260904-r5"
+VOLUME_NAME = "vdt-mp-opd-b200-atomic-no1ceboy-20260904-r5"
 SOURCE_VOLUME_NAME = "vdt-xtoken-phase-a-no1ceboy-20260904-r14"
 WANDB_SECRET_NAME = "vdt-xtoken-wandb-no1ceboy"
 WANDB_ENTITY = "kieusontung8-hanoi-university-of-science-and-technology"
 WANDB_PROJECT = "vdt-simct-tunix-reproduction"
-WANDB_RUN_ID = "mp-opd-b200-atomic-r4-6e14915"
-WANDB_RUN_NAME = "mp-opd-b200-atomic-100update-r4"
+WANDB_RUN_ID = "mp-opd-b200-atomic-r5-f28c5a7"
+WANDB_RUN_NAME = "mp-opd-b200-atomic-100update-r5"
 
 STUDENT_REVISION = "4e20de362430cd3b72f300e6b0f18e50e7166e08"
 TEACHER_REVISION = "1cfa9a7208912126459214e8b04321603b3df60c"
@@ -33,7 +33,8 @@ MP_OPD_SHA256 = "a6526e9916d83d1c726e1dbba0996a5bc07bd29df7026c267604f1b01c646d4
 MP_OPD_ATOMS_SHA256 = "1572f3c0d435449eccc32a46cd6778680193fdf7a335c8adf4f8be0ef8676587"
 MP_OPD_CREDIT_SHA256 = "c9421290454ef85cd99cbbd166a38e386bc6d28c350aeebd5d5fdc51b06408df"
 MP_OPD_SEMIMARKOV_SHA256 = "b8880fed36bbf724ae7053de47df39f251ddff9822b2927f3a85a670f1c69044"
-REPO_BASE_HEAD = "6e14915465e00187853c911327958538cc7245e4"
+RING_ATTN_UTILS_SHA256 = "02e55701ec24de36e7512675c8e3ce94480702120c4b6cdfcc3a90bf0bf2e19b"
+REPO_BASE_HEAD = "f28c5a7a104be1eb68708337f9222b012e68b44f"
 
 REMOTE_REPO = Path("/opt/repo")
 LOCAL_ROOT = Path(__file__).resolve().parents[2] if modal.is_local() else REMOTE_REPO
@@ -362,6 +363,7 @@ def cpu_preflight() -> dict[str, object]:
                 "tests/mp_opd",
                 "tests/test_span_ctkd_metrics.py",
                 "tests/test_xtoken_algorithm.py",
+                "tests/test_ring_attn_utils.py",
             ],
             cwd=REMOTE_REPO,
             env=environment,
@@ -407,12 +409,12 @@ def train(preflight_result: dict[str, object]) -> dict[str, object]:
         "cpu_preflight": preflight_result,
         "operational": {
             "repo_base_head": REPO_BASE_HEAD,
-            "retry_of": "mp-opd-b200-atomic-100update-20260904-r3",
+            "retry_of": "mp-opd-b200-atomic-100update-20260904-r4",
             "retry_reason": (
-                "r3 stopped in the non-GPU preflight because tokenizer_type=llama "
-                "is not registered by Transformers 5.6; the underlying issue was an "
-                "incompatible kernels 0.16.1 API, so r4 pins kernels 0.14.1 and uses "
-                "the standard offline AutoTokenizer path"
+                "r4 passed tokenizer/data and unit-test preflight plus the B200 "
+                "environment gate, then stopped before training because FlashAttention "
+                "4 no longer ships flash_attn.bert_padding; r5 uses tested PyTorch "
+                "unpad/pad primitives and keeps SDPA plus the scientific configuration"
             ),
             "native_lock_sha256": B200_LOCK_SHA256,
             "gpu": "B200:1",
@@ -443,6 +445,8 @@ def train(preflight_result: dict[str, object]) -> dict[str, object]:
             actual = sha256(REMOTE_REPO / "kdflow/algorithms" / name)
             if actual != expected:
                 raise RuntimeError(f"MP-OPD source SHA mismatch for {name}")
+        if sha256(REMOTE_REPO / "kdflow/models/ring_attn_utils.py") != RING_ATTN_UTILS_SHA256:
+            raise RuntimeError("ring-attention compatibility source SHA mismatch")
         if sha256(REMOTE_REPO / "experiments/environments/simct-b200/uv.lock") != B200_LOCK_SHA256:
             raise RuntimeError("native B200 environment lock SHA mismatch")
 

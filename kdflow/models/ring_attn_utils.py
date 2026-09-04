@@ -1,7 +1,47 @@
 import torch
 import torch.distributed as dist
-from flash_attn.bert_padding import index_first_axis, pad_input, rearrange, unpad_input
-from flash_attn.utils.distributed import all_gather
+
+
+def _index_first_axis(tensor: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
+    """Select the flattened token axis without requiring FlashAttention 2."""
+    return tensor.index_select(0, indices)
+
+
+def _flatten_batch_sequence(tensor: torch.Tensor) -> torch.Tensor:
+    return tensor.reshape(-1, *tensor.shape[2:])
+
+
+def _unpad_input(
+    tensor: torch.Tensor,
+    attention_mask: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, int, torch.Tensor]:
+    """PyTorch equivalent of the FlashAttention 2 bert-padding helper."""
+    sequence_lengths = attention_mask.sum(dim=-1, dtype=torch.int32)
+    indices = torch.nonzero(attention_mask.reshape(-1), as_tuple=False).flatten()
+    unpadded = _index_first_axis(_flatten_batch_sequence(tensor), indices)
+    cu_seqlens = torch.nn.functional.pad(
+        torch.cumsum(sequence_lengths, dim=0, dtype=torch.int32),
+        (1, 0),
+    )
+    max_seqlen = int(sequence_lengths.max().item()) if sequence_lengths.numel() else 0
+    return unpadded, indices, cu_seqlens, max_seqlen, sequence_lengths
+
+
+def _pad_input(
+    tensor: torch.Tensor,
+    indices: torch.Tensor,
+    batch: int,
+    seqlen: int,
+) -> torch.Tensor:
+    output = tensor.new_zeros((batch * seqlen, *tensor.shape[1:]))
+    output.index_copy_(0, indices, tensor)
+    return output.reshape(batch, seqlen, *tensor.shape[1:])
+
+
+def _all_gather(tensor: torch.Tensor, group) -> torch.Tensor:
+    from torch.distributed.nn.functional import all_gather
+
+    return torch.cat(all_gather(tensor, group=group), dim=0)
 
 RING_ATTN_GROUP = None
 
@@ -112,17 +152,17 @@ def unpad_and_slice_tensor(sequences, attention_mask, ring_attn_group):
         tuple: Processed sequences and related tensors for ring attention
     """
     rolled_sequences = torch.roll(sequences, shifts=-1, dims=1)
-    sequences, indices, cu_seqlens, _, _ = unpad_input(sequences.unsqueeze(-1), attention_mask)
+    sequences, indices, cu_seqlens, _, _ = _unpad_input(sequences.unsqueeze(-1), attention_mask)
     sequences = sequences.transpose(0, 1)  # (1, total_seqs)
-    rolled_sequences = index_first_axis(
-        rearrange(rolled_sequences.unsqueeze(-1), "b s ... -> (b s) ..."), indices
+    rolled_sequences = _index_first_axis(
+        _flatten_batch_sequence(rolled_sequences.unsqueeze(-1)), indices
     ).transpose(
         0, 1
     )  # (1, total_seqs)
     position_ids = torch.clip(torch.cumsum(attention_mask, dim=-1) - 1, min=0, max=None)
-    position_ids = index_first_axis(rearrange(position_ids.unsqueeze(-1), "b s ... -> (b s) ..."), indices).transpose(
-        0, 1
-    )  # (1, total_seqs)
+    position_ids = _index_first_axis(
+        _flatten_batch_sequence(position_ids.unsqueeze(-1)), indices
+    ).transpose(0, 1)  # (1, total_seqs)
     ring_attn_pad_len = 0
     if ring_attn_group is not None:
         (sequences, position_ids, rolled_sequences), ring_attn_pad_len = get_tensor_in_current_ring_attn_rank(
@@ -160,8 +200,8 @@ def gather_and_pad_tensor(tensor, ring_attn_group, ring_attn_pad_len, indices, b
         Padded tensor
     """
     if ring_attn_group is not None:
-        tensor = all_gather(tensor.transpose(0, 1), ring_attn_group).transpose(0, 1)  # (1, total_seqs)
+        tensor = _all_gather(tensor.transpose(0, 1), ring_attn_group).transpose(0, 1)  # (1, total_seqs)
         if ring_attn_pad_len > 0:
             tensor = tensor[:, :-ring_attn_pad_len]
-    tensor = pad_input(tensor.transpose(0, 1), indices, batch, seqlen).squeeze(-1)  # (batch, seqlen)
+    tensor = _pad_input(tensor.transpose(0, 1), indices, batch, seqlen).squeeze(-1)  # (batch, seqlen)
     return tensor
