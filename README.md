@@ -10,9 +10,16 @@ commit-pinned NVIDIA NeMo-RL checkout and its own uv environment. It does not
 change the root KDFlow/SimCT dependencies or algorithms. The separate
 [native CUDA 12.8 projects](experiments/environments/README.md) contain actual
 checked-in `pyproject.toml`/`uv.lock` pairs for **both X-Token and SimCT**.
-Existing evidence covers unit
-tests and synthetic CUDA/loss checks, **not** end-to-end model training, OPD, or
-reproduction of either paper's quality results.
+The earlier two-3090 host completed a [three-update X-Token training smoke](experiments/environments/reports/2026-09-03-2x3090.md)
+with finite metrics, after an opt-in NCCL cuMem host-memory workaround.
+SimCT has passed environment/CUDA canaries but has not trained. This is
+**off-policy engineering evidence**, not OPD or reproduction of either paper's
+quality results.
+
+The [new 70-GiB host / larger-workload report](experiments/environments/reports/2026-09-03-70gb-target.md)
+tracks the separately requested Llama-1B <- Qwen3-4B, sequence-2048,
+global-batch-64 ten-update test. Its setup and training outcome must not be
+inferred from the earlier small-smoke result.
 
 ---
 

@@ -230,6 +230,56 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(result["telemetry_samples"], 0)
         self.assertIn("FileNotFoundError", result["telemetry_errors"])
 
+    def test_disconnected_console_preserves_success_failure_and_timeout(self):
+        class ClosedReader:
+            def write(self, text):
+                raise BrokenPipeError()
+            def flush(self):
+                raise BrokenPipeError()
+
+        for code, timeout, expected in [("print('finished')", 3, 0),
+                ("raise SystemExit(7)", 3, 7), ("import time; time.sleep(30)", 0.1, 124)]:
+            with self.subTest(expected=expected), patch.object(sys, 'stdout', ClosedReader()):
+                rc, out = self.run_command(code, timeout=timeout)
+            result = json.loads((out / 'result.json').read_text())
+            self.assertEqual(rc, expected)
+            self.assertEqual(result['exit_code'], expected)
+            self.assertTrue(result['console_disconnected'])
+
+    def test_real_pipe_reader_disconnect_does_not_abort_or_exit_120(self):
+        code = (
+            "import sys; from pathlib import Path; "
+            f"sys.path.insert(0, {str(EXPERIMENT / 'scripts')!r}); "
+            "from run_logged import run_logged, workload_environment; "
+            f"root=Path({str(self.root)!r}); "
+            "rc,_=run_logged([sys.executable,'-c','import time; time.sleep(0.3); print(123)'],"
+            "cwd=root,root=root/'pipe',name='fixture',timeout=3,env=workload_environment()); sys.exit(rc)"
+        )
+        driver = subprocess.Popen([sys.executable, '-c', code],
+                                  env=dict(self.env, PATH='/nonexistent'),
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            self.assertTrue(driver.stdout.readline().startswith(b'EVIDENCE_DIR='))
+            driver.stdout.close()
+            self.assertEqual(driver.wait(timeout=8), 0)
+            self.assertNotIn(b'BrokenPipeError', driver.stderr.read())
+            result_path = next((self.root/'pipe').glob('*/result.json'))
+            self.assertEqual(json.loads(result_path.read_text())['exit_code'], 0)
+            self.assertTrue(json.loads(result_path.read_text())['console_disconnected'])
+            self.assertEqual((result_path.parent/'stdout.log').read_text().strip(), '123')
+        finally:
+            if driver.poll() is None:
+                driver.kill()
+                driver.wait()
+            driver.stderr.close()
+
+    def test_console_other_io_errors_are_not_suppressed(self):
+        class DiskFailure:
+            def write(self, text):
+                raise OSError(28, 'fixture disk full')
+        with self.assertRaises(OSError):
+            run_logged.BestEffortOutput(DiskFailure()).write('x')
+
     def test_timeout_has_terminal_evidence(self):
         rc, out = self.run_command("import time; time.sleep(30)", timeout=0.1)
         result = json.loads((out / "result.json").read_text())
@@ -254,7 +304,12 @@ class RunnerTests(unittest.TestCase):
         state_file = Path(f"/proc/{pid}/stat")
         # An orphan may briefly remain as a zombie awaiting the host's reaper.
         for _ in range(20):
-            if not state_file.exists() or state_file.read_text().split()[2] == "Z":
+            try:
+                state = state_file.read_text().split()[2]
+            except (FileNotFoundError, ProcessLookupError):
+                # The reaper may remove /proc/<pid>/stat during the read itself.
+                break
+            if state == "Z":
                 break
             time.sleep(0.01)
         else:

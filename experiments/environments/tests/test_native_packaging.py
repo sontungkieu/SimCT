@@ -4,8 +4,12 @@ import io
 from pathlib import Path
 import tarfile
 import tempfile
+import subprocess
+import sys
+import runpy
 import tomllib
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('prepare_source', ROOT/'prepare_source.py')
@@ -18,6 +22,17 @@ class NativePackagingTests(unittest.TestCase):
         for path in ROOT.glob('*.py'):
             ast.parse(path.read_text(), filename=str(path))
 
+    def test_install_deadline_is_explicit_and_sync_only(self):
+        script = ROOT/'run_phase.py'
+        for phase, deadline in [('sync', '0'), ('canary', '5400')]:
+            result = subprocess.run(
+                [sys.executable, str(script), 'xtoken', phase,
+                 '--root', '/tmp/unused-xtoken-test', '--sync-timeout-seconds', deadline],
+                capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2)
+        self.assertIn("timeout=args.sync_timeout_seconds if args.phase=='sync' else 600",
+                      script.read_text())
+
     def test_launcher_regressions(self):
         script = (ROOT/'xtoken_smoke.py').read_text()
         self.assertIn("'--project',str(HERE/'xtoken')", script)
@@ -26,6 +41,52 @@ class NativePackagingTests(unittest.TestCase):
             for field in ('force_hf=true', 'attn_implementation=sdpa'):
                 self.assertIn(f'+{owner}.dtensor_cfg.automodel_kwargs.{field}', script)
         self.assertIn("validated.get('config_digest') == config_digest", script)
+
+    def test_http_timeout_is_explicit_positive_and_sync_only(self):
+        script = ROOT/'run_phase.py'
+        for phase, deadline in [('sync', '0'), ('sync', '-1'), ('canary', '300')]:
+            result = subprocess.run(
+                [sys.executable, str(script), 'xtoken', phase,
+                 '--root', '/tmp/unused-xtoken-test', '--sync-http-timeout-seconds', deadline],
+                capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2)
+        self.assertIn("f'UV_HTTP_TIMEOUT={args.sync_http_timeout_seconds}'", script.read_text())
+
+    def test_sync_passes_and_records_authorized_http_timeout(self):
+        sys.path.insert(0, str(ROOT.parent/'xtoken/scripts'))
+        import run_logged
+        with tempfile.TemporaryDirectory() as tmp:
+            argv = [str(ROOT/'run_phase.py'), 'xtoken', 'sync', '--root', tmp,
+                    '--sync-timeout-seconds', '5400', '--sync-http-timeout-seconds', '300']
+            with patch.object(sys, 'argv', argv), \
+                 patch('subprocess.run', return_value=subprocess.CompletedProcess(
+                     ['uv', '--version'], 0, stdout='uv 0.12.7\n')), \
+                 patch.object(run_logged, 'workload_environment', return_value={'UV_HTTP_TIMEOUT': '999'}), \
+                 patch.object(run_logged, 'run_logged', return_value=(0, Path(tmp))) as logged:
+                with self.assertRaises(SystemExit) as stopped:
+                    runpy.run_path(str(ROOT/'run_phase.py'), run_name='__main__')
+            self.assertEqual(stopped.exception.code, 0)
+            self.assertEqual(logged.call_args.args[0],
+                             ['env', 'UV_HTTP_TIMEOUT=300', 'uv', 'sync', '--locked'])
+            self.assertEqual(logged.call_args.kwargs['timeout'], 5400)
+            self.assertNotIn('UV_HTTP_TIMEOUT', logged.call_args.kwargs['env'])
+
+    def test_cuda_workaround_is_opt_in_and_recorded(self):
+        script = (ROOT/'xtoken_smoke.py').read_text()
+        self.assertIn("'--nccl-cumem-host-fallback', action='store_true'", script)
+        self.assertIn("env['NCCL_CUMEM_HOST_ENABLE'] = '0'", script)
+        self.assertIn('cuda_environment=cuda_environment', script)
+        self.assertIn('shutil.disk_usage(root).free < 2 * 1024**3', script)
+
+    def test_diagnostic_regressions(self):
+        probe = (ROOT/'xtoken_cuda_probe.py').read_text()
+        self.assertIn("torch.autocast('cuda', dtype=torch.bfloat16)", probe)
+        self.assertIn("stage='method_before_offload'", probe)
+        self.assertIn("ACTOR_ENVIRONMENT_REGISTRY['cuda_probe_worker.BufferProbeWorker']", probe)
+        runner = (ROOT/'run_cuda_probe.py').read_text()
+        self.assertIn("marker.open('x')", runner)
+        self.assertIn("'--locked', '--no-sync'", runner)
+        self.assertIn('timeout=240', runner)
 
     def test_lock_identity(self):
         expected = {'xtoken': ('2.11.0+cu128', '5.12.1'), 'simct': ('2.9.1+cu128', '4.57.1')}

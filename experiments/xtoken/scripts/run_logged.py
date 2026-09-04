@@ -8,8 +8,43 @@ from pathlib import Path
 import re
 import signal
 import subprocess
+import sys
 import time
 import uuid
+
+
+class BestEffortOutput:
+    """Console loss is advisory; errors writing durable evidence are not."""
+
+    def __init__(self, stream):
+        self.stream = stream
+        self.disconnected = False
+
+    def _disconnect(self):
+        self.disconnected = True
+        # A real TextIOWrapper may retain bytes after EPIPE. Redirect its fd so
+        # interpreter shutdown does not turn an otherwise successful run into 120.
+        try:
+            descriptor = self.stream.fileno()
+        except (AttributeError, OSError, ValueError):
+            return
+        with open(os.devnull, "w") as sink:
+            os.dup2(sink.fileno(), descriptor)
+
+    def write(self, text):
+        if not self.disconnected:
+            try:
+                self.stream.write(text)
+            except BrokenPipeError:
+                self._disconnect()
+        return len(text)
+
+    def flush(self):
+        if not self.disconnected:
+            try:
+                self.stream.flush()
+            except BrokenPipeError:
+                self._disconnect()
 
 
 def workload_environment() -> dict[str, str]:
@@ -51,7 +86,8 @@ def run_logged(command: list[str], *, cwd: Path, root: Path, name: str,
             "telemetry_errors": [], "exit_code": None}
     (out / "command.json").write_text(json.dumps(meta, indent=2) + "\n")
     child_env = dict(env, XTOKEN_RUN_DIR=str(out))
-    print(f"EVIDENCE_DIR={out}", flush=True)
+    console = BestEffortOutput(sys.stdout)
+    print(f"EVIDENCE_DIR={out}", file=console, flush=True)
     started = time.monotonic()
     deadline = started + timeout
     proc = None
@@ -83,9 +119,14 @@ def run_logged(command: list[str], *, cwd: Path, root: Path, name: str,
                     except (OSError, subprocess.TimeoutExpired) as exc:
                         if type(exc).__name__ not in meta["telemetry_errors"]:
                             meta["telemetry_errors"].append(type(exc).__name__)
-                    print(json.dumps({"elapsed_s": round(time.monotonic() - started, 1),
-                                      "log_bytes": (out / "stdout.log").stat().st_size,
-                                      "running": proc.poll() is None}), flush=True)
+                    progress = {"elapsed_s": round(time.monotonic() - started, 1),
+                                "log_bytes": (out / "stdout.log").stat().st_size,
+                                "running": proc.poll() is None,
+                                "pid": proc.pid, "console_disconnected": console.disconnected}
+                    pending = out / "progress.pending.json"
+                    pending.write_text(json.dumps(progress) + "\n")
+                    pending.replace(out / "progress.json")
+                    print(json.dumps(progress), file=console, flush=True)
                     next_probe = time.monotonic() + 15
                 try:
                     proc.wait(timeout=max(0.001, min(1.0, deadline - time.monotonic())))
@@ -104,8 +145,11 @@ def run_logged(command: list[str], *, cwd: Path, root: Path, name: str,
             # Also remove leftover descendants after normal parent exit.
             stop_process_group(proc)
         meta.update(exit_code=rc, elapsed_seconds=time.monotonic() - started,
+                    console_disconnected=console.disconnected,
                     finished_at=dt.datetime.now(dt.timezone.utc).isoformat())
         (out / "result.json").write_text(json.dumps(meta, indent=2) + "\n")
         print(json.dumps({"exit_code": rc, "timed_out": meta["timed_out"],
-                          "telemetry_samples": meta["telemetry_samples"]}), flush=True)
+                          "telemetry_samples": meta["telemetry_samples"]}), file=console, flush=True)
+        meta["console_disconnected"] = console.disconnected
+        (out / "result.json").write_text(json.dumps(meta, indent=2) + "\n")
     return rc, out
