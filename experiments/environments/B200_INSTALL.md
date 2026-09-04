@@ -160,6 +160,28 @@ provenance and an SBOM, and logs out before terminating the Sandbox. Never use
 `latest` as the only retained tag for a scientific run; record the immutable
 image digest returned by the registry inspection.
 
+Qualify that exact pushed tag on a real Modal B200 before moving it to the
+company host. The registry secret is used by Modal only to pull the image; it
+is not mounted into the B200 runtime:
+
+```bash
+set -euo pipefail
+export SIMCT_B200_IMAGE="docker.io/DOCKERHUB_NAMESPACE/simct-b200:cu130-APPROVED_COMMIT"
+export SIMCT_DOCKER_REGISTRY_SECRET="simct-dockerhub-no1ceboy"
+
+uvx --from modal==1.5.5 modal run \
+  --profile no1ceboy \
+  experiments/modal/qualify_b200_dockerhub.py
+
+unset SIMCT_B200_IMAGE SIMCT_DOCKER_REGISTRY_SECRET
+```
+
+The qualification checks both locked environments with `uv pip check`, runs
+the CUDA/compute-capability gate from each interpreter, imports KDFlow,
+SGLang, FlashAttention 4 and LlamaFactory, and executes a finite BF16 CUDA
+matrix multiplication. It deliberately downloads no model and is a systems
+qualification, not a training or scientific result.
+
 On the company B200 host, mount internal assets rather than downloading or
 baking them into the image:
 
