@@ -9,6 +9,76 @@ from kdflow.utils.logging_utils import init_logger
 logger = init_logger(__name__)
 
 
+class _MemoryEfficientReverseKL(torch.autograd.Function):
+    """Exact row-wise reverse KL without retaining full FP32 intermediates.
+
+    SimCT's shared vocabulary can be almost as large as the original
+    vocabulary.  The regular RKL implementation retains log-probability and
+    probability tensors for backward, which makes a long response exceed a
+    24-GiB device even at micro-batch size one.  This implementation stores
+    only the input logits and recomputes small row chunks in backward.
+    """
+
+    @staticmethod
+    def forward(ctx, student_logits, teacher_logits, temperature, row_chunk_size):
+        temperature = float(temperature)
+        row_chunk_size = max(int(row_chunk_size), 1)
+        values = []
+        for start in range(0, student_logits.shape[0], row_chunk_size):
+            end = min(start + row_chunk_size, student_logits.shape[0])
+            student_log_probs = torch.log_softmax(
+                student_logits[start:end].float() / temperature, dim=-1
+            )
+            teacher_log_probs = torch.log_softmax(
+                teacher_logits[start:end].float() / temperature, dim=-1
+            )
+            student_probs = student_log_probs.exp()
+            values.append(
+                (student_probs * (student_log_probs - teacher_log_probs)).sum(dim=-1)
+            )
+        ctx.save_for_backward(student_logits, teacher_logits)
+        ctx.temperature = temperature
+        ctx.row_chunk_size = row_chunk_size
+        return torch.cat(values, dim=0)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        student_logits, teacher_logits = ctx.saved_tensors
+        temperature = ctx.temperature
+        row_chunk_size = ctx.row_chunk_size
+        student_grad = torch.empty_like(student_logits)
+
+        for start in range(0, student_logits.shape[0], row_chunk_size):
+            end = min(start + row_chunk_size, student_logits.shape[0])
+            student_log_probs = torch.log_softmax(
+                student_logits[start:end].float() / temperature, dim=-1
+            )
+            teacher_log_probs = torch.log_softmax(
+                teacher_logits[start:end].float() / temperature, dim=-1
+            )
+            student_probs = student_log_probs.exp()
+            log_ratio = student_log_probs - teacher_log_probs
+            row_kl = (student_probs * log_ratio).sum(dim=-1, keepdim=True)
+            chunk_grad = student_probs * (log_ratio - row_kl)
+            chunk_grad.mul_(grad_output[start:end].float().unsqueeze(-1) / temperature)
+            student_grad[start:end] = chunk_grad.to(student_logits.dtype)
+
+        return student_grad, None, None, None
+
+
+def memory_efficient_reverse_kl(
+    student_logits, teacher_logits, temperature=1.0, row_chunk_size=128
+):
+    """Return the unreduced exact RKL for 2-D virtual-vocabulary logits."""
+    if student_logits.ndim != 2 or teacher_logits.shape != student_logits.shape:
+        raise ValueError(
+            "memory_efficient_reverse_kl expects equal 2-D student/teacher logits"
+        )
+    return _MemoryEfficientReverseKL.apply(
+        student_logits, teacher_logits.detach(), temperature, row_chunk_size
+    )
+
+
 @register_algorithm("span_ctkd")
 class SpanCrossTokenizerKD:
     """Span-based Cross-Tokenizer Knowledge Distillation.
@@ -223,91 +293,80 @@ class SpanCrossTokenizerKD:
             if (te - ts) > 1 or (se - ss) > 1:
                 span_indices.append(seg_idx)
         num_spans = len(span_indices)
-        # Map from segment index to its position in the span dimensions
-        seg_to_span_dim = {}
-        for dim_idx, seg_idx in enumerate(span_indices):
-            seg_to_span_dim[seg_idx] = dim_idx
-
         virtual_dim = num_overlap + num_spans
 
-        stu_rows = []
-        tea_rows = []
+        # Gather overlap-vocabulary logits for every segment in one operation.
+        # This is mathematically identical to the former per-segment loop, but
+        # avoids launching one GPU indexing kernel per segment and vocabulary.
+        stu_first_positions = torch.tensor(
+            [ss for _ts, _te, ss, _se in segments], device=device, dtype=torch.long
+        )
+        tea_first_positions = torch.tensor(
+            [ts for ts, _te, _ss, _se in segments], device=device, dtype=torch.long
+        )
+        stu_overlap = stu_logits_aligned[
+            stu_first_positions.unsqueeze(1), self.student_overlap_token_ids.unsqueeze(0)
+        ]
+        tea_overlap = tea_logits_aligned[
+            tea_first_positions.unsqueeze(1), self.teacher_overlap_token_ids.unsqueeze(0)
+        ]
 
-        for seg_idx, (ts, te, ss, se) in enumerate(segments):
-            # --- Student side ---
-            stu_seg_logits = stu_logits_aligned[ss:se]  # [num_stu_tokens, vocab_s]
-            # For overlap logits, always use the FIRST token position only.
-            # The span is a single virtual token; other overlap tokens compete
-            # with it at the first position (i.e. "what comes after the prefix").
-            stu_first_logits = stu_seg_logits[0]  # [vocab_s]
-            stu_overlap = stu_first_logits[self.student_overlap_token_ids]  # [num_overlap]
+        if num_spans == 0:
+            return stu_overlap, tea_overlap
 
-            # --- Teacher side ---
-            tea_seg_logits = tea_logits_aligned[ts:te]  # [num_tea_tokens, vocab_t]
-            tea_first_logits = tea_seg_logits[0]  # [vocab_t]
-            tea_overlap = tea_first_logits[self.teacher_overlap_token_ids]  # [num_overlap]
+        stu_span_values = []
+        tea_span_values = []
+        for seg_idx in span_indices:
+            ts, te, ss, se = segments[seg_idx]
+            stu_span_token_ids = torch.tensor(
+                stu_label_ids_list[ss:se], device=device, dtype=torch.long
+            )
+            tea_span_token_ids = torch.tensor(
+                tea_label_ids_list[ts:te], device=device, dtype=torch.long
+            )
+            stu_self_logits = stu_logits_aligned[
+                torch.arange(ss, se, device=device), stu_span_token_ids
+            ]
+            tea_self_logits = tea_logits_aligned[
+                torch.arange(ts, te, device=device), tea_span_token_ids
+            ]
+            stu_span_values.append(stu_self_logits.mean())
+            tea_span_values.append(tea_self_logits.mean())
 
-            if num_spans > 0:
-                # Span dimensions: default to -1e9 (negligible after softmax)
-                stu_span_dims = torch.full((num_spans,), -1e9, device=device, dtype=stu_overlap.dtype)
-                tea_span_dims = torch.full((num_spans,), -1e9, device=device, dtype=tea_overlap.dtype)
+            if self._span_debug_count < 1:
+                self._span_debug_count += 1
+                logger.info(
+                    f"\n[SpanCTKD SPAN DEBUG] === Example span logits (seg_idx={seg_idx}) ===\n"
+                    f"  Student span token ids: {stu_span_token_ids.detach().cpu().tolist()}\n"
+                    f"  Student self_logits (per token): {stu_self_logits.detach().cpu().tolist()}\n"
+                    f"  Student span_dim value (mean):   {stu_self_logits.mean().item():.4f}\n"
+                    f"  Teacher span token ids: {tea_span_token_ids.detach().cpu().tolist()}\n"
+                    f"  Teacher self_logits (per token): {tea_self_logits.detach().cpu().tolist()}\n"
+                    f"  Teacher span_dim value (mean):   {tea_self_logits.mean().item():.4f}\n"
+                    f"  ---\n"
+                    f"  Student overlap logits (first pos) stats: mean={stu_overlap[seg_idx].mean().item():.4f}, "
+                    f"max={stu_overlap[seg_idx].max().item():.4f}, min={stu_overlap[seg_idx].min().item():.4f}, "
+                    f"std={stu_overlap[seg_idx].std().item():.4f}\n"
+                    f"  Teacher overlap logits (first pos) stats: mean={tea_overlap[seg_idx].mean().item():.4f}, "
+                    f"max={tea_overlap[seg_idx].max().item():.4f}, min={tea_overlap[seg_idx].min().item():.4f}, "
+                    f"std={tea_overlap[seg_idx].std().item():.4f}\n"
+                    f"  num_overlap={num_overlap}, num_spans={num_spans}, virtual_dim={virtual_dim}"
+                )
 
-                if seg_idx in seg_to_span_dim:
-                    dim_pos = seg_to_span_dim[seg_idx]
-                    # Span logit = mean of each constituent token's logit at
-                    # its own token id.  This represents the model's average
-                    # confidence in generating this specific span of text.
-                    # After softmax this corresponds to the geometric mean of
-                    # per-token probabilities (avoiding length-dependent decay).
-                    stu_span_token_ids = stu_label_ids_list[ss:se]
-                    stu_self_logits = torch.stack([
-                        stu_seg_logits[k, tid]
-                        for k, tid in enumerate(stu_span_token_ids)
-                    ])
-                    stu_span_dims[dim_pos] = stu_self_logits.mean()
-
-                    tea_span_token_ids = tea_label_ids_list[ts:te]
-                    tea_self_logits = torch.stack([
-                        tea_seg_logits[k, tid]
-                        for k, tid in enumerate(tea_span_token_ids)
-                    ])
-                    tea_span_dims[dim_pos] = tea_self_logits.mean()
-
-                    # Debug: print one example of span logits vs overlap logits
-                    if self._span_debug_count < 1:
-                        self._span_debug_count += 1
-                        logger.info(
-                            f"\n[SpanCTKD SPAN DEBUG] === Example span logits (seg_idx={seg_idx}) ===\n"
-                            f"  Student span token ids: {stu_span_token_ids}\n"
-                            f"  Student self_logits (per token): {stu_self_logits.detach().cpu().tolist()}\n"
-                            f"  Student span_dim value (mean):   {stu_span_dims[dim_pos].item():.4f}\n"
-                            f"  Teacher span token ids: {tea_span_token_ids}\n"
-                            f"  Teacher self_logits (per token): {tea_self_logits.detach().cpu().tolist()}\n"
-                            f"  Teacher span_dim value (mean):   {tea_span_dims[dim_pos].item():.4f}\n"
-                            f"  ---\n"
-                            f"  Student overlap logits (first pos) stats: mean={stu_overlap.mean().item():.4f}, "
-                            f"max={stu_overlap.max().item():.4f}, min={stu_overlap.min().item():.4f}, "
-                            f"std={stu_overlap.std().item():.4f}\n"
-                            f"  Teacher overlap logits (first pos) stats: mean={tea_overlap.mean().item():.4f}, "
-                            f"max={tea_overlap.max().item():.4f}, min={tea_overlap.min().item():.4f}, "
-                            f"std={tea_overlap.std().item():.4f}\n"
-                            f"  num_overlap={num_overlap}, num_spans={num_spans}, virtual_dim={virtual_dim}\n"
-                            f"  All stu_span_dims: {stu_span_dims.detach().cpu().tolist()}\n"
-                            f"  All tea_span_dims: {tea_span_dims.detach().cpu().tolist()}"
-                        )
-
-                stu_row = torch.cat([stu_overlap, stu_span_dims])  # [virtual_dim]
-                tea_row = torch.cat([tea_overlap, tea_span_dims])  # [virtual_dim]
-            else:
-                stu_row = stu_overlap
-                tea_row = tea_overlap
-
-            stu_rows.append(stu_row)
-            tea_rows.append(tea_row)
-
-        stu_virtual_logits = torch.stack(stu_rows)  # [num_segments, virtual_dim]
-        tea_virtual_logits = torch.stack(tea_rows)  # [num_segments, virtual_dim]
-        return stu_virtual_logits, tea_virtual_logits
+        stu_span_dims = torch.full(
+            (len(segments), num_spans), -1e9, device=device, dtype=stu_overlap.dtype
+        )
+        tea_span_dims = torch.full(
+            (len(segments), num_spans), -1e9, device=device, dtype=tea_overlap.dtype
+        )
+        span_rows = torch.tensor(span_indices, device=device, dtype=torch.long)
+        span_columns = torch.arange(num_spans, device=device)
+        stu_span_dims[span_rows, span_columns] = torch.stack(stu_span_values)
+        tea_span_dims[span_rows, span_columns] = torch.stack(tea_span_values)
+        return (
+            torch.cat([stu_overlap, stu_span_dims], dim=1),
+            torch.cat([tea_overlap, tea_span_dims], dim=1),
+        )
 
     # ------------------------------------------------------------------
     # Re-normalization multiplier G(h) safeguard
@@ -332,22 +391,39 @@ class SpanCrossTokenizerKD:
             Z: [num_segments] float tensor in (0, 1].
         """
         device = tea_logits_aligned.device
-        Z = torch.ones(len(segments), device=device, dtype=torch.float32)
+        if not segments:
+            return torch.empty(0, device=device, dtype=torch.float32)
+
+        # One full-vocabulary normalization per teacher-token row.  The former
+        # reference implementation launched softmax/log_softmax separately for
+        # every segment and every span token.  Using log-sum-exp identities is
+        # the same probability calculation while batching the GPU work:
+        #   sum_{v in overlap} softmax(x)_v
+        # = exp(logsumexp(x_overlap) - logsumexp(x_full)).
+        tea_logits_float = tea_logits_aligned.float()
+        full_log_norm = torch.logsumexp(tea_logits_float, dim=-1)
+        first_positions = torch.tensor(
+            [ts for ts, _te, _ss, _se in segments], device=device, dtype=torch.long
+        )
+        first_logits = tea_logits_float[first_positions]
+        overlap_log_mass = torch.logsumexp(
+            first_logits[:, self.teacher_overlap_token_ids], dim=-1
+        )
+        Z = torch.exp(overlap_log_mass - full_log_norm[first_positions])
+
         for seg_idx, (ts, te, ss, se) in enumerate(segments):
-            tea_seg_logits = tea_logits_aligned[ts:te]                       # [k_t, vocab_t]
-            p_first = torch.softmax(tea_seg_logits[0].float(), dim=-1)        # full-vocab probs
-            m = p_first[self.teacher_overlap_token_ids].sum()                # shared-token mass
-            if (te - ts) > 1 or (se - ss) > 1:
-                span_ids = tea_label_ids_list[ts:te]
-                logps = torch.stack([
-                    torch.log_softmax(tea_seg_logits[k].float(), dim=-1)[tid]
-                    for k, tid in enumerate(span_ids)
-                ])
-                span_prob = torch.exp(logps.mean())                          # geometric mean
-                Z[seg_idx] = (m + span_prob).clamp(max=1.0)
-            else:
-                Z[seg_idx] = m.clamp(max=1.0)
-        return Z
+            if (te - ts) <= 1 and (se - ss) <= 1:
+                continue
+            span_positions = torch.arange(ts, te, device=device)
+            span_ids = torch.tensor(
+                tea_label_ids_list[ts:te], device=device, dtype=torch.long
+            )
+            span_logps = (
+                tea_logits_float[span_positions, span_ids]
+                - full_log_norm[span_positions]
+            )
+            Z[seg_idx] = (Z[seg_idx] + torch.exp(span_logps.mean())).clamp(max=1.0)
+        return Z.clamp(max=1.0)
 
     # ------------------------------------------------------------------
     # Training step
@@ -411,6 +487,12 @@ class SpanCrossTokenizerKD:
         total_response_tokens = 0
         total_kept_segments = 0
         total_masked_segments = 0
+        total_segments = 0
+        total_span_segments = 0
+        total_z_sum = 0.0
+        total_z_count = 0
+        min_teacher_candidate_mass = 1.0
+        max_teacher_candidate_mass = 0.0
 
         # Offset trackers for flattened logits (both are 2D across batch)
         tea_logits_offset = 0
@@ -444,6 +526,12 @@ class SpanCrossTokenizerKD:
                 total_response_tokens += max(stu_num_loss_tokens, tea_num_loss_tokens)
                 continue
 
+            total_segments += len(segments)
+            total_span_segments += sum(
+                1 for ts, te, ss, se in segments
+                if (te - ts) > 1 or (se - ss) > 1
+            )
+
             # Build virtual vocab logits and compute loss.
             # stu_logits_b and tea_logits_b are already [num_loss_tokens, vocab]
             # and segments index directly into them.
@@ -456,11 +544,18 @@ class SpanCrossTokenizerKD:
                 f"Virtual logit shape mismatch: student {stu_virtual.shape} vs teacher {tea_virtual.shape}"
 
             # Compute RKL loss on virtual common vocabulary
-            sample_loss = self.loss_fn(
-                stu_virtual,
-                tea_virtual.detach(),
-                reduction="none",
-            )
+            if self.args.kd.kd_loss_fn == "rkl":
+                sample_loss = memory_efficient_reverse_kl(
+                    stu_virtual,
+                    tea_virtual,
+                    temperature=self.args.kd.kd_temperature,
+                )
+            else:
+                sample_loss = self.loss_fn(
+                    stu_virtual,
+                    tea_virtual.detach(),
+                    reduction="none",
+                )
 
             # Re-normalization safeguard: drop positions whose multiplier
             # G(h) = 1 / Z_T(h) exceeds the threshold (teacher captured mass
@@ -470,6 +565,14 @@ class SpanCrossTokenizerKD:
             gh_threshold = getattr(self.args.kd, "span_gh_mask_threshold", 0.0)
             if gh_threshold and gh_threshold > 0:
                 Z = self._compute_segment_teacher_Z(segments, tea_logits_b, tea_ids_list)
+                total_z_sum += float(Z.sum().item())
+                total_z_count += int(Z.numel())
+                min_teacher_candidate_mass = min(
+                    min_teacher_candidate_mass, float(Z.min().item())
+                )
+                max_teacher_candidate_mass = max(
+                    max_teacher_candidate_mass, float(Z.max().item())
+                )
                 keep = (Z >= (1.0 / gh_threshold)).to(sample_loss.dtype)  # G(h) <= threshold
                 total_kept_segments += int(keep.sum().item())
                 total_masked_segments += int((keep.numel() - keep.sum()).item())
@@ -497,6 +600,44 @@ class SpanCrossTokenizerKD:
             total_masked_segments / max(gh_masked_total, 1),
             device=student_logits_flat.device,
         )
+        # Exact, algorithm-native counters.  StudentActor uses these to expose
+        # meaningful token throughput for SimCT (rather than the previous zero
+        # fallback that was only populated by X-Token).
+        metric_device = student_logits_flat.device
+        loss_info["valid_student_tokens"] = torch.tensor(
+            float(student_loss_mask.sum().item()), device=metric_device
+        )
+        loss_info["valid_teacher_tokens"] = torch.tensor(
+            float(teacher_loss_mask.sum().item()), device=metric_device
+        )
+        loss_info["aligned_token_count"] = torch.tensor(
+            float(total_aligned_tokens), device=metric_device
+        )
+        loss_info["aligned_segment_count"] = torch.tensor(
+            float(total_segments), device=metric_device
+        )
+        loss_info["span_segment_count"] = torch.tensor(
+            float(total_span_segments), device=metric_device
+        )
+        loss_info["span_segment_ratio"] = torch.tensor(
+            total_span_segments / max(total_segments, 1), device=metric_device
+        )
+        loss_info["gh_kept_segment_count"] = torch.tensor(
+            float(total_kept_segments), device=metric_device
+        )
+        loss_info["gh_masked_segment_count"] = torch.tensor(
+            float(total_masked_segments), device=metric_device
+        )
+        if total_z_count:
+            loss_info["teacher_candidate_mass_mean"] = torch.tensor(
+                total_z_sum / total_z_count, device=metric_device
+            )
+            loss_info["teacher_candidate_mass_min"] = torch.tensor(
+                min_teacher_candidate_mass, device=metric_device
+            )
+            loss_info["teacher_candidate_mass_max"] = torch.tensor(
+                max_teacher_candidate_mass, device=metric_device
+            )
 
         if self.args.kd.kd_ratio < 1:
             ce_label_ids = student_label_ids[student_loss_mask]

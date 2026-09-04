@@ -1,8 +1,12 @@
 import os
 import time
 import json
+import math
+import subprocess
+import threading
 from tqdm import tqdm
 from datetime import timedelta
+from dataclasses import asdict
 from typing import Dict, List, Optional, Callable, Any
 from collections import defaultdict
 
@@ -82,6 +86,10 @@ class OnPolicyKDTrainer:
         assert self.args.kd.kd_ratio == 1.0, "On-policy KD only supports kd_ratio=1.0."
         
         self.log_state = defaultdict(list)
+        self.completed_optimizer_updates = 0
+        self._resource_stop = threading.Event()
+        self._resource_thread = None
+        self._resource_sample_index = 0
         self._init_loggers()
     
     def _init_loggers(self) -> None:
@@ -90,6 +98,9 @@ class OnPolicyKDTrainer:
         
         if self.args.log.use_wandb:
             import wandb
+
+            if not self.args.log.wandb_run_id:
+                raise ValueError("wandb_run_id is required when use_wandb=True")
             
             self._wandb = wandb
             if self.args.log.wandb_mode != "offline" and not wandb.api.api_key:
@@ -99,7 +110,11 @@ class OnPolicyKDTrainer:
                 project=self.args.log.wandb_project,
                 group=self.args.log.wandb_group,
                 name=self.args.log.wandb_run_name,
-                config=vars(self.args),
+                id=self.args.log.wandb_run_id,
+                resume="never",
+                job_type=self.args.log.wandb_job_type,
+                tags=[tag.strip() for tag in self.args.log.wandb_tags.split(",") if tag.strip()],
+                config=asdict(self.args),
                 reinit=True,
                 mode=self.args.log.wandb_mode,
                 dir=self.args.log.wandb_dir,
@@ -109,6 +124,65 @@ class OnPolicyKDTrainer:
             wandb.define_metric("train/*", step_metric="train/global_step", step_sync=True)
             wandb.define_metric("eval/global_step")
             wandb.define_metric("eval/*", step_metric="eval/global_step", step_sync=True)
+            wandb.define_metric("system/sample_index")
+            wandb.define_metric("system/*", step_metric="system/sample_index", step_sync=True)
+
+    def _resource_logging_loop(self) -> None:
+        """Continuously publish GPU telemetry while the training loop is active."""
+        while not self._resource_stop.is_set():
+            try:
+                sampled = self._sample_gpu_resources()
+                if self._wandb is not None:
+                    payload = {
+                        "system/sample_index": self._resource_sample_index,
+                        "system/wall_time_seconds": time.time() - self.start_time,
+                    }
+                    payload.update({f"system/{key}": value for key, value in sampled.items()})
+                    self._wandb.log(payload)
+                self._resource_sample_index += 1
+            except Exception as error:
+                logger.warning("GPU resource sampler failed: %s", error)
+            self._resource_stop.wait(15)
+
+    def _start_resource_logger(self) -> None:
+        if self._wandb is None or self._resource_thread is not None:
+            return
+        self._resource_thread = threading.Thread(
+            target=self._resource_logging_loop,
+            name="wandb-gpu-resource-sampler",
+            daemon=True,
+        )
+        self._resource_thread.start()
+
+    def _stop_resource_logger(self) -> None:
+        self._resource_stop.set()
+        if self._resource_thread is not None:
+            self._resource_thread.join(timeout=20)
+
+    @staticmethod
+    def _sample_gpu_resources() -> Dict[str, float]:
+        """Return non-sensitive point-in-time NVIDIA metrics for every visible GPU."""
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,memory.used,memory.total,utilization.gpu,power.draw,temperature.gpu",
+                "--format=csv,noheader,nounits",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        metrics: Dict[str, float] = {}
+        for line in result.stdout.splitlines():
+            index, used, total, util, power, temperature = [part.strip() for part in line.split(",")]
+            prefix = f"resource/gpu_{index}"
+            metrics[f"{prefix}/memory_used_mib"] = float(used)
+            metrics[f"{prefix}/memory_total_mib"] = float(total)
+            metrics[f"{prefix}/utilization_percent"] = float(util)
+            metrics[f"{prefix}/power_watts"] = float(power)
+            metrics[f"{prefix}/temperature_c"] = float(temperature)
+        return metrics
     
     def _print_training_config(self) -> None:
         """Log training configuration before training starts."""
@@ -140,6 +214,7 @@ class OnPolicyKDTrainer:
             self.student.connect_teacher_actors(self.teacher.teacher_engines, num_gpus_per_teacher_actor)
         
         self.start_time = time.time()
+        self._start_resource_logger()
         num_micro_batches = self.args.train.train_batch_size // self.args.train.micro_train_batch_size
         
         for epoch in range(start_epoch, self.epochs):
@@ -148,6 +223,7 @@ class OnPolicyKDTrainer:
             
             for prompt_batch in self.train_dataloader:
                 self.global_step += 1
+                step_started = time.time()
                 
                 rollout_start = time.time()
                 rollout_samples = self.rollout(prompt_batch, **self.generate_kwargs)
@@ -184,6 +260,12 @@ class OnPolicyKDTrainer:
                     status_list = ray.get(self.student.async_run_distill(global_batch))
                     for k in status_list[0].keys():
                         self.log_state[k].append(sum(s[k] for s in status_list) / len(status_list))
+                    optimizer_updates = [int(round(s["optimizer_updates"])) for s in status_list]
+                    if len(set(optimizer_updates)) != 1 or optimizer_updates[0] != 1:
+                        raise RuntimeError(
+                            f"expected exactly one optimizer update per rollout iteration, got {optimizer_updates}"
+                        )
+                    self.completed_optimizer_updates += optimizer_updates[0]
                         
                 self.log_state["student_train_time"].append(time.time() - student_start)
                 
@@ -218,6 +300,24 @@ class OnPolicyKDTrainer:
 
                 if self.args.train.enable_sleep:
                     self.student.sleep()
+
+                step_wall_time = time.time() - step_started
+                self.log_state["step_wall_time"].append(step_wall_time)
+                self.log_state["completed_optimizer_updates"].append(
+                    float(self.completed_optimizer_updates)
+                )
+                self.log_state["rollout_prompt_count"].append(float(len(prompt_batch)))
+                self.log_state["rollout_sample_count"].append(
+                    float(len(prompt_batch) * self.args.rollout.n_samples_per_prompt)
+                )
+                valid_tokens = self.log_state.get("global_processed_valid_student_tokens", [])
+                if valid_tokens:
+                    self.log_state["end_to_end_valid_tokens_per_second"].append(
+                        float(valid_tokens[-1]) / step_wall_time if step_wall_time > 0 else 0.0
+                    )
+                for key, value in self._sample_gpu_resources().items():
+                    if math.isfinite(value):
+                        self.log_state[key].append(value)
                     
                 self.logging()
         
@@ -235,7 +335,38 @@ class OnPolicyKDTrainer:
         total_time = time.time() - self.start_time
         self.strategy.log(f"Training done, totally cost {str(timedelta(seconds=total_time)).split('.')[0]}")
 
+        if self.completed_optimizer_updates != self.max_rollout_iters:
+            raise RuntimeError(
+                f"optimizer update gate failed: {self.completed_optimizer_updates} != {self.max_rollout_iters}"
+            )
+
+        summary_path = os.path.join(self.args.train.save_path, "run-summary.json")
+        os.makedirs(self.args.train.save_path, exist_ok=True)
+        with open(summary_path + ".pending", "w") as handle:
+            json.dump(
+                {
+                    "status": "completed",
+                    "rollout_iterations": self.global_step,
+                    "optimizer_updates": self.completed_optimizer_updates,
+                    "total_time_seconds": total_time,
+                    "kd_algorithm": self.args.kd.kd_algorithm,
+                    "student": self.args.model.student_name_or_path,
+                    "teacher": self.args.model.teacher_name_or_path,
+                },
+                handle,
+                indent=2,
+                sort_keys=True,
+            )
+            handle.write("\n")
+        os.replace(summary_path + ".pending", summary_path)
+
         if self._wandb is not None:
+            self._stop_resource_logger()
+            self._wandb.run.summary["optimizer_updates"] = self.completed_optimizer_updates
+            self._wandb.run.summary["rollout_iterations"] = self.global_step
+            self._wandb.run.summary["training_completed"] = True
+            self._wandb.run.summary["total_time_seconds"] = total_time
+            self._wandb.run.summary["resource_samples"] = self._resource_sample_index
             self._wandb.finish()
             
     def rollout(self, prompt_batch: List[Dict[str, str]], **kwargs) -> List[dict]:

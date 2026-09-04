@@ -3,6 +3,7 @@ import os
 import socket
 import logging
 import json
+import time
 from abc import ABC
 from typing import Dict, List, Optional, Union
 from collections import defaultdict
@@ -252,6 +253,9 @@ class StudentRayActor:
         self.student.train()
         device = torch.cuda.current_device()
         status = defaultdict(list)
+        optimizer_updates = 0
+        train_started = time.perf_counter()
+        torch.cuda.reset_peak_memory_stats(device)
 
         for batch in train_data:
             micro_batch = {
@@ -281,6 +285,8 @@ class StudentRayActor:
             )
 
             self.strategy.optimizer_step(self.optim, self.student, self.scheduler)
+            if self.strategy.step == 0:
+                optimizer_updates += 1
 
             if "response_length" in micro_batch:
                 status["response_length"].append(micro_batch["response_length"].mean().item())
@@ -289,11 +295,31 @@ class StudentRayActor:
             
             del micro_batch
 
+        torch.cuda.synchronize(device)
+        train_wall_time = time.perf_counter() - train_started
+        processed_valid_student_tokens = sum(status.get("valid_student_tokens", []))
+        processed_valid_teacher_tokens = sum(status.get("valid_teacher_tokens", []))
+
         for key in status:
             if isinstance(status[key], list) and len(status[key]) > 0:
                 status[key] = sum(status[key]) / len(status[key])
 
         status["lr"] = self.scheduler.get_last_lr()[0]
+        status["optimizer_updates"] = float(optimizer_updates)
+        status["student_train_wall_time"] = train_wall_time
+        status["gpu_memory_allocated_gib"] = torch.cuda.memory_allocated(device) / 2**30
+        status["gpu_memory_reserved_gib"] = torch.cuda.memory_reserved(device) / 2**30
+        status["gpu_peak_memory_allocated_gib"] = torch.cuda.max_memory_allocated(device) / 2**30
+        status["gpu_peak_memory_reserved_gib"] = torch.cuda.max_memory_reserved(device) / 2**30
+        status["gpu_memory_capacity_gib"] = torch.cuda.get_device_properties(device).total_memory / 2**30
+        status["processed_valid_student_tokens"] = processed_valid_student_tokens
+        status["processed_valid_teacher_tokens"] = processed_valid_teacher_tokens
+        status["global_processed_valid_student_tokens"] = (
+            processed_valid_student_tokens * self._world_size
+        )
+        status["student_valid_tokens_per_second"] = (
+            processed_valid_student_tokens / train_wall_time if train_wall_time > 0 else 0.0
+        )
 
         for key in status:
             status[key] = self.strategy.all_reduce(status[key], op="mean")

@@ -73,8 +73,16 @@ def train(args):
     )
     tokenizer_info = check_tokenizer_identical(student_tokenizer, teacher_tokenizer)
     strategy.print(f"Tokenizers {tokenizer_info}")
-    if not tokenizer_info.vocab_identical and args.kd.kd_algorithm not in  ["dskd", "simple_ctkd", "alm", "uld", "span_ctkd", "span_ctkd_1to1", "span_ctkd_no_span_loss", "simple_ctkd_random_span"]:
-        raise ValueError("Student and teacher tokenizers are not identical. Please use a cross-tokenizer KD algorithm (dskd, simple_ctkd, alm, uld, span_ctkd, span_ctkd_1to1, span_ctkd_no_span_loss, simple_ctkd_random_span) or ensure tokenizers are the same.")
+    cross_tokenizer_algorithms = {
+        "dskd", "simple_ctkd", "alm", "uld", "span_ctkd", "span_ctkd_1to1",
+        "span_ctkd_no_span_loss", "simple_ctkd_random_span", "xtoken",
+    }
+    if not tokenizer_info.vocab_identical and args.kd.kd_algorithm not in cross_tokenizer_algorithms:
+        raise ValueError(
+            "Student and teacher tokenizers are not identical. Please use a "
+            f"cross-tokenizer KD algorithm ({', '.join(sorted(cross_tokenizer_algorithms))}) "
+            "or ensure tokenizers are the same."
+        )
     
     # Load and prepare training dataset
     train_data = blending_datasets(
@@ -132,9 +140,27 @@ def train(args):
     max_rollout_iters = math.ceil(args.train.num_epochs * num_rollout_iters_per_epoch)
     strategy.log(f"Max training iterations: {max_rollout_iters}")
     
+    execution_optimizer_steps = max_rollout_iters * num_update_steps_per_rollout
+    scheduler_horizon_steps = (
+        args.train.lr_scheduler_horizon_steps
+        if args.train.lr_scheduler_horizon_steps is not None
+        else execution_optimizer_steps
+    )
+    if scheduler_horizon_steps < execution_optimizer_steps:
+        raise ValueError(
+            "lr_scheduler_horizon_steps must be greater than or equal to the "
+            f"execution optimizer steps ({execution_optimizer_steps}), got "
+            f"{scheduler_horizon_steps}"
+        )
+    strategy.log(
+        "Optimizer-step contract: "
+        f"execution={execution_optimizer_steps}, scheduler_horizon={scheduler_horizon_steps}, "
+        f"warmup={math.ceil(scheduler_horizon_steps * args.train.lr_warmup_ratio)}"
+    )
+
     # Initialize student model on all workers
     ray.get(student_model.async_init_model_from_pretrained(
-        strategy, (max_rollout_iters * num_update_steps_per_rollout), 
+        strategy, scheduler_horizon_steps,
         teacher_tokenizer=teacher_tokenizer, 
         tokenizer_info=tokenizer_info,
     ))

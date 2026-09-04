@@ -11,6 +11,15 @@ from kdflow.utils.logging_utils import init_logger
 logger = init_logger(__name__)
 
 
+def chunk_batch_indices(batch_indices, chunk_size):
+    """Split assigned micro-batch indices without changing their order."""
+    chunk_size = max(1, int(chunk_size))
+    return [
+        batch_indices[start : start + chunk_size]
+        for start in range(0, len(batch_indices), chunk_size)
+    ]
+
+
 @ray.remote
 class TeacherRayActor:
     """
@@ -93,39 +102,49 @@ class TeacherRayActor:
         Returns:
             List of (batch_idx, micro-batch with teacher_hiddens) tuples and return timestamp
         """
-        batches = [global_batch[i] for i in batch_indices]
-        mbsz = batches[0]["tea_input_ids"].shape[0]
-        
-        # Collect prompts and loss masks across all micro-batches
-        prompts = sum((micro_batch["tea_full_texts"] for micro_batch in batches), [])
-        unpadded_loss_masks = []
-        for micro_batch in batches:
-            attn_mask, loss_mask = micro_batch["tea_attn_mask"], micro_batch["tea_loss_mask"]
-            unpadded_loss_masks.extend(remove_pad_token(loss_mask, attn_mask, return_tensors=True))
-        unpadded_loss_masks = [m.numpy().astype(bool) for m in unpadded_loss_masks]
-        
-        # Collect image data if present
-        image_data = None
-        if batches[0].get("images") is not None:
-            image_data = sum((micro_batch["images"] for micro_batch in batches), [])
-        
-        hidden_states_list = self.engine_service.generate(
-            prompt=prompts,
-            loss_masks=unpadded_loss_masks,
-            sampling_params={"max_new_tokens": 0},
-            return_hidden_states=True,
-            image_data=image_data,
-        )
-        
-        # Process in micro-batch groups with vectorized operations
-        sample_idx = 0
+        chunk_size = max(1, int(self.strategy.args.kd.teacher_forward_n_batches))
         results_with_indices = []  # List of (original_batch_idx, batch_with_hiddens)
-        for mb_idx, original_batch_idx in enumerate(batch_indices):
-            mb_hidden_np = hidden_states_list[sample_idx: sample_idx + mbsz]
-            mb_hidden_np = np.concatenate(mb_hidden_np, axis=0)
-            batches[mb_idx]["teacher_hiddens"] = ray.put(mb_hidden_np)
-            results_with_indices.append((original_batch_idx, batches[mb_idx]))
-            sample_idx += mbsz
+        index_chunks = chunk_batch_indices(batch_indices, chunk_size)
+        num_chunks = len(index_chunks)
+        for chunk_number, current_indices in enumerate(index_chunks, start=1):
+            batches = [global_batch[i] for i in current_indices]
+            mbsz = batches[0]["tea_input_ids"].shape[0]
+
+            # Bound each SGLang request so long cross-tokenizer sequences do not
+            # create one monolithic prefill/hidden-state transfer.
+            prompts = sum((micro_batch["tea_full_texts"] for micro_batch in batches), [])
+            unpadded_loss_masks = []
+            for micro_batch in batches:
+                attn_mask, loss_mask = micro_batch["tea_attn_mask"], micro_batch["tea_loss_mask"]
+                unpadded_loss_masks.extend(remove_pad_token(loss_mask, attn_mask, return_tensors=True))
+            unpadded_loss_masks = [m.numpy().astype(bool) for m in unpadded_loss_masks]
+
+            image_data = None
+            if batches[0].get("images") is not None:
+                image_data = sum((micro_batch["images"] for micro_batch in batches), [])
+
+            logger.info(
+                "[TeacherRayActor.forward] chunk %d/%d, micro_batches=%d, samples=%d",
+                chunk_number,
+                num_chunks,
+                len(batches),
+                len(prompts),
+            )
+            hidden_states_list = self.engine_service.generate(
+                prompt=prompts,
+                loss_masks=unpadded_loss_masks,
+                sampling_params={"max_new_tokens": 0},
+                return_hidden_states=True,
+                image_data=image_data,
+            )
+
+            sample_idx = 0
+            for mb_idx, original_batch_idx in enumerate(current_indices):
+                mb_hidden_np = hidden_states_list[sample_idx : sample_idx + mbsz]
+                mb_hidden_np = np.concatenate(mb_hidden_np, axis=0)
+                batches[mb_idx]["teacher_hiddens"] = ray.put(mb_hidden_np)
+                results_with_indices.append((original_batch_idx, batches[mb_idx]))
+                sample_idx += mbsz
         
         return results_with_indices
     

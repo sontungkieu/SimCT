@@ -33,6 +33,15 @@ class TrainingArguments:
     lr_warmup_ratio: float = field(
         default=0.05
     )
+    lr_scheduler_horizon_steps: Optional[int] = field(
+        default=None,
+        metadata={
+            "help": (
+                "Optional optimizer-step horizon for the LR scheduler. This lets a "
+                "short qualification run preserve the schedule of the full experiment."
+            )
+        },
+    )
     min_lr: float = field(
         default=1e-8
     )

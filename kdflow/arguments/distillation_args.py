@@ -164,6 +164,31 @@ class DistillationArguments:
                   "(default 2.0, i.e. teacher captured mass Z_T(h) < 0.5). "
                   "Set to 0 to disable masking."}
     )
+    # NVIDIA X-Token P-KL projection settings. The projection artifact is
+    # model-pair-specific and therefore must be supplied explicitly.
+    xtoken_projection_path: Optional[str] = field(
+        default=None,
+        metadata={"help": "Path to the audited X-Token top-k projection artifact."},
+    )
+    xtoken_projection_sha256: Optional[str] = field(
+        default=None,
+        metadata={"help": "Required SHA-256 for xtoken_projection_path."},
+    )
+    xtoken_vocab_topk: int = field(
+        default=8192,
+        metadata={"help": "Teacher-vocabulary top-k used by X-Token P-KL."},
+    )
+    xtoken_exact_match_only: bool = field(
+        default=False,
+        metadata={"help": "Only use canonically exact alignment chunks for X-Token P-KL."},
+    )
+    xtoken_dynamic_loss_scaling: bool = field(
+        default=True,
+        metadata={"help": "Dynamically scale X-Token KD magnitude to student CE."},
+    )
+    xtoken_kl_loss_weight: float = field(default=1.0)
+    xtoken_ce_loss_scale: float = field(default=0.1)
+    xtoken_max_comb_len: int = field(default=4)
 
     def __post_init__(self):
         # Validate teacher parallel size settings
@@ -186,5 +211,15 @@ class DistillationArguments:
             raise ValueError(f"random_span_ratio must be in [0, 1], got {self.random_span_ratio}.")
         if not 0.0 <= self.span_mask_ratio <= 1.0:
             raise ValueError(f"span_mask_ratio must be in [0, 1], got {self.span_mask_ratio}.")
-
+        if self.kd_algorithm == "xtoken":
+            if not self.xtoken_projection_path:
+                raise ValueError("xtoken_projection_path is required for kd_algorithm=xtoken.")
+            if not self.xtoken_projection_sha256 or len(self.xtoken_projection_sha256) != 64:
+                raise ValueError(
+                    "a 64-character xtoken_projection_sha256 is required for kd_algorithm=xtoken."
+                )
+            if self.xtoken_vocab_topk <= 0:
+                raise ValueError("xtoken_vocab_topk must be positive.")
+            if self.xtoken_max_comb_len <= 0:
+                raise ValueError("xtoken_max_comb_len must be positive.")
 

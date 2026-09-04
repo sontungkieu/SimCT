@@ -5,7 +5,7 @@ from typing import Optional
 @dataclass
 class LoggingArguments:
     """ Arguments for logging (e.g., wandb and tensorboard)."""
-    
+
     logging_steps: int = field(
         default=10,
         metadata={"help": "Log results every n steps."}
@@ -26,6 +26,17 @@ class LoggingArguments:
     wandb_run_name: str = field(
         default=None
     )
+    wandb_run_id: str = field(
+        default=None,
+        metadata={"help": "Stable W&B run id; enables exact post-run verification."},
+    )
+    wandb_job_type: str = field(
+        default="train",
+    )
+    wandb_tags: str = field(
+        default="",
+        metadata={"help": "Comma-separated W&B tags."},
+    )
     wandb_mode: str = field(
         default="online",
         metadata={"help": "wandb mode: online, offline, or disabled."}
@@ -34,4 +45,3 @@ class LoggingArguments:
         default=None,
         metadata={"help": "Directory to store wandb offline logs."}
     )
-    
