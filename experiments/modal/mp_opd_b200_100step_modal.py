@@ -15,15 +15,15 @@ import traceback
 import modal
 
 
-APP_NAME = "vdt-mp-opd-b200-atomic-no1ceboy-20260904-r6"
-RUN_ID = "mp-opd-b200-atomic-100update-20260904-r6"
-VOLUME_NAME = "vdt-mp-opd-b200-atomic-no1ceboy-20260904-r6"
+APP_NAME = "vdt-mp-opd-b200-atomic-no1ceboy-20260905-r7"
+RUN_ID = "mp-opd-b200-atomic-100update-20260905-r7"
+VOLUME_NAME = "vdt-mp-opd-b200-atomic-no1ceboy-20260905-r7"
 SOURCE_VOLUME_NAME = "vdt-xtoken-phase-a-no1ceboy-20260904-r14"
 WANDB_SECRET_NAME = "vdt-xtoken-wandb-no1ceboy"
 WANDB_ENTITY = "kieusontung8-hanoi-university-of-science-and-technology"
 WANDB_PROJECT = "vdt-simct-tunix-reproduction"
-WANDB_RUN_ID = "mp-opd-b200-atomic-r6-69fbf29"
-WANDB_RUN_NAME = "mp-opd-b200-atomic-100update-r6"
+WANDB_RUN_ID = "mp-opd-b200-atomic-r7-38c54ef"
+WANDB_RUN_NAME = "mp-opd-b200-atomic-100update-r7"
 
 STUDENT_REVISION = "4e20de362430cd3b72f300e6b0f18e50e7166e08"
 TEACHER_REVISION = "1cfa9a7208912126459214e8b04321603b3df60c"
@@ -36,9 +36,10 @@ MP_OPD_SEMIMARKOV_SHA256 = "b8880fed36bbf724ae7053de47df39f251ddff9822b2927f3a85
 RING_ATTN_UTILS_SHA256 = "02e55701ec24de36e7512675c8e3ce94480702120c4b6cdfcc3a90bf0bf2e19b"
 LOGGING_ARGS_SHA256 = "19b125ad7d5e3935a56a6f325108c1c2ecdbb47bfb66c39987113faad436fad0"
 TENSORBOARD_UTILS_SHA256 = "30327d6986eb9223a11a8726a40cfc0609948ab147401468ff6993ceaf2c9429"
-ON_POLICY_TRAINER_SHA256 = "1046b5d45bd3d6846c485b5d98fe711d7d8b6f261d0d8b96208f52eed0bdc48a"
+ON_POLICY_TRAINER_SHA256 = "e3aadcb1040d53d81d162c45eb3714bbbd59e840afd59bbea3ede76c12dde364"
 TENSORBOARD_TEST_SHA256 = "1625f729e3485576dfb8bf05874263666c3aa118a999e46325d811c7a28d69e6"
-REPO_BASE_HEAD = "69fbf29364d8073820e3136b1322bc9c93ce8989"
+LOGGING_REGRESSION_TEST_SHA256 = "ac848c6168421c26212f9e1a1a84488626a3269edc7007d19edd34d3590e8642"
+REPO_BASE_HEAD = "38c54efd4aaffbd45e07d8a97dbfdc8bc30c1d56"
 
 REMOTE_REPO = Path("/opt/repo")
 LOCAL_ROOT = Path(__file__).resolve().parents[2] if modal.is_local() else REMOTE_REPO
@@ -371,6 +372,7 @@ def cpu_preflight() -> dict[str, object]:
                 "tests/test_xtoken_algorithm.py",
                 "tests/test_ring_attn_utils.py",
                 "tests/test_tensorboard_logging.py",
+                "tests/test_on_policy_logging.py",
             ],
             cwd=REMOTE_REPO,
             env=environment,
@@ -416,13 +418,13 @@ def train(preflight_result: dict[str, object]) -> dict[str, object]:
         "cpu_preflight": preflight_result,
         "operational": {
             "repo_base_head": REPO_BASE_HEAD,
-            "retry_of": "mp-opd-b200-atomic-100update-20260904-r5",
+            "retry_of": "mp-opd-b200-atomic-100update-20260904-r6",
             "retry_reason": (
-                "r5 reached the first student microbatch and stopped before optimizer "
-                "update 1 because a transient partial-UTF8 replacement prefix was "
-                "treated as a terminal atomization failure; r6 skips only invalid "
-                "intermediate boundaries and logs true normalization mismatches as "
-                "zero-gradient exclusions without changing scientific config"
+                "r6 completed optimizer updates 1 and 2, then stopped while logging "
+                "update 3 because a step-local MP-OPD invalid-reason metric was absent "
+                "and its retained empty accumulator was formatted as a scalar; r7 "
+                "drops inactive dynamic metrics between logging steps without changing "
+                "the scientific configuration"
             ),
             "native_lock_sha256": B200_LOCK_SHA256,
             "gpu": "B200:1",
@@ -453,6 +455,7 @@ def train(preflight_result: dict[str, object]) -> dict[str, object]:
             "kdflow/utils/tensorboard_utils.py": TENSORBOARD_UTILS_SHA256,
             "kdflow/trainer/on_policy_kd_trainer.py": ON_POLICY_TRAINER_SHA256,
             "tests/test_tensorboard_logging.py": TENSORBOARD_TEST_SHA256,
+            "tests/test_on_policy_logging.py": LOGGING_REGRESSION_TEST_SHA256,
         }
         for name, expected in source_hashes.items():
             actual = sha256(REMOTE_REPO / name)
