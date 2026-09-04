@@ -241,7 +241,12 @@ class MetaPartitionedOPD:
             teacher_hiddens.to(self.teacher_lm_head.weight)
         )
 
-        total_loss = student_logits_flat.new_zeros(())
+        # Keep the zero baseline connected to the student graph. A fail-closed
+        # sample can occupy an entire microbatch (the production recipe uses
+        # micro_train_batch_size=1); it must contribute zero gradient and
+        # explicit invalid-sample telemetry without aborting the surrounding
+        # gradient-accumulation window.
+        total_loss = student_logits_flat.sum() * 0.0
         total_atoms = total_invalid = total_one = total_multi = 0
         invalid_reasons: dict[str, int] = {}
         covered_student = covered_teacher = masked_eos = 0
@@ -302,14 +307,13 @@ class MetaPartitionedOPD:
             credit_values.append(credits.base_credit)
             rate_values.append(credits.rate)
 
-        if valid_samples == 0:
-            raise RuntimeError("MP-OPD atomization failed closed for every sample")
         kd_loss = total_loss / avg_token_num
         metrics = {
             "loss": kd_loss,
             "kd_loss": kd_loss,
             "mp_opd_valid_atom_count": kd_loss.new_tensor(float(total_atoms)),
             "mp_opd_invalid_sample_count": kd_loss.new_tensor(float(total_invalid)),
+            "mp_opd_valid_sample_count": kd_loss.new_tensor(float(valid_samples)),
             "mp_opd_one_to_one_atom_ratio": kd_loss.new_tensor(total_one / max(total_atoms, 1)),
             "mp_opd_multi_token_atom_ratio": kd_loss.new_tensor(total_multi / max(total_atoms, 1)),
             "mp_opd_candidate_span_count": kd_loss.new_tensor(float(candidate_spans)),
@@ -321,8 +325,9 @@ class MetaPartitionedOPD:
             ),
             "mp_opd_atomization_and_loss_seconds": kd_loss.new_tensor(time.perf_counter() - started),
         }
-        metrics.update(_finite_stats("mp_opd_b", torch.cat(credit_values)))
-        metrics.update(_finite_stats("mp_opd_r", torch.cat(rate_values)))
+        if credit_values:
+            metrics.update(_finite_stats("mp_opd_b", torch.cat(credit_values)))
+            metrics.update(_finite_stats("mp_opd_r", torch.cat(rate_values)))
         metrics.update(
             {
                 "mp_opd_atom_byte_length_mean": kd_loss.new_tensor(sum(byte_lengths) / max(len(byte_lengths), 1)),
@@ -333,7 +338,7 @@ class MetaPartitionedOPD:
         for reason, count in sorted(invalid_reasons.items()):
             metrics[f"mp_opd_invalid_reason_{reason}"] = kd_loss.new_tensor(float(count))
         for key, value in extra_sums.items():
-            metrics[key] = value / valid_samples
+            metrics[key] = value / max(valid_samples, 1)
         if self.args.kd.kd_ratio < 1:
             ce_labels = student_labels[student_loss_mask]
             ce_loss = compute_cross_entropy(student_logits_flat, ce_labels, reduction="sum") / avg_token_num

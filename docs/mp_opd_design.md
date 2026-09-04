@@ -104,11 +104,21 @@ decoded UTF-8 bytes are identical. Each atom records:
 - validity/failure reason; and
 - optional detached scalar credit fields.
 
-Atoms are ordered, non-overlapping and gap-free on covered events. The v0
-atomizer fails closed on replacement characters, normalization mismatch, empty
-decode, unsupported added-token semantics, empty responses, or an unaligned
-suffix. Padding never reaches the atomizer. Terminal EOS is masked and counted:
-v0 does not pretend two unrelated EOS IDs decode to the same response bytes.
+Atoms are ordered, non-overlapping and gap-free on covered events. A transient
+replacement character from a token prefix that ends inside a multi-byte UTF-8
+scalar is skipped as a candidate boundary; the complete decode must still be
+replacement-free and byte-identical across tokenizers. The v0 atomizer fails
+closed on a replacement character in the complete decode, normalization
+mismatch, empty decode, unsupported added-token semantics, empty responses, or
+an unaligned suffix. Padding never reaches the atomizer. Terminal EOS is masked
+and counted: v0 does not pretend two unrelated EOS IDs decode to the same
+response bytes.
+
+An invalid sample contributes a differentiable zero loss and explicit failure
+telemetry. This matters when `micro_train_batch_size=1`: an unrepresentable
+teacher decode must be excluded without aborting the other valid samples in the
+same gradient-accumulation window. The effective valid-sample count and each
+failure reason are logged, so exclusion cannot be mistaken for training signal.
 
 Prompt/completion ambiguity is prevented structurally: the API accepts only
 labels selected by response loss masks. A caller that cannot prove that
@@ -189,9 +199,10 @@ prove full-parameter headroom.
 
 ## Metrics and evidence labels
 
-Training emits scalar, finite, W&B-safe values for atom counts, invalid sample
-ratio, covered student/teacher events, one-to-one/multi-token ratio, candidate
-span count, masked EOS count and `b/r` distribution. Soft mode additionally
+Training emits scalar, finite, W&B-safe values for atom counts, valid/invalid
+sample counts and ratio, per-reason exclusions, covered student/teacher events,
+one-to-one/multi-token ratio, candidate span count, masked EOS count and `b/r`
+distribution. Soft mode additionally
 emits logZ, partition entropy, expected span count/length, marginal coverage
 error and credit-conservation residual. Oracle instrumentation emits predicted
 utility. The local JSON also records source identity, config hash, pinned toy

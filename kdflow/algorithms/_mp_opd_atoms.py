@@ -123,7 +123,13 @@ class SimCTAtomizer:
 
         stu_prefix = [_decode(self.student_tokenizer, stu_ids[:i]) for i in range(1, len(stu_ids) + 1)]
         tea_prefix = [_decode(self.teacher_tokenizer, tea_ids[:i]) for i in range(1, len(tea_ids) + 1)]
-        if any("\ufffd" in value for value in (*stu_prefix, *tea_prefix)):
+        # Byte-BPE tokenizers can emit U+FFFD for an *intermediate* prefix that
+        # ends inside a multi-byte UTF-8 scalar, then recover losslessly after
+        # the next token. Such a prefix is not a legal synchronized boundary,
+        # but it must not invalidate the complete response. Only the complete
+        # decode is required to be replacement-free; transient prefixes are
+        # filtered from the boundary maps below.
+        if "\ufffd" in stu_prefix[-1] or "\ufffd" in tea_prefix[-1]:
             return AtomizationResult(
                 (), False, AtomizationFailure.REPLACEMENT_CHARACTER.value, 0, 0, stu_eos, tea_eos
             )
@@ -134,49 +140,51 @@ class SimCTAtomizer:
                 (), False, AtomizationFailure.NORMALIZATION_MISMATCH.value, 0, 0, stu_eos, tea_eos
             )
 
-        atoms: list[MPAtom] = []
-        si = ti = 0
-        prev_si = prev_ti = 0
-        prev_bytes = b""
-        while si < len(stu_ids) and ti < len(tea_ids):
-            sb = stu_prefix[si].encode("utf-8")
-            tb = tea_prefix[ti].encode("utf-8")
-            if sb == tb:
-                if len(sb) <= len(prev_bytes):
-                    return AtomizationResult(
-                        (), False, AtomizationFailure.EMPTY_DECODE.value, 0, 0, stu_eos, tea_eos
-                    )
-                stu_count = si + 1 - prev_si
-                tea_count = ti + 1 - prev_ti
-                atoms.append(
-                    MPAtom(
-                        sample_id=str(sample_id),
-                        student_start=prev_si,
-                        student_end=si + 1,
-                        teacher_start=prev_ti,
-                        teacher_end=ti + 1,
-                        byte_start=len(prev_bytes),
-                        byte_end=len(sb),
-                        student_token_count=stu_count,
-                        teacher_token_count=tea_count,
-                        boundary_type="one_to_one" if stu_count == tea_count == 1 else "multi_token",
-                    )
-                )
-                prev_si, prev_ti, prev_bytes = si + 1, ti + 1, sb
-                si += 1
-                ti += 1
-            elif len(sb) < len(tb) and tb.startswith(sb):
-                si += 1
-            elif len(tb) < len(sb) and sb.startswith(tb):
-                ti += 1
-            elif len(sb) <= len(tb):
-                si += 1
-            else:
-                ti += 1
+        full_bytes = stu_prefix[-1].encode("utf-8")
 
-        if prev_si != len(stu_ids) or prev_ti != len(tea_ids):
+        def boundary_map(prefixes: Sequence[str]) -> dict[int, int]:
+            boundaries: dict[int, int] = {0: 0}
+            for token_end, value in enumerate(prefixes, start=1):
+                if not value or "\ufffd" in value:
+                    continue
+                candidate = value.encode("utf-8")
+                if full_bytes.startswith(candidate):
+                    # Keep the latest token index for a byte offset so any
+                    # zero-width decoder artifacts remain inside an atom.
+                    boundaries[len(candidate)] = token_end
+            return boundaries
+
+        stu_boundaries = boundary_map(stu_prefix)
+        tea_boundaries = boundary_map(tea_prefix)
+        common_offsets = sorted(set(stu_boundaries) & set(tea_boundaries))
+        if not common_offsets or common_offsets[-1] != len(full_bytes):
             return AtomizationResult(
                 (), False, AtomizationFailure.UNALIGNED_SUFFIX.value, 0, 0, stu_eos, tea_eos
+            )
+
+        atoms: list[MPAtom] = []
+        for byte_start, byte_end in zip(common_offsets, common_offsets[1:]):
+            prev_si, si = stu_boundaries[byte_start], stu_boundaries[byte_end]
+            prev_ti, ti = tea_boundaries[byte_start], tea_boundaries[byte_end]
+            stu_count = si - prev_si
+            tea_count = ti - prev_ti
+            if byte_end <= byte_start or stu_count <= 0 or tea_count <= 0:
+                return AtomizationResult(
+                    (), False, AtomizationFailure.EMPTY_DECODE.value, 0, 0, stu_eos, tea_eos
+                )
+            atoms.append(
+                MPAtom(
+                    sample_id=str(sample_id),
+                    student_start=prev_si,
+                    student_end=si,
+                    teacher_start=prev_ti,
+                    teacher_end=ti,
+                    byte_start=byte_start,
+                    byte_end=byte_end,
+                    student_token_count=stu_count,
+                    teacher_token_count=tea_count,
+                    boundary_type="one_to_one" if stu_count == tea_count == 1 else "multi_token",
+                )
             )
         return AtomizationResult(
             tuple(atoms), True, None, len(stu_ids), len(tea_ids), stu_eos, tea_eos

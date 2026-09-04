@@ -16,7 +16,8 @@ weighted sum. Oracle utility is `-r_c * sum_i z_i`, also without an extra
 
 ## Implemented components
 
-- fail-closed cumulative UTF-8 byte atomizer with explicit EOS masking;
+- fail-closed cumulative UTF-8 byte atomizer with explicit EOS masking and
+  boundary-safe handling of transient partial-codepoint replacement prefixes;
 - detached realized-path teacher/student credit and corrected span loss;
 - deterministic atomic/fixed/random full-cover partitions;
 - exact float32 `O(nL)` semi-Markov forward/backward and marginals;
@@ -36,7 +37,7 @@ weighted sum. Oracle utility is `-r_c * sum_i z_i`, also without an extra
 
 ```text
 python -m pytest tests/mp_opd -q
-28 passed
+30 passed
 ```
 
 Coverage includes byte equality and failure modes; real Llama-3.2/Qwen2.5
@@ -45,7 +46,8 @@ coverage; normalization; signed-credit conservation; L=1 loss/gradient
 identity; constant-rate merge invariance; hard-DP argmax; explicit autograd
 utility; centered finite difference; detach boundaries; mixed precision;
 deterministic random partition; energy checkpoint round trip; shifted labels;
-finite atomic backward; JSON-safe metrics; and fail-closed oracle/soft modes.
+finite atomic backward; zero-gradient exclusion for an invalid size-one
+microbatch; JSON-safe metrics; and fail-closed oracle/soft modes.
 
 ### Baseline regressions and full repository suite
 
@@ -126,3 +128,28 @@ Transformers 5.6 `AutoTokenizer` entered the Llama `AutoConfig` path and the
 the Llama tokenizer type explicitly and runs tokenizer/data plus MP-OPD
 regression checks in a CPU-only Modal preflight before allocating B200. The
 scientific training contract is unchanged and r3 still has `retries=0`.
+
+Attempt r4 passed the B200 hardware/runtime gate but stopped before an optimizer
+update because FlashAttention 4 does not expose the legacy
+`flash_attn.bert_padding` module. Commit `96b9244` replaced only those padding
+helpers with value/gradient-preserving PyTorch operations; the attention kernel
+and scientific configuration were unchanged.
+
+Attempt r5 then passed the CPU suite and B200 gate, initialized rollout plus the
+Qwen3-4B teacher, generated the first 64 student responses, completed all eight
+teacher-forward chunks and reached the first student microbatch. It stopped
+before optimizer update 1 because the atomizer rejected an intermediate
+U+FFFD produced by a partial UTF-8 tokenizer prefix. A CPU diagnostic replay of
+the exact 64 saved responses found 46 transient-prefix rejections and 18 valid
+samples. After filtering transient prefixes only, 62/64 responses atomized
+losslessly. The remaining two are genuine teacher-tokenizer normalization
+mismatches: student decode equals the source bytes while teacher decode differs,
+so they remain fail-closed and contribute zero gradient with explicit metrics.
+
+Post-fix validation on the pinned Modal CPU image reports:
+
+```text
+tests/mp_opd + SpanCTKD/X-Token regressions + ring-attention compatibility
+37 passed, 1 skipped, 15 non-failing upstream warnings
+exact r5 rollout replay: 62 valid, 2 normalization_mismatch
+```

@@ -18,6 +18,11 @@ class FakeTokenizer:
         return self._added
 
 
+class PrefixTokenizer(FakeTokenizer):
+    def decode(self, ids, **_kwargs):
+        return self.pieces[tuple(int(value) for value in ids)]
+
+
 def test_atom_coverage_order_no_overlap_and_exact_bytes():
     student = FakeTokenizer({1: "a", 2: "b", 3: "c", 99: "<eos>"})
     teacher = FakeTokenizer({10: "ab", 11: "c", 98: "<end>"}, eos_token_id=98)
@@ -51,6 +56,17 @@ def test_unsupported_added_token_fails_closed():
     ).atomize([1], [2], sample_id="added")
     assert not result.valid
     assert result.failure_reason == AtomizationFailure.UNSUPPORTED_ADDED_TOKEN.value
+
+
+def test_transient_replacement_prefix_is_skipped_as_a_boundary():
+    student = PrefixTokenizer({(1,): "\ufffd", (1, 2): "é"})
+    teacher = PrefixTokenizer({(10,): "é"})
+    result = SimCTAtomizer(student, teacher).atomize([1, 2], [10], sample_id="utf8")
+    assert result.valid
+    assert len(result.atoms) == 1
+    assert result.atoms[0].student_token_count == 2
+    assert result.atoms[0].teacher_token_count == 1
+    assert result.atoms[0].byte_end == len("é".encode("utf-8"))
 
 
 def test_empty_response_behavior_is_explicit():

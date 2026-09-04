@@ -119,6 +119,42 @@ def test_atomic_student_forward_teacher_score_backward_is_finite_and_shifted():
     assert all(isinstance(float(value.detach()), float) for value in metrics.values())
 
 
+def test_invalid_single_sample_microbatch_is_zero_gradient_and_auditable():
+    args = SimpleNamespace(
+        kd=DistillationArguments(kd_algorithm="mp_opd", mp_opd_mode="atomic", kd_ratio=1.0)
+    )
+    strategy = SimpleNamespace(args=args, ring_attn_group=None)
+    torch.manual_seed(7)
+    student = FakeStudent(torch.randn(1, 3, 16))
+    teacher_head = torch.nn.Linear(3, 24, bias=False)
+    teacher_head.requires_grad_(False)
+    algorithm = MetaPartitionedOPD(
+        strategy,
+        student,
+        teacher_head,
+        FakeTokenizer({1: "a", 3: "<s>", 15: "<eos>"}, 15),
+        FakeTokenizer({2: "b", 4: "<s>", 23: "<end>"}, 23),
+    )
+    batch = {
+        "stu_input_ids": torch.tensor([[3, 1, 15]]),
+        "stu_attn_mask": torch.ones(1, 3),
+        "stu_loss_mask": torch.tensor([[True, True, False]]),
+        "tea_input_ids": torch.tensor([[4, 2, 23]]),
+        "tea_loss_mask": torch.tensor([[True, True, False]]),
+        "teacher_hiddens": torch.randn(2, 3),
+        "avg_micro_batch_token_num": torch.tensor(2.0),
+    }
+    metrics = algorithm.training_step(batch)
+    metrics["loss"].backward()
+    assert metrics["loss"].item() == 0.0
+    assert metrics["mp_opd_valid_sample_count"].item() == 0.0
+    assert metrics["mp_opd_invalid_sample_count"].item() == 1.0
+    assert metrics["mp_opd_invalid_reason_normalization_mismatch"].item() == 1.0
+    assert student.logits.grad is not None
+    assert student.logits.grad.abs().sum().item() == 0.0
+    assert all(value.ndim == 0 and torch.isfinite(value) for value in metrics.values())
+
+
 def test_oracle_mode_is_fail_closed_without_instrumentation_scores():
     args = SimpleNamespace(kd=DistillationArguments(kd_algorithm="mp_opd", mp_opd_mode="oracle"))
     strategy = SimpleNamespace(args=args, ring_attn_group=None)
