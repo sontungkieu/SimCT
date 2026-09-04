@@ -44,13 +44,13 @@ and [PyTorch integration guide](https://docs.astral.sh/uv/guides/integration/pyt
 
 ## 2. Exact repository inputs
 
-Use branch `vdt/experiments/xtoken`. Record the commit before installation:
+Use branch `vdt/experiments/mp-opd`. Record the commit before installation:
 
 ```bash
 git clone https://github.com/sontungkieu/SimCT.git /workspace/SimCT
 cd /workspace/SimCT
-git fetch origin vdt/experiments/xtoken
-git switch --detach origin/vdt/experiments/xtoken
+git fetch origin vdt/experiments/mp-opd
+git switch --detach origin/vdt/experiments/mp-opd
 git rev-parse HEAD | tee /workspace/simct-b200-provenance.commit
 git status --short
 ```
@@ -68,6 +68,126 @@ The two independent manifests are:
 
 Do not merge these environments. LlamaFactory and SGLang/KDFlow intentionally
 have different dependency constraints.
+
+### 2.1 Portable Docker image (both isolated environments, no models)
+
+`docker/Dockerfile.b200-cu130` packages both lock-controlled environments in a
+single `linux/amd64` image without merging their dependencies:
+
+- KDFlow/SimCT/MP-OPD: `/opt/venvs/simct-b200` (the default `PATH`);
+- SFT/LlamaFactory: `/opt/venvs/simct-b200-sft` (`simct-sft` is a convenience
+  link to its CLI);
+- source and B200 launchers: `/opt/simct`;
+- external model store: `/models`;
+- external datasets: `/data`;
+- external checkpoints, W&B offline files, TensorBoard events and reports:
+  `/outputs`.
+
+The `.dockerignore` rejects model/checkpoint extensions, model/data/output
+directories, VCS state, virtual environments and likely credential files.
+The Modal build wrapper performs a second context audit and refuses untagged or
+non-Docker-Hub image references. These checks reduce accidental inclusion; the
+operator must still review `git status` and the final Docker diff before push.
+
+Build locally on an internet-connected Docker host:
+
+```bash
+set -euo pipefail
+cd /workspace/SimCT
+COMMIT="$(git rev-parse HEAD)"
+test -z "$(git status --short)"
+
+docker buildx build \
+  --platform linux/amd64 \
+  --file docker/Dockerfile.b200-cu130 \
+  --build-arg "REPO_COMMIT=$COMMIT" \
+  --tag "docker.io/DOCKERHUB_NAMESPACE/simct-b200:cu130-${COMMIT:0:12}" \
+  --load \
+  .
+```
+
+The image build verifies both locks with `uv sync --locked`, applies the exact
+LlamaFactory Python 3.12 patch, runs `uv pip check` for each environment, and
+checks the CUDA 13 Torch and SGLang versions. A real B200 is still required for
+the CUDA gate in section 10; building the image is not a GPU qualification.
+
+To build and push on Modal, use the VM Sandbox wrapper. VM Sandboxes are beta
+and CPU-only; they provide the real Linux kernel needed for Docker/buildx. The
+resulting registry image is then qualified separately on B200.
+
+Create the registry secret once without putting the Docker Hub write token in
+shell arguments, Git, the Dockerfile or a long-lived plaintext file:
+
+```bash
+set -euo pipefail
+umask 077
+REGISTRY_ENV="$(mktemp)"
+trap 'rm -f "$REGISTRY_ENV"; unset DOCKERHUB_USERNAME DOCKERHUB_TOKEN' EXIT
+
+read -r -p 'Docker Hub username: ' DOCKERHUB_USERNAME
+read -r -s -p 'Docker Hub write token: ' DOCKERHUB_TOKEN
+printf '\n'
+printf 'REGISTRY_USERNAME=%s\nREGISTRY_PASSWORD=%s\n' \
+  "$DOCKERHUB_USERNAME" "$DOCKERHUB_TOKEN" >"$REGISTRY_ENV"
+chmod 600 "$REGISTRY_ENV"
+
+uvx --from modal==1.5.5 modal secret create \
+  --profile no1ceboy \
+  --from-dotenv "$REGISTRY_ENV" \
+  simct-dockerhub-no1ceboy
+```
+
+Before starting the build, use the Modal billing snapshot/guard required by the
+operator policy. Then push one immutable commit tag (replace the namespace with
+the exact Docker Hub account or organization):
+
+```bash
+set -euo pipefail
+cd /workspace/SimCT
+COMMIT="$(git rev-parse HEAD)"
+test -z "$(git status --short)"
+
+uvx --from modal==1.5.5 modal run \
+  --profile no1ceboy \
+  experiments/modal/build_push_b200_dockerhub.py \
+  --image "docker.io/DOCKERHUB_NAMESPACE/simct-b200:cu130-${COMMIT:0:12}" \
+  --registry-secret simct-dockerhub-no1ceboy \
+  --repo-commit "$COMMIT"
+```
+
+The wrapper uses BuildKit registry output with eStargz, OCI media types,
+provenance and an SBOM, and logs out before terminating the Sandbox. Never use
+`latest` as the only retained tag for a scientific run; record the immutable
+image digest returned by the registry inspection.
+
+On the company B200 host, mount internal assets rather than downloading or
+baking them into the image:
+
+```bash
+docker pull "docker.io/DOCKERHUB_NAMESPACE/simct-b200:cu130-APPROVED_COMMIT"
+
+docker run --rm -it --gpus all \
+  --ipc=host \
+  --ulimit memlock=-1 \
+  --ulimit stack=67108864 \
+  -e SIMCT_REQUIRE_EXTERNAL_MODELS=1 \
+  -v /approved/internal/models:/models:ro \
+  -v /approved/internal/datasets:/data:ro \
+  -v /approved/simct-runs:/outputs \
+  "docker.io/DOCKERHUB_NAMESPACE/simct-b200:cu130-APPROVED_COMMIT"
+```
+
+Inside the container, run the real-device gates before SFT or distillation:
+
+```bash
+python /opt/simct/experiments/environments/b200_gate.py
+/opt/venvs/simct-b200-sft/bin/python \
+  /opt/simct/experiments/environments/b200_gate.py
+```
+
+Use exact internal subpaths such as `/models/<student-revision>` and
+`/models/<teacher-revision>` in the SFT/SimCT configs. Do not replace an absent
+internal path with a public model silently.
 
 ## 3. Host, disk, and driver preflight
 

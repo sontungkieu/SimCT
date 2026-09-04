@@ -26,6 +26,12 @@ For B200 deployment on a company server, use the
 It covers the public-lock path, a private internal-package-pool overlay, exact
 local model paths, CUDA/uv gates, SFT qualification, SimCT qualification, W&B,
 and failure diagnostics without committing company endpoints or credentials.
+The same runbook documents the portable
+[`Dockerfile.b200-cu130`](docker/Dockerfile.b200-cu130), which contains the two
+isolated locked B200 environments and all source/launch code while requiring
+models, datasets, checkpoints, TensorBoard events, and W&B outputs to be
+mounted from outside the image. It can be built locally or pushed to Docker Hub
+from the guarded Modal VM-Sandbox wrapper.
 
 ---
 
