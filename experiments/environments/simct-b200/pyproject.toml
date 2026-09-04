@@ -11,6 +11,10 @@ dependencies = [
   "torchvision==0.26.0+cu130",
   "torchaudio==2.11.0+cu130",
   "transformers==5.6.0",
+  # Transformers 5.6.0 constructs LayerRepository entries without a revision.
+  # kernels>=0.15 tightened that constructor contract and breaks even offline
+  # Llama AutoConfig/AutoTokenizer imports before training starts.
+  "kernels==0.14.1",
   "pytest>=8.4,<9",
   "ninja",
   "packaging",

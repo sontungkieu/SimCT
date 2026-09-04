@@ -15,25 +15,25 @@ import traceback
 import modal
 
 
-APP_NAME = "vdt-mp-opd-b200-atomic-no1ceboy-20260904-r3"
-RUN_ID = "mp-opd-b200-atomic-100update-20260904-r3"
-VOLUME_NAME = "vdt-mp-opd-b200-atomic-no1ceboy-20260904-r3"
+APP_NAME = "vdt-mp-opd-b200-atomic-no1ceboy-20260904-r4"
+RUN_ID = "mp-opd-b200-atomic-100update-20260904-r4"
+VOLUME_NAME = "vdt-mp-opd-b200-atomic-no1ceboy-20260904-r4"
 SOURCE_VOLUME_NAME = "vdt-xtoken-phase-a-no1ceboy-20260904-r14"
 WANDB_SECRET_NAME = "vdt-xtoken-wandb-no1ceboy"
 WANDB_ENTITY = "kieusontung8-hanoi-university-of-science-and-technology"
 WANDB_PROJECT = "vdt-simct-tunix-reproduction"
-WANDB_RUN_ID = "mp-opd-b200-atomic-r3-4559d91"
-WANDB_RUN_NAME = "mp-opd-b200-atomic-100update-r3"
+WANDB_RUN_ID = "mp-opd-b200-atomic-r4-6e14915"
+WANDB_RUN_NAME = "mp-opd-b200-atomic-100update-r4"
 
 STUDENT_REVISION = "4e20de362430cd3b72f300e6b0f18e50e7166e08"
 TEACHER_REVISION = "1cfa9a7208912126459214e8b04321603b3df60c"
 SOURCE_DATA_SHA256 = "9f2a6a657e5e7575eb90bce59df5e385a68efdd37ce165b881e757f993a10b5c"
-B200_LOCK_SHA256 = "2075e8acbf6ab3c439f779718bd5b716424e47ce7e7b106525261818ec2ac75e"
+B200_LOCK_SHA256 = "87c3488ab5d22671a12b97289162c0312e6f8a2984ccfe81dd6959033e18a09b"
 MP_OPD_SHA256 = "a6526e9916d83d1c726e1dbba0996a5bc07bd29df7026c267604f1b01c646d4e"
 MP_OPD_ATOMS_SHA256 = "1572f3c0d435449eccc32a46cd6778680193fdf7a335c8adf4f8be0ef8676587"
 MP_OPD_CREDIT_SHA256 = "c9421290454ef85cd99cbbd166a38e386bc6d28c350aeebd5d5fdc51b06408df"
 MP_OPD_SEMIMARKOV_SHA256 = "b8880fed36bbf724ae7053de47df39f251ddff9822b2927f3a85a670f1c69044"
-REPO_BASE_HEAD = "4559d914cafd624407f37bb95b58b808fe260f95"
+REPO_BASE_HEAD = "6e14915465e00187853c911327958538cc7245e4"
 
 REMOTE_REPO = Path("/opt/repo")
 LOCAL_ROOT = Path(__file__).resolve().parents[2] if modal.is_local() else REMOTE_REPO
@@ -229,8 +229,6 @@ def prepare_prompts(environment: dict[str, str]) -> dict[str, object]:
             str(UNIQUE_PROMPTS),
             "--max-tokens",
             "240",
-            "--tokenizer-type",
-            "llama",
         ],
         cwd=REMOTE_REPO,
         env=environment,
@@ -342,8 +340,6 @@ def cpu_preflight() -> dict[str, object]:
                 "2",
                 "--max-tokens",
                 "240",
-                "--tokenizer-type",
-                "llama",
             ],
             cwd=REMOTE_REPO,
             env=environment,
@@ -411,11 +407,12 @@ def train(preflight_result: dict[str, object]) -> dict[str, object]:
         "cpu_preflight": preflight_result,
         "operational": {
             "repo_base_head": REPO_BASE_HEAD,
-            "retry_of": "mp-opd-b200-atomic-100update-20260904-r2",
+            "retry_of": "mp-opd-b200-atomic-100update-20260904-r3",
             "retry_reason": (
-                "r2 stopped before training because Transformers 5.6 AutoTokenizer "
-                "entered AutoConfig and failed in the kernels integration; r3 uses "
-                "an explicit llama tokenizer type and a non-GPU preflight"
+                "r3 stopped in the non-GPU preflight because tokenizer_type=llama "
+                "is not registered by Transformers 5.6; the underlying issue was an "
+                "incompatible kernels 0.16.1 API, so r4 pins kernels 0.14.1 and uses "
+                "the standard offline AutoTokenizer path"
             ),
             "native_lock_sha256": B200_LOCK_SHA256,
             "gpu": "B200:1",
