@@ -623,15 +623,19 @@ class OnPolicyKDTrainer:
                 elapsed=str(timedelta(seconds=(time.time() - self.start_time))).split(".")[0],
                 eta=str(timedelta(seconds=eta)).split(".")[0]
             )
-            for k in self.log_state:
-                if isinstance(self.log_state[k], list) and len(self.log_state[k]) > 0:
-                    self.log_state[k] = sum(self.log_state[k]) / len(self.log_state[k])
+            active_log_state = {}
+            for k, value in self.log_state.items():
+                if isinstance(value, list):
+                    if not value:
+                        continue
+                    value = sum(value) / len(value)
+                active_log_state[k] = value
             log_info = []
-            for k in self.log_state:
+            for k, value in active_log_state.items():
                 if k == "lr":
-                    log_info.append(f"lr: {self.log_state[k]:.6e}")
+                    log_info.append(f"lr: {value:.6e}")
                 else:
-                    log_info.append(f"{k}: {self.log_state[k]:.6f}")
+                    log_info.append(f"{k}: {value:.6f}")
             # Append average phase times
             log_str = ", ".join(log_info)
             log_str = progress_str + log_str
@@ -639,12 +643,11 @@ class OnPolicyKDTrainer:
 
             if self._wandb is not None or self._tensorboard is not None:
                 logs = {"train/global_step": self.global_step}
-                for k in self.log_state:
-                    logs[f"train/{k}"] = self.log_state[k]
+                for k, value in active_log_state.items():
+                    logs[f"train/{k}"] = value
             if self._wandb is not None:
                 self._wandb.log(logs)
             if self._tensorboard is not None:
                 self._tensorboard.log(logs, step=self.global_step)
 
-            for k in self.log_state:
-                self.log_state[k] = []
+            self.log_state.clear()
