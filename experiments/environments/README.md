@@ -1,5 +1,9 @@
 # Two independent native CUDA 12.8 environments
 
+For the separate CUDA 13/B200 profile, including company package pools and
+pre-mounted internal model paths, see the
+[B200 installation runbook](B200_INSTALL.md).
+
 These **checked-in `pyproject.toml` + `uv.lock` pairs** extend the historical
 [X-Token harness](../xtoken/README.md). Run them instead of that harness's
 CUDA 13 upstream install on a driver-570 RTX 3090 host. The root SimCT

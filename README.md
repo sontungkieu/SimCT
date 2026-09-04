@@ -21,6 +21,12 @@ tracks the separately requested Llama-1B <- Qwen3-4B, sequence-2048,
 global-batch-64 ten-update test. Its setup and training outcome must not be
 inferred from the earlier small-smoke result.
 
+For B200 deployment on a company server, use the
+[restricted-network installation runbook](experiments/environments/B200_INSTALL.md).
+It covers the public-lock path, a private internal-package-pool overlay, exact
+local model paths, CUDA/uv gates, SFT qualification, SimCT qualification, W&B,
+and failure diagnostics without committing company endpoints or credentials.
+
 ---
 
 ## 📑 Table of Contents
