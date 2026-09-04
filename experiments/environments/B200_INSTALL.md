@@ -131,7 +131,7 @@ printf 'REGISTRY_USERNAME=%s\nREGISTRY_PASSWORD=%s\n' \
   "$DOCKERHUB_USERNAME" "$DOCKERHUB_TOKEN" >"$REGISTRY_ENV"
 chmod 600 "$REGISTRY_ENV"
 
-uvx --from modal==1.5.5 modal secret create \
+uvx --from modal==1.5.5 --with python-dotenv modal secret create \
   --profile no1ceboy \
   --from-dotenv "$REGISTRY_ENV" \
   simct-dockerhub-no1ceboy
