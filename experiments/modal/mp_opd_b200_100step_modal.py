@@ -15,26 +15,26 @@ import traceback
 import modal
 
 
-APP_NAME = "vdt-mp-opd-b200-atomic-no1ceboy-20260904-r5"
-RUN_ID = "mp-opd-b200-atomic-100update-20260904-r5"
-VOLUME_NAME = "vdt-mp-opd-b200-atomic-no1ceboy-20260904-r5"
+APP_NAME = "vdt-mp-opd-b200-atomic-no1ceboy-20260904-r6"
+RUN_ID = "mp-opd-b200-atomic-100update-20260904-r6"
+VOLUME_NAME = "vdt-mp-opd-b200-atomic-no1ceboy-20260904-r6"
 SOURCE_VOLUME_NAME = "vdt-xtoken-phase-a-no1ceboy-20260904-r14"
 WANDB_SECRET_NAME = "vdt-xtoken-wandb-no1ceboy"
 WANDB_ENTITY = "kieusontung8-hanoi-university-of-science-and-technology"
 WANDB_PROJECT = "vdt-simct-tunix-reproduction"
-WANDB_RUN_ID = "mp-opd-b200-atomic-r5-f28c5a7"
-WANDB_RUN_NAME = "mp-opd-b200-atomic-100update-r5"
+WANDB_RUN_ID = "mp-opd-b200-atomic-r6-708d4bb"
+WANDB_RUN_NAME = "mp-opd-b200-atomic-100update-r6"
 
 STUDENT_REVISION = "4e20de362430cd3b72f300e6b0f18e50e7166e08"
 TEACHER_REVISION = "1cfa9a7208912126459214e8b04321603b3df60c"
 SOURCE_DATA_SHA256 = "9f2a6a657e5e7575eb90bce59df5e385a68efdd37ce165b881e757f993a10b5c"
 B200_LOCK_SHA256 = "87c3488ab5d22671a12b97289162c0312e6f8a2984ccfe81dd6959033e18a09b"
-MP_OPD_SHA256 = "a6526e9916d83d1c726e1dbba0996a5bc07bd29df7026c267604f1b01c646d4e"
-MP_OPD_ATOMS_SHA256 = "1572f3c0d435449eccc32a46cd6778680193fdf7a335c8adf4f8be0ef8676587"
+MP_OPD_SHA256 = "61adc81fea034de5da56845488ddb54cd73a7890d98f515a3ef02d056efed37a"
+MP_OPD_ATOMS_SHA256 = "4f6ce015ab81ea62a1bc2aa5d2bd66a47e2dbb986e01e9813b3a1527be35ce61"
 MP_OPD_CREDIT_SHA256 = "c9421290454ef85cd99cbbd166a38e386bc6d28c350aeebd5d5fdc51b06408df"
 MP_OPD_SEMIMARKOV_SHA256 = "b8880fed36bbf724ae7053de47df39f251ddff9822b2927f3a85a670f1c69044"
 RING_ATTN_UTILS_SHA256 = "02e55701ec24de36e7512675c8e3ce94480702120c4b6cdfcc3a90bf0bf2e19b"
-REPO_BASE_HEAD = "f28c5a7a104be1eb68708337f9222b012e68b44f"
+REPO_BASE_HEAD = "708d4bb1468fb2e206ccd5071ef1ee2eab3f9aa9"
 
 REMOTE_REPO = Path("/opt/repo")
 LOCAL_ROOT = Path(__file__).resolve().parents[2] if modal.is_local() else REMOTE_REPO
@@ -409,12 +409,13 @@ def train(preflight_result: dict[str, object]) -> dict[str, object]:
         "cpu_preflight": preflight_result,
         "operational": {
             "repo_base_head": REPO_BASE_HEAD,
-            "retry_of": "mp-opd-b200-atomic-100update-20260904-r4",
+            "retry_of": "mp-opd-b200-atomic-100update-20260904-r5",
             "retry_reason": (
-                "r4 passed tokenizer/data and unit-test preflight plus the B200 "
-                "environment gate, then stopped before training because FlashAttention "
-                "4 no longer ships flash_attn.bert_padding; r5 uses tested PyTorch "
-                "unpad/pad primitives and keeps SDPA plus the scientific configuration"
+                "r5 reached the first student microbatch and stopped before optimizer "
+                "update 1 because a transient partial-UTF8 replacement prefix was "
+                "treated as a terminal atomization failure; r6 skips only invalid "
+                "intermediate boundaries and logs true normalization mismatches as "
+                "zero-gradient exclusions without changing scientific config"
             ),
             "native_lock_sha256": B200_LOCK_SHA256,
             "gpu": "B200:1",
