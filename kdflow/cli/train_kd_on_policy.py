@@ -75,7 +75,7 @@ def train(args):
     strategy.print(f"Tokenizers {tokenizer_info}")
     cross_tokenizer_algorithms = {
         "dskd", "simple_ctkd", "alm", "uld", "span_ctkd", "span_ctkd_1to1",
-        "span_ctkd_no_span_loss", "simple_ctkd_random_span", "xtoken",
+        "span_ctkd_no_span_loss", "simple_ctkd_random_span", "xtoken", "mp_opd",
     }
     if not tokenizer_info.vocab_identical and args.kd.kd_algorithm not in cross_tokenizer_algorithms:
         raise ValueError(

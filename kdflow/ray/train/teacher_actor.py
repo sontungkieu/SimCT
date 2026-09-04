@@ -5,7 +5,6 @@ import torch
 import numpy as np
 
 from kdflow.utils.utils import remove_pad_token
-from kdflow.backend.sglang.sglang_engine import SGLangEngineService, EngineConfig
 from kdflow.utils.logging_utils import init_logger
 
 logger = init_logger(__name__)
@@ -43,6 +42,10 @@ class TeacherRayActor:
             node_rank: Rank of this node in tp+pp group
             dist_init_addr: Address for distributed initialization
         """
+        # Keep module import lightweight for CPU utility tests. The production
+        # engine dependency is required exactly when an actor is instantiated.
+        from kdflow.backend.sglang.sglang_engine import SGLangEngineService, EngineConfig
+
         logger.info(f"[TeacherRayActor] __init__ STARTED, PID={os.getpid()}, base_gpu_id={base_gpu_id}")
         
         self.strategy = strategy

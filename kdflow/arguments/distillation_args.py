@@ -190,6 +190,20 @@ class DistillationArguments:
     xtoken_ce_loss_scale: float = field(default=0.1)
     xtoken_max_comb_len: int = field(default=4)
 
+    # MP-OPD scalar canonical-path credit and contiguous atom partitioning.
+    mp_opd_mode: str = field(
+        default="atomic",
+        metadata={"choices": ["atomic", "fixed", "random", "oracle", "soft"]},
+    )
+    mp_opd_max_span_length: int = field(default=4)
+    mp_opd_fixed_span_length: int = field(default=2)
+    mp_opd_partition_temperature: float = field(default=1.0)
+    mp_opd_random_seed: int = field(default=43)
+    mp_opd_energy_hidden_dim: int = field(default=32)
+    mp_opd_energy_layers: int = field(default=2)
+    mp_opd_energy_lr: float = field(default=1e-3)
+    mp_opd_energy_checkpoint: Optional[str] = field(default=None)
+
     def __post_init__(self):
         # Validate teacher parallel size settings
         if self.teacher_ep_size > self.teacher_tp_size:
@@ -222,4 +236,17 @@ class DistillationArguments:
                 raise ValueError("xtoken_vocab_topk must be positive.")
             if self.xtoken_max_comb_len <= 0:
                 raise ValueError("xtoken_max_comb_len must be positive.")
+        if self.kd_algorithm == "mp_opd":
+            if self.mp_opd_mode not in {"atomic", "fixed", "random", "oracle", "soft"}:
+                raise ValueError(f"unsupported mp_opd_mode: {self.mp_opd_mode}")
+            if self.mp_opd_max_span_length <= 0 or self.mp_opd_fixed_span_length <= 0:
+                raise ValueError("MP-OPD span lengths must be positive")
+            if self.mp_opd_partition_temperature <= 0:
+                raise ValueError("mp_opd_partition_temperature must be positive")
+            if self.mp_opd_energy_hidden_dim <= 0 or self.mp_opd_energy_layers <= 0:
+                raise ValueError("MP-OPD energy dimensions must be positive")
+            if self.mp_opd_energy_lr <= 0:
+                raise ValueError("mp_opd_energy_lr must be positive")
+            if self.mp_opd_mode == "soft" and not self.mp_opd_energy_checkpoint:
+                raise ValueError("mp_opd_energy_checkpoint is required for soft mode")
 
