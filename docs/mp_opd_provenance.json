@@ -40,7 +40,8 @@
     "experiments/mp_opd/results/toy_oracle_v0.json"
   ],
   "toy_result_sha256": "7da4c22d8d5fda34f3a8b84cd1a403390e14fba889dd8f16d2ae24f1cbd3d97c",
-  "modal_b200_runner_sha256": "d118d4e7d38c4990a20b83d796f214a997f08c30f0c33943cedbad847320718f",
+  "modal_b200_runner_sha256": "2b99cd04a2cd52fa2988d47a17acdd60e4fac89747e39403eec6d5167f589f4f",
+  "prepare_opd_prompts_sha256": "baace3b4c0aa2b3192c4931c5df9dcb78dd80391892a63ca7e7ed9d7e6888e8e",
   "modal_b200_submission_performed": true,
   "modal_b200_attempts": [
     {
@@ -51,7 +52,14 @@
     },
     {
       "run_id": "mp-opd-b200-atomic-100update-20260904-r2",
+      "status": "stopped_pre_training",
+      "optimizer_updates": 0,
+      "reason": "Transformers 5.6 AutoTokenizer entered AutoConfig and failed in the kernels integration"
+    },
+    {
+      "run_id": "mp-opd-b200-atomic-100update-20260904-r3",
       "status": "staged_after_diagnosis",
+      "pre_gpu_gate": "explicit llama tokenizer type plus CPU tests and data probe",
       "retry_policy": "retries=0"
     }
   ],

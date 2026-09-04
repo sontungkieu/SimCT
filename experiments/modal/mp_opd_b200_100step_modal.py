@@ -15,15 +15,15 @@ import traceback
 import modal
 
 
-APP_NAME = "vdt-mp-opd-b200-atomic-no1ceboy-20260904-r2"
-RUN_ID = "mp-opd-b200-atomic-100update-20260904-r2"
-VOLUME_NAME = "vdt-mp-opd-b200-atomic-no1ceboy-20260904-r2"
+APP_NAME = "vdt-mp-opd-b200-atomic-no1ceboy-20260904-r3"
+RUN_ID = "mp-opd-b200-atomic-100update-20260904-r3"
+VOLUME_NAME = "vdt-mp-opd-b200-atomic-no1ceboy-20260904-r3"
 SOURCE_VOLUME_NAME = "vdt-xtoken-phase-a-no1ceboy-20260904-r14"
 WANDB_SECRET_NAME = "vdt-xtoken-wandb-no1ceboy"
 WANDB_ENTITY = "kieusontung8-hanoi-university-of-science-and-technology"
 WANDB_PROJECT = "vdt-simct-tunix-reproduction"
-WANDB_RUN_ID = "mp-opd-b200-atomic-r2-c0e8a30"
-WANDB_RUN_NAME = "mp-opd-b200-atomic-100update-r2"
+WANDB_RUN_ID = "mp-opd-b200-atomic-r3-4559d91"
+WANDB_RUN_NAME = "mp-opd-b200-atomic-100update-r3"
 
 STUDENT_REVISION = "4e20de362430cd3b72f300e6b0f18e50e7166e08"
 TEACHER_REVISION = "1cfa9a7208912126459214e8b04321603b3df60c"
@@ -33,7 +33,7 @@ MP_OPD_SHA256 = "a6526e9916d83d1c726e1dbba0996a5bc07bd29df7026c267604f1b01c646d4
 MP_OPD_ATOMS_SHA256 = "1572f3c0d435449eccc32a46cd6778680193fdf7a335c8adf4f8be0ef8676587"
 MP_OPD_CREDIT_SHA256 = "c9421290454ef85cd99cbbd166a38e386bc6d28c350aeebd5d5fdc51b06408df"
 MP_OPD_SEMIMARKOV_SHA256 = "b8880fed36bbf724ae7053de47df39f251ddff9822b2927f3a85a670f1c69044"
-REPO_BASE_HEAD = "c0e8a30ff3c027ddf8374df2f87930dee396f804"
+REPO_BASE_HEAD = "4559d914cafd624407f37bb95b58b808fe260f95"
 
 REMOTE_REPO = Path("/opt/repo")
 LOCAL_ROOT = Path(__file__).resolve().parents[2] if modal.is_local() else REMOTE_REPO
@@ -229,6 +229,8 @@ def prepare_prompts(environment: dict[str, str]) -> dict[str, object]:
             str(UNIQUE_PROMPTS),
             "--max-tokens",
             "240",
+            "--tokenizer-type",
+            "llama",
         ],
         cwd=REMOTE_REPO,
         env=environment,
@@ -295,6 +297,101 @@ def run_logged(command: list[str], environment: dict[str, str]) -> dict[str, obj
 
 @app.function(
     image=image,
+    cpu=4,
+    memory=16_384,
+    timeout=1_800,
+    retries=0,
+    single_use_containers=True,
+    volumes={"/source": source_volume},
+)
+def cpu_preflight() -> dict[str, object]:
+    result: dict[str, object] = {
+        "status": "starting",
+        "created_at": utcnow(),
+        "run_id": RUN_ID,
+        "gpu_allocated": False,
+    }
+    try:
+        for required in (STUDENT / "config.json", TEACHER / "config.json", SOURCE_DATA):
+            if not required.is_file():
+                raise FileNotFoundError(str(required))
+        if sha256(SOURCE_DATA) != SOURCE_DATA_SHA256:
+            raise RuntimeError("source data SHA mismatch")
+        if sha256(REMOTE_REPO / "experiments/environments/simct-b200/uv.lock") != B200_LOCK_SHA256:
+            raise RuntimeError("native B200 environment lock SHA mismatch")
+
+        environment = clean_environment()
+        environment["KDFLOW_LIGHTWEIGHT_ALGORITHM_IMPORT"] = "1"
+        destination = Path("/tmp/mp-opd-preflight/data/prompts.jsonl")
+        manifest_path = Path("/tmp/mp-opd-preflight/data/manifest.json")
+        prompt_probe = subprocess.run(
+            [
+                PYTHON,
+                "/opt/kdflow-vdt/prepare_opd_prompts.py",
+                "--source",
+                str(SOURCE_DATA),
+                "--source-sha256",
+                SOURCE_DATA_SHA256,
+                "--student",
+                str(STUDENT),
+                "--destination",
+                str(destination),
+                "--manifest",
+                str(manifest_path),
+                "--rows",
+                "2",
+                "--max-tokens",
+                "240",
+                "--tokenizer-type",
+                "llama",
+            ],
+            cwd=REMOTE_REPO,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        if prompt_probe.returncode:
+            raise RuntimeError(
+                "CPU tokenizer/data probe failed: "
+                + (prompt_probe.stderr or prompt_probe.stdout)[-2000:]
+            )
+        prompt_manifest = json.loads(manifest_path.read_text())
+        unit = subprocess.run(
+            [
+                PYTHON,
+                "-m",
+                "pytest",
+                "-q",
+                "tests/mp_opd",
+                "tests/test_span_ctkd_metrics.py",
+                "tests/test_xtoken_algorithm.py",
+            ],
+            cwd=REMOTE_REPO,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=900,
+        )
+        if unit.returncode:
+            raise RuntimeError("CPU MP-OPD regression gate failed: " + unit.stdout[-2000:])
+        result.update(
+            status="pass",
+            prompt_probe_manifest=prompt_manifest,
+            unit_test_tail=unit.stdout[-1000:],
+        )
+    except BaseException as error:
+        result.update(
+            status="stopped",
+            error_type=type(error).__name__,
+            error=str(error),
+        )
+    result["finished_at"] = utcnow()
+    return result
+
+
+@app.function(
+    image=image,
     gpu="B200",
     cpu=16,
     memory=98_304,
@@ -305,18 +402,20 @@ def run_logged(command: list[str], environment: dict[str, str]) -> dict[str, obj
     volumes={"/source": source_volume, "/runs": output_volume},
     secrets=[wandb_secret],
 )
-def train() -> dict[str, object]:
+def train(preflight_result: dict[str, object]) -> dict[str, object]:
     result: dict[str, object] = {
         "run_id": RUN_ID,
         "status": "starting",
         "created_at": utcnow(),
         "scientific": scientific_contract(),
+        "cpu_preflight": preflight_result,
         "operational": {
             "repo_base_head": REPO_BASE_HEAD,
-            "retry_of": "mp-opd-b200-atomic-100update-20260904-r1",
+            "retry_of": "mp-opd-b200-atomic-100update-20260904-r2",
             "retry_reason": (
-                "r1 stopped at the pre-training integrity gate because source "
-                "hashes predated whitespace cleanup; no optimizer update occurred"
+                "r2 stopped before training because Transformers 5.6 AutoTokenizer "
+                "entered AutoConfig and failed in the kernels integration; r3 uses "
+                "an explicit llama tokenizer type and a non-GPU preflight"
             ),
             "native_lock_sha256": B200_LOCK_SHA256,
             "gpu": "B200:1",
@@ -326,6 +425,8 @@ def train() -> dict[str, object]:
         },
     }
     try:
+        if preflight_result.get("status") != "pass":
+            raise RuntimeError("CPU preflight did not pass")
         if OPTIMIZER_UPDATES != 100:
             raise RuntimeError(f"static optimizer-step equation is {OPTIMIZER_UPDATES}, not 100")
         OUTPUT_ROOT.mkdir(parents=True, exist_ok=False)
@@ -373,30 +474,6 @@ def train() -> dict[str, object]:
         )
         environment_gate = json.loads(marker)
         prompt_manifest = prepare_prompts(environment)
-
-        unit = subprocess.run(
-            [
-                PYTHON,
-                "-m",
-                "pytest",
-                "-q",
-                "tests/mp_opd",
-                "tests/test_span_ctkd_metrics.py",
-                "tests/test_teacher_forward_chunking.py",
-            ],
-            cwd=REMOTE_REPO,
-            env=environment,
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
-        secret = environment.get("WANDB_API_KEY", "")
-        unit_log = unit.stdout + "\n" + unit.stderr
-        (OUTPUT_ROOT / "unit-test.log").write_text(
-            unit_log.replace(secret, "[REDACTED]") if secret else unit_log
-        )
-        if unit.returncode:
-            raise RuntimeError(f"MP-OPD unit test failed with exit code {unit.returncode}")
 
         save_path = OUTPUT_ROOT / "checkpoint"
         command = [
@@ -579,7 +656,11 @@ def train() -> dict[str, object]:
 
 @app.local_entrypoint()
 def main() -> None:
-    result = train.remote()
+    preflight_result = cpu_preflight.remote()
+    print("MP_OPD_CPU_PREFLIGHT_JSON=" + json.dumps(preflight_result, sort_keys=True), flush=True)
+    if preflight_result["status"] != "pass":
+        raise SystemExit(1)
+    result = train.remote(preflight_result)
     print(json.dumps({"modal_result": result}, sort_keys=True), flush=True)
     if result["status"] == "stopped":
         raise SystemExit(1)

@@ -25,13 +25,23 @@ def main() -> None:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--rows", type=int, default=640)
     parser.add_argument("--max-tokens", type=int, default=240)
+    parser.add_argument(
+        "--tokenizer-type",
+        default=None,
+        help=(
+            "Optional explicit AutoTokenizer type. Use 'llama' for pinned local "
+            "Llama checkpoints when an offline Transformers stack cannot safely "
+            "resolve AutoConfig."
+        ),
+    )
     args = parser.parse_args()
 
     if sha256(args.source) != args.source_sha256:
         raise RuntimeError("source data SHA mismatch")
-    tokenizer = AutoTokenizer.from_pretrained(
-        args.student, local_files_only=True, use_fast=True
-    )
+    tokenizer_kwargs = {"local_files_only": True, "use_fast": True}
+    if args.tokenizer_type:
+        tokenizer_kwargs["tokenizer_type"] = args.tokenizer_type
+    tokenizer = AutoTokenizer.from_pretrained(args.student, **tokenizer_kwargs)
     dataset = load_dataset("parquet", data_files=str(args.source), split="train")
     if len(dataset) < args.rows:
         raise RuntimeError(f"source dataset contains only {len(dataset)} rows")

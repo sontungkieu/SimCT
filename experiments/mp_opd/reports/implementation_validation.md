@@ -119,3 +119,10 @@ that warning. Attempt r1 then stopped at its pre-training source-integrity gate
 because three hashes predated final whitespace cleanup; it performed zero
 optimizer updates. The diagnosed r2 launcher pins the committed hashes and a
 new app, output-volume, run and W&B identity. It retains `retries=0`.
+
+Attempt r2 passed source integrity but stopped before training when
+Transformers 5.6 `AutoTokenizer` entered the Llama `AutoConfig` path and the
+`kernels` integration rejected a missing revision/version. Attempt r3 selects
+the Llama tokenizer type explicitly and runs tokenizer/data plus MP-OPD
+regression checks in a CPU-only Modal preflight before allocating B200. The
+scientific training contract is unchanged and r3 still has `retries=0`.
