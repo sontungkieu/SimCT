@@ -1,4 +1,4 @@
-"""One bounded corrected-trajectory atomic diagnostic on phamvanvuhoan."""
+"""One bounded corrected-trajectory atomic diagnostic on lhtu05."""
 from __future__ import annotations
 
 import hashlib
@@ -11,7 +11,7 @@ import time
 import modal
 
 IMAGE = "docker.io/codemaivanngu/simct-b200@sha256:33b2b55874b34447a1395328987b64c63d824a05fa6b737fe5978b22d497b24f"
-RUN_ID = "mp-opd-path-atomic-r8-20260907"
+RUN_ID = "mp-opd-path-atomic-r8-lhtu05-20260907"
 ROOT = Path(__file__).resolve().parents[2] if modal.is_local() else Path("/opt/overlay")
 PYTHON = "/opt/venvs/simct-b200/bin/python"
 STUDENT_REVISION = "4e20de362430cd3b72f300e6b0f18e50e7166e08"
@@ -19,7 +19,7 @@ TEACHER_REVISION = "1cfa9a7208912126459214e8b04321603b3df60c"
 ENTITY = "kieusontung8-hanoi-university-of-science-and-technology"
 PROJECT = "vdt-simct-tunix-reproduction"
 cache = modal.Volume.from_name("vdt-mp-opd-path-cache", create_if_missing=False)
-outputs = modal.Volume.from_name("vdt-mp-opd-path-r8-20260907", create_if_missing=True)
+outputs = modal.Volume.from_name("vdt-mp-opd-path-r8-lhtu05-20260907", create_if_missing=True)
 image = modal.Image.from_registry(IMAGE).entrypoint([]).env({
     "PYTHONPATH": "/opt/overlay/experiments/modal/vendor:/opt/overlay"
 }).add_local_dir(
@@ -27,7 +27,7 @@ image = modal.Image.from_registry(IMAGE).entrypoint([]).env({
 ).add_local_dir(str(ROOT / "tests"), "/opt/overlay/tests", ignore=["**/__pycache__/**", "**/*.pyc"]).add_local_dir(
     str(ROOT / "experiments/modal"), "/opt/overlay/experiments/modal", ignore=["**/__pycache__/**", "**/*.pyc"]
 )
-app = modal.App("vdt-mp-opd-path-r8-phamvanvuhoan")
+app = modal.App("vdt-mp-opd-path-r8-lhtu05")
 
 
 @app.function(image=image, cpu=4, memory=16384, timeout=1800, retries=0,
@@ -39,6 +39,9 @@ def prepare():
 import hashlib, importlib.metadata, json, os
 from pathlib import Path
 from huggingface_hub import snapshot_download
+import wandb
+wandb.Api(timeout=40).run("kieusontung8-hanoi-university-of-science-and-technology/vdt-simct-tunix-reproduction/mp-opd-b200-atomic-r7-38c54ef")
+print("WANDB_EXISTING_RUN_ACCESS=pass", flush=True)
 root = Path("/model-cache")
 data = root / "data/opd-prompts-6400.jsonl"
 assert sum(1 for _ in data.open()) == 6400
@@ -79,6 +82,12 @@ def runtime_environment():
                HF_HUB_DISABLE_IMPLICIT_TOKEN="1", TOKENIZERS_PARALLELISM="false",
                RAY_USAGE_STATS_ENABLED="0", PYTHONUNBUFFERED="1", OMP_NUM_THREADS="4",
                NCCL_CUMEM_HOST_ENABLE="0", WANDB_SILENT="true")
+    nvidia_root = Path("/opt/venvs/simct-b200/lib/python3.12/site-packages/nvidia")
+    libraries = ["/usr/local/cuda/lib64", "/usr/local/nvidia/lib", "/usr/local/nvidia/lib64"]
+    libraries.extend(str(path) for path in sorted(nvidia_root.glob("*/lib")))
+    if env.get("LD_LIBRARY_PATH"):
+        libraries.append(env["LD_LIBRARY_PATH"])
+    env["LD_LIBRARY_PATH"] = ":".join(libraries)
     return env
 
 
@@ -270,10 +279,21 @@ def train_impl(source_commit: str, preflight_result: dict):
                     "--diagnostic_collapse_gate", "True"])
     environment = runtime_environment()
     environment.update(WANDB_ENTITY=ENTITY, WANDB_PROJECT=PROJECT, WANDB_RUN_ID=RUN_ID, WANDB_RESUME="never")
+    gate = subprocess.run([PYTHON, "/opt/simct/experiments/environments/b200_gate.py"],
+        env=environment, text=True, capture_output=True, timeout=120)
+    (OUTPUT_ROOT / "runtime-gate.log").write_text(gate.stdout + gate.stderr)
+    if gate.returncode:
+        outputs.commit()
+        raise RuntimeError("B200 runtime gate failed; training was not started")
+    runtime = json.loads(next(line.split("=", 1)[1] for line in gate.stdout.splitlines()
+                              if line.startswith("SIMCT_B200_ENV_JSON=")))
+    if runtime["gpu_count"] != 1 or runtime["torch"] != "2.11.0+cu130":
+        raise RuntimeError("runtime differs from the pinned single-B200 contract")
+    print("MP_OPD_B200_RUNTIME=" + json.dumps(runtime), flush=True)
     source_hashes = {str(p.relative_to("/opt/overlay")): hashlib.sha256(p.read_bytes()).hexdigest()
         for p in Path("/opt/overlay/kdflow").rglob("*.py")}
     contract = dict(run_id=RUN_ID, source_commit=source_commit, source_hashes=source_hashes,
-        image=IMAGE, data_sha256=DATA_SHA256, command=command, preflight=preflight_result,
+        image=IMAGE, runtime=runtime, data_sha256=DATA_SHA256, command=command, preflight=preflight_result,
         stop_rules={"max_updates": 30, "process_timeout_seconds": 3600, "collapse_consecutive_batches": 2,
                     "empty_fraction": 0.25, "mean_length_relative_to_first_batch": 0.1,
                     "logprob_abs_mean_max": 0.1, "logprob_abs_max_max": 0.5},
@@ -286,13 +306,29 @@ def train_impl(source_commit: str, preflight_result: dict):
         with (OUTPUT_ROOT / "train.log").open("x") as stream:
             process = subprocess.Popen(command, cwd="/opt/overlay", env=environment, stdout=stream,
                                        stderr=subprocess.STDOUT, start_new_session=True)
-            try:
-                code = process.wait(timeout=3600)
-            except subprocess.TimeoutExpired:
-                import signal
-                os.killpg(process.pid, signal.SIGTERM)
-                process.wait(timeout=30)
-                raise RuntimeError("bounded training wall-time exceeded")
+            offset = 0
+            while True:
+                try:
+                    code = process.wait(timeout=15)
+                except subprocess.TimeoutExpired:
+                    code = None
+                with (OUTPUT_ROOT / "train.log").open() as reader:
+                    reader.seek(offset)
+                    for line in reader:
+                        if "train_progress [" in line:
+                            print(line.rstrip(), flush=True)
+                    offset = reader.tell()
+                if code is not None:
+                    break
+                if time.monotonic() - started >= 3600:
+                    import signal
+                    os.killpg(process.pid, signal.SIGTERM)
+                    try:
+                        process.wait(timeout=30)
+                    except subprocess.TimeoutExpired:
+                        os.killpg(process.pid, signal.SIGKILL)
+                        process.wait(timeout=10)
+                    raise RuntimeError("bounded training wall-time exceeded")
         result["exit_code"] = code
         summary = save_path / "run-summary.json"
         if summary.is_file():

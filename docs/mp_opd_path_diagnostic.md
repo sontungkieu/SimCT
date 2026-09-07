@@ -40,8 +40,8 @@ Git checkpoint. Model downloads run on remote CPU. The source data SHA-256 is
 After the profile's live billing guard passes:
 
 ```bash
-modal run --profile phamvanvuhoan --detach experiments/modal/mp_opd_path_modal.py::prepare
-MP_OPD_ENABLE_B200=1 modal run --profile phamvanvuhoan --detach experiments/modal/mp_opd_path_modal.py::main
+modal run --profile lhtu05 --detach experiments/modal/mp_opd_path_modal.py::prepare
+MP_OPD_ENABLE_B200=1 modal run --profile lhtu05 --detach experiments/modal/mp_opd_path_modal.py::main
 ```
 
 `main` runs CPU regressions before allocating a B200 and refuses to overwrite
@@ -82,3 +82,15 @@ All preparation/probe apps are stopped. The billing snapshot at
 2026-09-07 03:33:40 UTC reports $0.00780266 for this task's app descriptions
 (CPU and memory, no B200 usage); reports may lag. Total profile usage is
 $0.01169652 for the calendar-month interval 2026-09-01 to 2026-10-01.
+
+
+## Authorized account continuation
+
+The user confirmed $30 available credit on `lhtu05` and authorized deployment
+there. The new run is `mp-opd-path-atomic-r8-lhtu05-20260907`, with output volume
+`vdt-mp-opd-path-r8-lhtu05-20260907`. Scientific settings and input hashes are
+unchanged. Only the named HF/W&B keys from the user-designated WSL secret
+source are provisioned into this profile. Preparation verifies access to the
+existing W&B run before downloading pinned models. Local guard budget is $30,
+hard limit $28.50, estimate $12 and reserve $1; calendar-month accounting is a
+local guard assumption, not verification of Modal's credit reset date.
