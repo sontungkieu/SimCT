@@ -68,6 +68,7 @@ class DistillationArguments:
         default=1,
         metadata={"help": "Weight update frequency for teacher model."}
     )
+    span_score_mode: str = field(default="raw_logit", metadata={"choices": ["raw_logit", "mean_logprob"], "help": "Span scoring: released code or paper Eq.7."})
     # DSKD hyperparameters
     dskd_token_align: str = field(
         default="eta",

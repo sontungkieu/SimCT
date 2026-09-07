@@ -284,6 +284,11 @@ class SpanCrossTokenizerKD:
             stu_virtual_logits: [num_segments, num_overlap + num_spans]
             tea_virtual_logits: [num_segments, num_overlap + num_spans]
         """
+        if getattr(self.args.kd, "span_score_mode", "raw_logit") == "mean_logprob":
+            # Eq.7: normalize each autoregressive position BEFORE averaging.
+            # Shared-token candidates must use log probabilities as well.
+            stu_logits_aligned = torch.log_softmax(stu_logits_aligned.float(), dim=-1)
+            tea_logits_aligned = torch.log_softmax(tea_logits_aligned.float(), dim=-1)
         num_overlap = self.student_overlap_token_ids.shape[0]
         device = stu_logits_aligned.device
 
