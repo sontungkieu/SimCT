@@ -5,7 +5,7 @@ import modal
 ROOT=Path(__file__).resolve().parents[2] if modal.is_local() else Path('/opt/overlay')
 PYTHON='/opt/venvs/simct-b200/bin/python'
 IMAGE='docker.io/codemaivanngu/simct-b200@sha256:33b2b55874b34447a1395328987b64c63d824a05fa6b737fe5978b22d497b24f'
-RUN='simct-phi-gemma-nosft-100-r2'
+RUN='simct-phi-gemma-nosft-100-r3'
 PROMPTS_REPO='codemaivanngu/simct-author-code-10k-prompts'
 REVS={'student':'299a8560bedf22ed1c72a8a11e7dce4a7f9f51f8','teacher':'cfbefacb99257ffa30c83adab238a50856ac3083'}
 app=modal.App(RUN)
@@ -15,7 +15,7 @@ outputs=modal.Volume.from_name(RUN,create_if_missing=True)
 source=modal.Volume.from_name('simct-author-data-v1') if os.environ.get('SIMCT_STAGE')=='export' else cache
 
 def env(online=False):
-    e=dict(os.environ);e.update(PATH='/opt/venvs/simct-b200/bin:'+e.get('PATH',''),PYTHONPATH='/opt/overlay/experiments/modal/vendor:/opt/overlay',HF_HOME='/assets/hf',HF_HUB_OFFLINE='0' if online else '1',HF_DATASETS_OFFLINE='0' if online else '1',TRANSFORMERS_OFFLINE='0' if online else '1',TOKENIZERS_PARALLELISM='false',RAY_USAGE_STATS_ENABLED='0',NCCL_CUMEM_HOST_ENABLE='0',OMP_NUM_THREADS='4',WANDB_SILENT='true')
+    e=dict(os.environ);e.update(PATH='/opt/venvs/simct-b200/bin:'+e.get('PATH',''),PYTHONPATH='/opt/overlay/experiments/modal/vendor:/opt/overlay',HF_HOME='/assets/hf',HF_HUB_OFFLINE='0' if online else '1',HF_DATASETS_OFFLINE='0' if online else '1',TRANSFORMERS_OFFLINE='0' if online else '1',TOKENIZERS_PARALLELISM='false',RAY_USAGE_STATS_ENABLED='0',NCCL_CUMEM_HOST_ENABLE='0',OMP_NUM_THREADS='4',WANDB_SILENT='true',KDFLOW_TRUST_REMOTE_CODE='0')
     libs=['/usr/local/cuda/lib64','/usr/local/nvidia/lib64']+[str(p) for p in Path('/opt/venvs/simct-b200/lib/python3.12/site-packages/nvidia').glob('*/lib')]
     e['LD_LIBRARY_PATH']=':'.join(libs)
     return e
@@ -56,6 +56,11 @@ out=root/'prompts.parquet';out.write_bytes(Path(p).read_bytes());ds=load_dataset
 """+f"revs={REVS!r}\n"+"""
 for key,model in [('student','google/gemma-2-2b-it'),('teacher','microsoft/Phi-4-mini-instruct')]:
  snapshot_download(model,revision=revs[key],local_dir=str(root/key),token=os.environ['HF_TOKEN'],allow_patterns=['*.json','*.safetensors','*.model','merges.txt','vocab.json'],max_workers=4)
+from kdflow.utils.utils import get_tokenizer
+from kdflow.datasets.utils import get_tokenizer_or_processor
+for key in ['student','teacher']:
+ a=get_tokenizer(str(root/key));b=get_tokenizer_or_processor(str(root/key));assert a.get_vocab()==b.get_vocab()
+ print('NATIVE_TOKENIZER_PASS',key,type(a).__name__,flush=True)
 tok=AutoTokenizer.from_pretrained(str(root/'student'))
 lengths=[len(tok(tok.apply_chat_template(row['messages'],tokenize=False,add_generation_prompt=True),add_special_tokens=False)['input_ids']) for row in ds]
 (root/'ready.json').write_text(json.dumps(dict(rows=len(ds),prompt_sha256=expected,prompts_revision=revision,revisions=revs,max_prompt_tokens=max(lengths),prompts_over4096=sum(x>4096 for x in lengths))))
@@ -66,7 +71,7 @@ print('ASSETS_READY', (root/'ready.json').read_text(),flush=True)
     test=subprocess.run([PYTHON,'-m','pytest','-q','tests/test_simct_paper_scores.py','tests/test_span_ctkd_metrics.py','tests/test_trajectory.py','tests/test_exact_trajectory_integration.py'],cwd='/opt/overlay',env=e,text=True,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,timeout=200)
     Path('/runs/preflight.log').write_text(test.stdout);outputs.commit();print(test.stdout[-3500:],flush=True)
     if test.returncode:raise RuntimeError('Preflight failed')
-    Path('/assets/preflight-pass.json').write_text(json.dumps(dict(status='pass',source_scores_sha256=hashlib.sha256(Path('/opt/overlay/kdflow/algorithms/span_ctkd.py').read_bytes()+Path('/opt/overlay/kdflow/trainer/on_policy_kd_trainer.py').read_bytes()).hexdigest())));cache.commit()
+    Path('/assets/preflight-pass.json').write_text(json.dumps(dict(status='pass',source_scores_sha256=hashlib.sha256(b''.join(p.read_bytes() for p in sorted(Path('/opt/overlay/kdflow').rglob('*.py')))).hexdigest())));cache.commit()
 
 @app.function(image=image,gpu='B200' if os.environ.get('SIMCT_STAGE')=='train' else None,cpu=16,memory=98304,timeout=8700,retries=0,max_containers=1,volumes={'/assets':cache,'/runs':outputs})
 def train(commit:str):
@@ -76,7 +81,7 @@ def train(commit:str):
     root=Path('/runs');inv=root/'invocation.json'
     if inv.exists():raise RuntimeError('Existing training attempt requires inspection; no duplicate retry')
     ready=json.loads(Path('/assets/ready.json').read_text());preflight=json.loads(Path('/assets/preflight-pass.json').read_text())
-    assert preflight['source_scores_sha256']==hashlib.sha256(Path('/opt/overlay/kdflow/algorithms/span_ctkd.py').read_bytes()+Path('/opt/overlay/kdflow/trainer/on_policy_kd_trainer.py').read_bytes()).hexdigest()
+    assert preflight['source_scores_sha256']==hashlib.sha256(b''.join(p.read_bytes() for p in sorted(Path('/opt/overlay/kdflow').rglob('*.py')))).hexdigest()
     opts=dict(num_nodes=1,num_gpus_per_node=1,backend='fsdp2',student_name_or_path='/assets/student',teacher_name_or_path='/assets/teacher',attn_implementation='sdpa',num_epochs=2,train_batch_size=64,micro_train_batch_size=1,learning_rate=1e-6,lr_warmup_ratio=.05,lr_scheduler='cosine_with_min_lr',min_lr=0,weight_decay=0.,gradient_checkpointing=True,enable_sleep=True,bf16=True,seed=42,save_path='/runs/checkpoint',ckpt_path='/runs/checkpoints',train_dataset_path='/assets/prompts.parquet',input_key='messages',apply_chat_template=True,enable_thinking=False,max_samples=10000,prompt_max_len=0,max_len=4096,preprocess_num_workers=4,rollout_num_engines=1,rollout_disable_piecewise_cuda_graph=True,rollout_tp_size=1,rollout_mem_fraction_static=.25,rollout_batch_size=64,generate_max_len=4096,n_samples_per_prompt=1,temperature=.6,top_p=.95,teacher_tp_size=1,teacher_pp_size=1,teacher_ep_size=1,teacher_dp_size=1,teacher_mem_fraction_static=.3,teacher_context_length=16384,teacher_forward_n_batches=8,kd_algorithm='span_ctkd',kd_loss_fn='rkl',kd_ratio=1.,span_score_mode='mean_logprob',exact_token_trajectory=True,enforce_max_sequence_length=True,diagnostic_max_updates=100,diagnostic_collapse_gate=True,save_steps=20,logging_steps=1,use_wandb=True,wandb_org='kieusontung8-hanoi-university-of-science-and-technology',wandb_project='vdt-simct-tunix-reproduction',wandb_run_id=RUN,wandb_run_name=RUN,wandb_group='phi-gemma-nosft',wandb_job_type='implementation-validation',wandb_tags='method:simct,regime:on-policy,objective:reverse-kl,variant:paper-eq7-no-sft,platform:modal,accelerator:b200x1,budget:100-update',wandb_mode='online',wandb_dir='/runs/wandb')
     command=[PYTHON,'-m','kdflow.cli.train_kd_on_policy']
     for k,v in opts.items():command+=['--'+k,str(v)]

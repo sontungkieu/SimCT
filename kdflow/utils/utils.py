@@ -1,3 +1,4 @@
+import os
 from typing import List
 
 import torch
@@ -10,7 +11,7 @@ logger = init_logger(__name__)
 
 
 def get_tokenizer(model_name_or_path, model=None, padding_side="left", use_fast=True):
-    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=True, use_fast=use_fast)
+    tokenizer = AutoTokenizer.from_pretrained(model_name_or_path, trust_remote_code=os.environ.get("KDFLOW_TRUST_REMOTE_CODE", "1") == "1", use_fast=use_fast)
     tokenizer.padding_side = padding_side
     # NOTE: When enable vLLM, do not resize_token_embeddings, or the vocab size will mismatch with vLLM.
     # https://github.com/facebookresearch/llama-recipes/pull/196
