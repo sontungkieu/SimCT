@@ -90,7 +90,7 @@ def train(commit:str):
                 if time.monotonic()-started>8400:raise TimeoutError('Paid run time cap')
                 time.sleep(15)
         if process.returncode:raise RuntimeError('Training process failed')
-        result=json.loads((root/'checkpoint/run-summary.json').read_text());assert result['completed_optimizer_updates']==100
+        result=json.loads((root/'checkpoint/run-summary.json').read_text());assert result['optimizer_updates']==100 and result['status']=='completed'
         (root/'result.json').write_text(json.dumps(dict(status='completed',training=result)));return result
     except Exception as e:
         (root/'result.json').write_text(json.dumps(dict(status='failed',error_type=type(e).__name__,error=str(e))))
