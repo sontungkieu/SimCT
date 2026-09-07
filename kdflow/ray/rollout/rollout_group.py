@@ -235,6 +235,7 @@ class RolloutActorGroup:
         prompts: List[str],
         sampling_params: Optional[Dict[str, Any]] = None,
         image_data: Optional[List] = None,
+        input_ids: Optional[List[List[int]]] = None,
     ) -> List[Dict[str, Any]]:
         """Generate responses for a batch of prompts via the SGLang router."""
         if sampling_params is None:
@@ -253,6 +254,7 @@ class RolloutActorGroup:
                     sampling_params=sampling_params,
                     max_concurrent=self.max_concurrent,
                     image_data=image_data,
+                    input_ids=input_ids,
                 )
             )
         finally:
@@ -365,6 +367,7 @@ class RolloutActorGroup:
         sampling_params: Dict[str, Any],
         max_concurrent: int = 64,
         image_data: Optional[List] = None,
+        input_ids: Optional[List[List[int]]] = None,
     ) -> List[Dict[str, Any]]:
         """Send generation requests to the SGLang router asynchronously."""
         import aiohttp
@@ -377,6 +380,11 @@ class RolloutActorGroup:
                 "text": prompt,
                 "sampling_params": sampling_params,
             }
+            if input_ids is not None:
+                payload.pop("text")
+                payload["input_ids"] = input_ids[idx]
+                payload["return_logprob"] = True
+                payload["logprob_start_len"] = -1
             if image_data and image_data[idx] is not None:
                 img = image_data[idx]
                 if isinstance(img, list):
@@ -387,6 +395,8 @@ class RolloutActorGroup:
                 async with session.post(router_url, json=payload) as resp:
                     resp.raise_for_status()
                     output = await resp.json()
+                    if input_ids is not None:
+                        output["prompt_ids"] = input_ids[idx]
                     results[idx] = output
 
         connector = aiohttp.TCPConnector(limit=max_concurrent)

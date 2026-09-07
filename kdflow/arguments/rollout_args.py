@@ -6,6 +6,10 @@ from typing import Optional
 class RolloutArguments:
     """ Arguments for rollout (on-policy distillation)."""
     
+    exact_token_trajectory: bool = field(default=False, metadata={"help": "Text-only sampled-ID and teacher-ID contract."})
+    diagnostic_max_updates: int = field(default=0, metadata={"help": "Stop after this many updates without changing the scheduler horizon."})
+    diagnostic_collapse_gate: bool = field(default=False, metadata={"help": "Stop after two collapsed rollout batches."})
+
     rollout_num_engines: int = field(
         default=0,
         metadata={"help": "The number of engines for rollout."}

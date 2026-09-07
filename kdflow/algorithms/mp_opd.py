@@ -237,6 +237,19 @@ class MetaPartitionedOPD:
         student_logits_flat = output["logits"][student_loss_mask]
         student_labels = student_input_ids.roll(shifts=-1, dims=1)
         teacher_labels = teacher_input_ids.roll(shifts=-1, dims=1)
+        parity_metrics = {}
+        behavior = micro_batch.get("stu_behavior_log_probs")
+        if behavior is not None:
+            selected = behavior[student_loss_mask]
+            real = torch.isfinite(selected)
+            labels_for_parity = student_labels[student_loss_mask]
+            actual = torch.log_softmax(student_logits_flat.detach().float(), dim=-1).gather(
+                -1, labels_for_parity.unsqueeze(-1)).squeeze(-1)
+            delta = (actual[real] - selected[real]).abs()
+            if delta.numel():
+                if not torch.isfinite(delta).all() or delta.mean() > 0.1 or delta.max() > 0.5:
+                    raise RuntimeError(f"behavior/trainer logprob parity failed: mean={delta.mean().item():.6f}, max={delta.max().item():.6f}")
+                parity_metrics = {"trajectory_logprob_abs_mean": delta.mean(), "trajectory_logprob_abs_max": delta.max()}
         teacher_logits_flat = self.teacher_lm_head(
             teacher_hiddens.to(self.teacher_lm_head.weight)
         )
@@ -325,6 +338,7 @@ class MetaPartitionedOPD:
             ),
             "mp_opd_atomization_and_loss_seconds": kd_loss.new_tensor(time.perf_counter() - started),
         }
+        metrics.update(parity_metrics)
         if credit_values:
             metrics.update(_finite_stats("mp_opd_b", torch.cat(credit_values)))
             metrics.update(_finite_stats("mp_opd_r", torch.cat(rate_values)))

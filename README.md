@@ -2,6 +2,11 @@
 
 This repository contains the code for reproducing the experiments in our paper *"SimCT: Recovering Lost Supervision for Cross-Tokenizer On-Policy Distillation"*.
 
+## MP-OPD trajectory diagnostic
+
+For the bounded r7-collapse follow-up, see
+[the corrected-trajectory diagnostic](docs/mp_opd_path_diagnostic.md).
+
 ## Fork experiment: X-Token native uv
 
 The `vdt/experiments/xtoken` branch adds an isolated

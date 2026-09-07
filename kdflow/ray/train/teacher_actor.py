@@ -133,12 +133,20 @@ class TeacherRayActor:
                 len(batches),
                 len(prompts),
             )
+            exact_ids = None
+            if getattr(self.strategy.args.rollout, "exact_token_trajectory", False):
+                if image_data is not None:
+                    raise ValueError("explicit trajectory mode is text-only")
+                exact_ids = []
+                for mb in batches:
+                    exact_ids.extend([x.tolist() for x in remove_pad_token(mb["tea_input_ids"], mb["tea_attn_mask"], return_tensors=True)])
             hidden_states_list = self.engine_service.generate(
                 prompt=prompts,
                 loss_masks=unpadded_loss_masks,
                 sampling_params={"max_new_tokens": 0},
                 return_hidden_states=True,
                 image_data=image_data,
+                input_ids=exact_ids,
             )
 
             sample_idx = 0

@@ -14,6 +14,7 @@ import ray
 import torch
 import torch.distributed as dist
 
+from kdflow.trajectory import trajectory_tokens, collapse_observation
 from kdflow.datasets.utils import get_tokenizer_or_processor
 from kdflow.utils.logging_utils import init_logger
 from kdflow.utils.tensorboard_utils import create_tensorboard_logger
@@ -212,6 +213,14 @@ class OnPolicyKDTrainer:
     
     def fit(self, global_step=0, start_epoch=0):
         self.global_step = global_step
+        diagnostic_limit = getattr(self.args.rollout, "diagnostic_max_updates", 0)
+        if diagnostic_limit < 0:
+            raise ValueError("diagnostic_max_updates must be nonnegative")
+        expected_updates = min(self.max_rollout_iters, diagnostic_limit) if diagnostic_limit else self.max_rollout_iters
+        self._collapse_baseline = None
+        self._collapse_streak = 0
+        self._collapse_stop = False
+        self.stop_reason = None
         
         # Print training configuration and initialize loggers
         self._print_training_config()
@@ -232,6 +241,8 @@ class OnPolicyKDTrainer:
             self.train_dataloader.sampler.set_epoch(epoch)
             
             for prompt_batch in self.train_dataloader:
+                if self.completed_optimizer_updates >= expected_updates:
+                    break
                 self.global_step += 1
                 step_started = time.time()
                 
@@ -240,6 +251,10 @@ class OnPolicyKDTrainer:
                 rollout_time = time.time() - rollout_start
 
                 self.log_state["rollout_time"].append(rollout_time)
+                if self._collapse_stop:
+                    self.stop_reason = self.stop_reason or "collapse_gate_before_update"
+                    self.logging()
+                    break
 
                 teacher_start = time.time()
                 if self.args.train.enable_sleep:
@@ -335,19 +350,21 @@ class OnPolicyKDTrainer:
             # Note: student is already in sleep state after the last step's sleep() call,
             # so we need to wakeup before saving
             self.strategy.log(f"Saving model after epoch {epoch + 1}")
-            save_path = os.path.join(self.args.train.save_path, f"step{self.global_step}")
+            save_path = os.path.join(self.args.train.save_path, f"step{self.completed_optimizer_updates}")
             if self.args.train.enable_sleep:
                 self.student.wakeup()
             ray.get(self.student.async_save_model(save_path))
             if self.args.train.enable_sleep:
                 self.student.sleep()
+            if self.stop_reason or self.completed_optimizer_updates >= expected_updates:
+                break
 
         total_time = time.time() - self.start_time
         self.strategy.log(f"Training done, totally cost {str(timedelta(seconds=total_time)).split('.')[0]}")
 
-        if self.completed_optimizer_updates != self.max_rollout_iters:
+        if not self.stop_reason and self.completed_optimizer_updates != expected_updates:
             raise RuntimeError(
-                f"optimizer update gate failed: {self.completed_optimizer_updates} != {self.max_rollout_iters}"
+                f"optimizer update gate failed: {self.completed_optimizer_updates} != {expected_updates}"
             )
 
         summary_path = os.path.join(self.args.train.save_path, "run-summary.json")
@@ -355,7 +372,8 @@ class OnPolicyKDTrainer:
         with open(summary_path + ".pending", "w") as handle:
             json.dump(
                 {
-                    "status": "completed",
+                    "status": "stopped" if self.stop_reason else "completed",
+                    "stop_reason": self.stop_reason,
                     "rollout_iterations": self.global_step,
                     "optimizer_updates": self.completed_optimizer_updates,
                     "total_time_seconds": total_time,
@@ -375,7 +393,8 @@ class OnPolicyKDTrainer:
         if self._wandb is not None:
             self._wandb.run.summary["optimizer_updates"] = self.completed_optimizer_updates
             self._wandb.run.summary["rollout_iterations"] = self.global_step
-            self._wandb.run.summary["training_completed"] = True
+            self._wandb.run.summary["training_completed"] = not bool(self.stop_reason)
+            self._wandb.run.summary["stop_reason"] = self.stop_reason or ("diagnostic_limit_reached" if diagnostic_limit else "completed")
             self._wandb.run.summary["total_time_seconds"] = total_time
             self._wandb.run.summary["resource_samples"] = self._resource_sample_index
             self._wandb.finish()
@@ -384,7 +403,7 @@ class OnPolicyKDTrainer:
                 {
                     "summary/optimizer_updates": self.completed_optimizer_updates,
                     "summary/rollout_iterations": self.global_step,
-                    "summary/training_completed": 1,
+                    "summary/training_completed": int(not bool(self.stop_reason)),
                     "summary/total_time_seconds": total_time,
                     "summary/resource_samples": self._resource_sample_index,
                 },
@@ -419,13 +438,24 @@ class OnPolicyKDTrainer:
         if all_images:
             all_images = sum([[imgs] * n_samples_per_prompt for imgs in all_images], [])
         
-        all_outputs = self.rollout_group.generate(all_stu_prompts, self.generate_kwargs, image_data=all_images)
+        exact = getattr(self.args.rollout, "exact_token_trajectory", False)
+        prompt_ids = None
+        if exact:
+            if all_images:
+                raise ValueError("explicit trajectory mode is text-only")
+            tok = getattr(self.student_processor, "tokenizer", self.student_processor)
+            prompt_ids = [tok(p, add_special_tokens=True)["input_ids"] for p in all_stu_prompts]
+        all_outputs = self.rollout_group.generate(all_stu_prompts, self.generate_kwargs, image_data=all_images, input_ids=prompt_ids)
 
         rollout_dir = os.path.join(self.args.train.save_path, "rollout_data")
         os.makedirs(rollout_dir, exist_ok=True)
         with open(os.path.join(rollout_dir, f"{self.global_step}.jsonl"), "w") as f:
             for prompt, output in zip(all_stu_prompts, all_outputs):
                 record = {"prompt": prompt, "output": output["text"]}
+                if exact:
+                    record.update(prompt_ids=output["prompt_ids"], output_ids=output["output_ids"],
+                                  meta_info=output.get("meta_info", {}),
+                                  behavior_weight_version=self.completed_optimizer_updates)
                 if "reward_result" in output:
                     record["reward_result"] = output["reward_result"]
                 f.write(json.dumps(record, ensure_ascii=False) + "\n")
@@ -442,6 +472,31 @@ class OnPolicyKDTrainer:
             for i in range(len(all_outputs))
         ]
         
+        if getattr(self.args.rollout, "diagnostic_collapse_gate", False):
+            eos = getattr(self.student_processor, "tokenizer", self.student_processor).eos_token_id
+            lengths = [len(o["output_ids"]) - int(bool(o["output_ids"]) and o["output_ids"][-1] == eos) for o in all_outputs]
+            observation = collapse_observation(lengths, self._collapse_baseline, self._collapse_streak)
+            self._collapse_baseline = observation["content_length_baseline"]
+            self._collapse_streak = observation["collapse_bad_streak"]
+            self._collapse_stop = observation["collapse_stop"]
+            for key, value in observation.items():
+                self.log_state[key].append(float(value))
+
+        if exact and self.args.kd.kd_algorithm == "mp_opd":
+            from kdflow.algorithms._mp_opd_atoms import SimCTAtomizer
+            stu_tok = getattr(self.student_processor, "tokenizer", self.student_processor)
+            tea_tok = getattr(self.teacher_processor, "tokenizer", self.teacher_processor)
+            atomizer = SimCTAtomizer(stu_tok, tea_tok)
+            valid = 0
+            for index, sample in enumerate(sample_list):
+                stu_labels = sample["stu_input_ids"].roll(-1)[sample["stu_loss_mask"]].tolist()
+                tea_labels = sample["tea_input_ids"].roll(-1)[sample["tea_loss_mask"]].tolist()
+                valid += int(atomizer.atomize(stu_labels, tea_labels, sample_id=str(index)).valid)
+            self.log_state["trajectory_valid_sample_count"].append(float(valid))
+            if valid == 0:
+                self._collapse_stop = True
+                self.stop_reason = "zero_valid_samples_before_update"
+
         # Print sample for debugging
         sample0 = sample_list[0]["stu_prompts"][0] + sample_list[0]["stu_responses"][0]
         if self.args.rollout.print_rollout_sample:
@@ -563,6 +618,8 @@ class OnPolicyKDTrainer:
         Returns:
             Dict containing all sample fields
         """
+        if getattr(self.args.rollout, "exact_token_trajectory", False):
+            return self._build_exact_rollout_sample(stu_prompt, tea_prompt, output, label, images)
         # Decode response using student tokenizer
         response_ids = output["output_ids"]
         response_text = output["text"]
@@ -606,6 +663,43 @@ class OnPolicyKDTrainer:
             sample["images"] = [images]
         return sample
             
+    def _build_exact_rollout_sample(self, stu_prompt, tea_prompt, output, label, images):
+        if images:
+            raise ValueError("explicit trajectory mode is text-only")
+        stu_tok = getattr(self.student_processor, "tokenizer", self.student_processor)
+        tea_tok = getattr(self.teacher_processor, "tokenizer", self.teacher_processor)
+        sampled = output["output_ids"]
+        content_ids = sampled[:-1] if sampled and sampled[-1] == stu_tok.eos_token_id else sampled
+        response = stu_tok.decode(content_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False)
+        expected_prompt = stu_tok(stu_prompt, add_special_tokens=True)["input_ids"]
+        if output["prompt_ids"] != expected_prompt:
+            raise RuntimeError("rollout/trainer prompt ID mismatch")
+        stu_ids, stu_mask, synthetic = trajectory_tokens(output["prompt_ids"], sampled, stu_tok.eos_token_id)
+        tea_prompt_ids = tea_tok(tea_prompt, add_special_tokens=True)["input_ids"]
+        tea_response_ids = tea_tok(response, add_special_tokens=False)["input_ids"]
+        tea_ids, tea_mask, _ = trajectory_tokens(tea_prompt_ids, tea_response_ids, tea_tok.eos_token_id)
+        result = {}
+        for prefix, ids, mask in [("stu", stu_ids, stu_mask), ("tea", tea_ids, tea_mask)]:
+            result[prefix + "_input_ids"] = torch.tensor(ids, dtype=torch.long)
+            result[prefix + "_attn_mask"] = torch.ones(len(ids), dtype=torch.long)
+            result[prefix + "_loss_mask"] = torch.tensor(mask, dtype=torch.bool)
+        logprobs = output.get("meta_info", {}).get("output_token_logprobs")
+        if logprobs is None or [int(x[1]) for x in logprobs] != sampled:
+            raise RuntimeError("behavior log-prob IDs do not match sampled IDs")
+        if any(not math.isfinite(float(x[0])) for x in logprobs):
+            raise RuntimeError("non-finite sampled behavior log-probability")
+        behavior = torch.full((len(stu_ids),), float("nan"))
+        start = len(expected_prompt) - 1
+        behavior[start:start + len(sampled)] = torch.tensor([float(x[0]) for x in logprobs])
+        result.update(
+            tea_full_texts=[tea_prompt + response], rollout_log_probs=None,
+            stu_behavior_log_probs=behavior,
+            stu_prompts=[stu_prompt], stu_responses=[response], tea_prompts=[tea_prompt], labels=[label],
+            response_length=torch.FloatTensor([[len(sampled)]]),
+            total_length=torch.FloatTensor([[len(stu_ids)]]),
+        )
+        return result
+
     def logging(self):
         if self.global_step % self.args.log.logging_steps == 0:
             progress = self.global_step / self.num_rollout_iters_per_epoch / self.epochs

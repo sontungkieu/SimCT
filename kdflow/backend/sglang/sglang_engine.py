@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import zmq
 import numpy as np
 import torch
+from kdflow.backend.sglang._engine_requests import _handle_generate
 from sglang.srt.entrypoints.engine import Engine as _SglEngine
 from sglang.srt.managers.scheduler import run_scheduler_process as _original_run_scheduler_process
 
@@ -150,39 +151,6 @@ def _normalize_tags(tags):
     return tags
 
 
-def _handle_generate(engine, request, data_socket, request_queue, response_queue):
-    """Handle a generate request: run inference and send hidden states via ZMQ."""
-    kwargs = request["kwargs"]
-
-    generate_kwargs = {
-        "prompt": kwargs["prompt"],
-        "sampling_params": kwargs["sampling_params"],
-        "return_hidden_states": kwargs.get("return_hidden_states", True),
-    }
-    if kwargs.get("image_data") is not None:
-        generate_kwargs["image_data"] = kwargs["image_data"]
-
-    outputs = engine.generate(**generate_kwargs)
-
-    num_samples = len(outputs)
-    
-    response_queue.put({
-        "type": "generate",
-        "success": True,
-        "num_samples": num_samples,
-    })
-    
-    for i, (output, mask) in enumerate(zip(outputs, kwargs["loss_masks"])):
-        hs_np = output["meta_info"]["hidden_states"][0]
-        hs_np = hs_np[:mask.shape[0]]  # loss_mask may have been truncated
-        hs_np = hs_np[mask]
-        if not hs_np.flags['C_CONTIGUOUS']:
-            hs_np = np.ascontiguousarray(hs_np)
-            
-        meta = pickle.dumps({"shape": hs_np.shape, "dtype": str(hs_np.dtype)})
-        data_socket.send(meta, flags=zmq.SNDMORE)
-        data_socket.send(hs_np, copy=False)
-
 
 def _handle_sleep(engine, request, config, response_queue):
     """Handle a sleep request: offload GPU memory."""
@@ -264,6 +232,7 @@ class SGLangEngineService:
         sampling_params: Dict[str, Any],
         return_hidden_states: bool = True,
         image_data=None,
+        input_ids=None,
     ) -> List[np.ndarray]:
         """Run generation and return hidden states via ZMQ.
         
@@ -290,6 +259,8 @@ class SGLangEngineService:
             "sampling_params": sampling_params,
             "return_hidden_states": return_hidden_states,
         }
+        if input_ids is not None:
+            kwargs["input_ids"] = input_ids
         if image_data is not None:
             kwargs["image_data"] = image_data
 

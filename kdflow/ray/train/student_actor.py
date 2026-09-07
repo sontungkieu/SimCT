@@ -284,6 +284,11 @@ class StudentRayActor:
                 ).item()
             )
 
+            if self.strategy.step == 0:
+                status["optimizer_lr_used"].append(self.optim.param_groups[0]["lr"])
+                status["optimizer_final_grad_norm"].append(status["grad_norm"][-1])
+                if not np.isfinite(status["grad_norm"][-1]):
+                    raise FloatingPointError("non-finite final accumulated gradient")
             self.strategy.optimizer_step(self.optim, self.student, self.scheduler)
             if self.strategy.step == 0:
                 optimizer_updates += 1
