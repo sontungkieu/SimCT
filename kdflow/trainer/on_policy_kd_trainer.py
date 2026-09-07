@@ -444,7 +444,7 @@ class OnPolicyKDTrainer:
             if all_images:
                 raise ValueError("explicit trajectory mode is text-only")
             tok = getattr(self.student_processor, "tokenizer", self.student_processor)
-            prompt_ids = [tok(p, add_special_tokens=True)["input_ids"] for p in all_stu_prompts]
+            prompt_ids = [self._encode_prompt_ids(tok, p) for p in all_stu_prompts]
         all_outputs = self.rollout_group.generate(all_stu_prompts, self.generate_kwargs, image_data=all_images, input_ids=prompt_ids)
 
         rollout_dir = os.path.join(self.args.train.save_path, "rollout_data")
@@ -663,6 +663,12 @@ class OnPolicyKDTrainer:
             sample["images"] = [images]
         return sample
             
+    def _encode_prompt_ids(self, tokenizer, prompt):
+        # Rendered HF chat templates already contain their BOS/control tokens.
+        data_args = getattr(getattr(self, "args", None), "data", None)
+        rendered = getattr(data_args, "apply_chat_template", False)
+        return tokenizer(prompt, add_special_tokens=not rendered)["input_ids"]
+
     def _build_exact_rollout_sample(self, stu_prompt, tea_prompt, output, label, images):
         if images:
             raise ValueError("explicit trajectory mode is text-only")
@@ -671,11 +677,11 @@ class OnPolicyKDTrainer:
         sampled = output["output_ids"]
         content_ids = sampled[:-1] if sampled and sampled[-1] == stu_tok.eos_token_id else sampled
         response = stu_tok.decode(content_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False)
-        expected_prompt = stu_tok(stu_prompt, add_special_tokens=True)["input_ids"]
+        expected_prompt = self._encode_prompt_ids(stu_tok, stu_prompt)
         if output["prompt_ids"] != expected_prompt:
             raise RuntimeError("rollout/trainer prompt ID mismatch")
         stu_ids, stu_mask, synthetic = trajectory_tokens(output["prompt_ids"], sampled, stu_tok.eos_token_id)
-        tea_prompt_ids = tea_tok(tea_prompt, add_special_tokens=True)["input_ids"]
+        tea_prompt_ids = self._encode_prompt_ids(tea_tok, tea_prompt)
         tea_response_ids = tea_tok(response, add_special_tokens=False)["input_ids"]
         tea_ids, tea_mask, _ = trajectory_tokens(tea_prompt_ids, tea_response_ids, tea_tok.eos_token_id)
         result = {}

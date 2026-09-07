@@ -124,3 +124,13 @@ def test_collapse_stops_before_update_and_saves_completed_policy(tmp_path, monke
     assert result["status"] == "stopped"
     assert saved == [str(tmp_path / "step3")]
     assert len(batches) == 1
+
+
+def test_rendered_chat_template_does_not_add_second_bos():
+    obj=trainer();obj.args=SimpleNamespace(data=SimpleNamespace(apply_chat_template=True))
+    def tokenizer(text,add_special_tokens):
+        assert text=='<bos>rendered'
+        return {'input_ids':([1] if add_special_tokens else [])+[1,8]}
+    assert obj._encode_prompt_ids(tokenizer,'<bos>rendered')==[1,8]
+    obj.args.data.apply_chat_template=False
+    assert obj._encode_prompt_ids(tokenizer,'<bos>rendered')==[1,1,8]
