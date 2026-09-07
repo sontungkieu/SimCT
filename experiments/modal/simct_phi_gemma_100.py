@@ -22,7 +22,7 @@ def env(online=False):
 
 @app.function(image=image,cpu=2,memory=8192,timeout=900,retries=0,volumes={'/data':source})
 def export_prompts():
-    code="""
+    code=r"""
 from pathlib import Path
 import json,os,shutil,hashlib
 from datasets import load_from_disk
