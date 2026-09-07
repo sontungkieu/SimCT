@@ -6,6 +6,7 @@ from typing import Optional
 class RolloutArguments:
     """ Arguments for rollout (on-policy distillation)."""
     
+    rollout_disable_piecewise_cuda_graph: bool = field(default=False, metadata={"help": "Disable experimental SGLang piecewise graph capture for incompatible models."})
     enforce_max_sequence_length: bool = field(default=False, metadata={"help": "Bound sampled response plus prompt and terminal sentinel by data.max_len."})
     exact_token_trajectory: bool = field(default=False, metadata={"help": "Text-only sampled-ID and teacher-ID contract."})
     diagnostic_max_updates: int = field(default=0, metadata={"help": "Stop after this many updates without changing the scheduler horizon."})

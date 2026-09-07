@@ -37,6 +37,7 @@ def train(args):
     pg, reordered_bundle_indices, reordered_gpu_ids = create_placement_group(num_gpus)
     rollout_group = RolloutActorGroup(
         model_path=args.model.student_name_or_path,
+        extra_server_args={"disable_piecewise_cuda_graph": True} if args.rollout.rollout_disable_piecewise_cuda_graph else None,
         num_actors=args.rollout.rollout_num_engines,
         tp_size=args.rollout.rollout_tp_size,
         num_gpus_per_node=args.train.num_gpus_per_node,
