@@ -11,3 +11,9 @@ Scoring option span_score_mode=mean_logprob normalizes original vocabulary logit
 Runner: SIMCT_STAGE=export on phamvanvuhoan; SIMCT_STAGE=prepare then train on lhtu05, with --stage matching environment. Training runtime cap8400seconds plus cleanup. Existing invocation refuses duplicate training. GPU preemption leaves checkpoints for inspected recovery; it does not blindly restart training. W&B run simct-phi-gemma-nosft-100-r1; final completion requires run-summary showing100 optimizer updates.
 
 Additional preflight findings: rendered chat templates own BOS, so exact prompt encoding uses add_special_tokens=False when templates are enabled. Source max_len was metadata-only for OPD; this run explicitly bounds each response to4096 minus its prompt length and one terminal sentinel. No prompt content is truncated or filtered. Audited Gemma prompt maximum1635 tokens; all10000 fit. Teacher retokenization retains its16384-token operational context.
+
+## Deployment evidence
+
+18 CPU tests passed in44.31seconds after the final scoring/BOS/sequence-cap changes. GPU execution source9a9efe5. App https://modal.com/apps/lhtu05/main/ap-bFZCziRy2ZTBqBnC9uo9HX ; FunctionCall fc-01M1YDSNWHAWGBGSF6QQ57R09X ; B200 container ta-01M1YDSP8JJA6PFYVHMN28KPQR. Submitted2026-09-07T17:14UTC (2026-09-08 00:14 local). Volume simct-phi-gemma-nosft-100-r1 stores invocation.json, train.log, result.json, checkpoint/, checkpoints/. Local submit log /home/tung/simct-data-evidence/opd-train-r1.log.
+
+Prompt Hub revision681e17e797cc0ceef58c039510ec1a0f827200a8, parquetSHA256 cf9a13f4e0e7a4a9578325994414ad92148e8c95f8608a0d609218641f7921ae. lhtu05 guard before launch: reported1.23716677USD, estimate21USD, reserve1USD, projected23.23716677USD against28.5USD local hard limit (30USD user budget), OK. Running is not completion; require the final summary and checkpoint before reporting success.
