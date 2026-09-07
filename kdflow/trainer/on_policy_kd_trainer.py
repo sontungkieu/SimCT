@@ -445,7 +445,12 @@ class OnPolicyKDTrainer:
                 raise ValueError("explicit trajectory mode is text-only")
             tok = getattr(self.student_processor, "tokenizer", self.student_processor)
             prompt_ids = [self._encode_prompt_ids(tok, p) for p in all_stu_prompts]
-        all_outputs = self.rollout_group.generate(all_stu_prompts, self.generate_kwargs, image_data=all_images, input_ids=prompt_ids)
+        sampling_params = self.generate_kwargs
+        if getattr(self.args.rollout, "enforce_max_sequence_length", False):
+            if prompt_ids is None:raise ValueError("Sequence cap requires exact token trajectory")
+            from kdflow.trajectory import bounded_sampling_params
+            sampling_params = bounded_sampling_params(prompt_ids, sampling_params, self.args.data.max_len)
+        all_outputs = self.rollout_group.generate(all_stu_prompts, sampling_params, image_data=all_images, input_ids=prompt_ids)
 
         rollout_dir = os.path.join(self.args.train.save_path, "rollout_data")
         os.makedirs(rollout_dir, exist_ok=True)

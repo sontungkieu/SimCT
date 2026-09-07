@@ -32,3 +32,12 @@ class TrajectoryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_bounded_sampling_preserves_other_options_and_total_sequence_cap():
+    from kdflow.trajectory import bounded_sampling_params
+    config={'max_new_tokens':4096,'temperature':.6,'top_p':.95}
+    result=bounded_sampling_params([[1]*100,[1]*1600],config,4096)
+    assert [x['max_new_tokens'] for x in result]==[3995,2495]
+    assert all(x['temperature']==.6 and x['top_p']==.95 for x in result)
+    assert config['max_new_tokens']==4096

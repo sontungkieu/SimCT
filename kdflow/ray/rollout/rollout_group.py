@@ -378,7 +378,7 @@ class RolloutActorGroup:
         async def _generate_one(idx: int, prompt: str, session: aiohttp.ClientSession):
             payload = {
                 "text": prompt,
-                "sampling_params": sampling_params,
+                "sampling_params": sampling_params[idx] if isinstance(sampling_params, list) else sampling_params,
             }
             if input_ids is not None:
                 payload.pop("text")

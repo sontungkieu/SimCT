@@ -42,3 +42,13 @@ def collapse_observation(lengths, baseline, bad_streak):
         "collapse_bad_streak": streak,
         "collapse_stop": streak >= 2,
     }
+
+
+def bounded_sampling_params(prompt_ids, sampling_params, max_sequence_length):
+    """Reserve one terminal sentinel within the student training sequence cap."""
+    result=[]
+    for ids in prompt_ids:
+        remaining=max_sequence_length-len(ids)-1
+        if remaining<1:raise ValueError('Prompt leaves no response room within sequence cap')
+        result.append(dict(sampling_params,max_new_tokens=min(sampling_params['max_new_tokens'],remaining)))
+    return result
