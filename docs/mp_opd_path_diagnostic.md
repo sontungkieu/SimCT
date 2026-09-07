@@ -72,3 +72,13 @@ and exact input data are staged; model preparation is incomplete.
 Before retrying, enable B200 billing eligibility and update the existing
 Hugging Face secret to a token authorized for that model. Do not change model
 revision, GPU type, profile, or objective to work around these launch blocks.
+
+The read-only W&B probe using this profile's `wandb-secret` could not retrieve
+r7: its API returned `RunNotFoundError`. This does not establish write access
+or prove that the run was deleted; verify access to the configured entity and
+project before training with this secret.
+
+All preparation/probe apps are stopped. The billing snapshot at
+2026-09-07 03:33:40 UTC reports $0.00780266 for this task's app descriptions
+(CPU and memory, no B200 usage); reports may lag. Total profile usage is
+$0.01169652 for the calendar-month interval 2026-09-01 to 2026-10-01.
