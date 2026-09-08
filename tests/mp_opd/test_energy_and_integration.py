@@ -12,7 +12,11 @@ from kdflow.algorithms._mp_opd_energy import (
     save_energy_checkpoint,
 )
 from kdflow.algorithms._mp_opd_semimarkov import semi_markov_partition
-from kdflow.algorithms.mp_opd import MetaPartitionedOPD, random_partition
+from kdflow.algorithms.mp_opd import (
+    MetaPartitionedOPD,
+    _behavior_parity_metrics,
+    random_partition,
+)
 from kdflow.arguments.distillation_args import DistillationArguments
 
 
@@ -67,6 +71,38 @@ def test_random_partition_is_seed_deterministic_and_full_cover():
     assert first != random_partition(19, 4, 124)
     assert first[0][0] == 0 and first[-1][1] == 19
     assert all(left[1] == right[0] for left, right in zip(first, first[1:]))
+
+
+def test_behavior_parity_applies_rollout_temperature():
+    logits = torch.tensor([[0.0, 2.0], [3.0, -1.0]])
+    labels = torch.tensor([1, 0])
+    expected = (logits / 0.6).log_softmax(-1).gather(-1, labels[:, None]).squeeze(-1)
+
+    metrics = _behavior_parity_metrics(logits, labels, expected, 0.6)
+
+    assert metrics["trajectory_logprob_abs_max"].item() < 1e-6
+
+
+def test_behavior_parity_records_isolated_finite_outlier_without_aborting():
+    logits = torch.zeros(200, 2)
+    labels = torch.zeros(200, dtype=torch.long)
+    behavior = logits.log_softmax(-1)[:, 0]
+    behavior[17] -= 1.5
+
+    metrics = _behavior_parity_metrics(logits, labels, behavior, 1.0)
+
+    assert metrics["trajectory_logprob_abs_max"].item() == pytest.approx(1.5)
+    assert metrics["trajectory_logprob_abs_p99"].item() == pytest.approx(0.0)
+    assert metrics["trajectory_logprob_above_0p5_fraction"].item() == pytest.approx(0.005)
+
+
+def test_behavior_parity_rejects_distributional_mismatch():
+    logits = torch.zeros(20, 2)
+    labels = torch.zeros(20, dtype=torch.long)
+    behavior = logits.log_softmax(-1)[:, 0] - 0.75
+
+    with pytest.raises(RuntimeError, match="p99"):
+        _behavior_parity_metrics(logits, labels, behavior, 1.0)
 
 
 class FakeTokenizer:

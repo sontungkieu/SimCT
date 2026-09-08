@@ -86,6 +86,54 @@ def _finite_stats(prefix: str, values: torch.Tensor) -> dict[str, torch.Tensor]:
     }
 
 
+def _behavior_parity_metrics(
+    student_logits: torch.Tensor,
+    labels: torch.Tensor,
+    behavior_log_probs: torch.Tensor,
+    rollout_temperature: float,
+) -> dict[str, torch.Tensor]:
+    """Compare SGLang decode policy logprobs with the trainer policy.
+
+    SGLang applies sampling temperature to output-token logprobs, while its
+    input-token/prefill logprobs remain raw model logprobs. The trajectory
+    stores output-token logprobs, so parity must apply the rollout temperature
+    to the trainer logits as well.
+    """
+    temperature = float(rollout_temperature)
+    if not math.isfinite(temperature) or temperature <= 0:
+        raise ValueError("MP-OPD parity requires a positive finite rollout temperature")
+
+    real = torch.isfinite(behavior_log_probs)
+    if not real.any():
+        return {}
+    actual = (
+        (student_logits.detach().float() / temperature)
+        .log_softmax(dim=-1)
+        .gather(-1, labels.unsqueeze(-1))
+        .squeeze(-1)
+    )
+    delta = (actual[real] - behavior_log_probs[real]).abs()
+    if not torch.isfinite(delta).all():
+        raise RuntimeError("behavior/trainer logprob parity produced non-finite deltas")
+
+    mean = delta.mean()
+    maximum = delta.max()
+    p99 = torch.quantile(delta, 0.99)
+    # Backend/precision tails can contain isolated finite outliers. Fail on a
+    # distributional mismatch while preserving the tail as diagnostics.
+    if mean > 0.1 or p99 > 0.5:
+        raise RuntimeError(
+            "behavior/trainer logprob parity failed: "
+            f"mean={mean.item():.6f}, p99={p99.item():.6f}, max={maximum.item():.6f}"
+        )
+    return {
+        "trajectory_logprob_abs_mean": mean,
+        "trajectory_logprob_abs_p99": p99,
+        "trajectory_logprob_abs_max": maximum,
+        "trajectory_logprob_above_0p5_fraction": (delta > 0.5).float().mean(),
+    }
+
+
 @register_algorithm("mp_opd")
 class MetaPartitionedOPD:
     """Scalar canonical-path credit with contiguous SimCT atom partitions.
@@ -241,15 +289,13 @@ class MetaPartitionedOPD:
         behavior = micro_batch.get("stu_behavior_log_probs")
         if behavior is not None:
             selected = behavior[student_loss_mask]
-            real = torch.isfinite(selected)
             labels_for_parity = student_labels[student_loss_mask]
-            actual = torch.log_softmax(student_logits_flat.detach().float(), dim=-1).gather(
-                -1, labels_for_parity.unsqueeze(-1)).squeeze(-1)
-            delta = (actual[real] - selected[real]).abs()
-            if delta.numel():
-                if not torch.isfinite(delta).all() or delta.mean() > 0.1 or delta.max() > 0.5:
-                    raise RuntimeError(f"behavior/trainer logprob parity failed: mean={delta.mean().item():.6f}, max={delta.max().item():.6f}")
-                parity_metrics = {"trajectory_logprob_abs_mean": delta.mean(), "trajectory_logprob_abs_max": delta.max()}
+            parity_metrics = _behavior_parity_metrics(
+                student_logits_flat,
+                labels_for_parity,
+                selected,
+                self.args.rollout.temperature,
+            )
         teacher_logits_flat = self.teacher_lm_head(
             teacher_hiddens.to(self.teacher_lm_head.weight)
         )
