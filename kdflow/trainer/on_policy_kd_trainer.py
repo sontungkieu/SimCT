@@ -681,7 +681,8 @@ class OnPolicyKDTrainer:
         tea_tok = getattr(self.teacher_processor, "tokenizer", self.teacher_processor)
         sampled = output["output_ids"]
         content_ids = sampled[:-1] if sampled and sampled[-1] == stu_tok.eos_token_id else sampled
-        if self.args.kd.kd_algorithm == "mp_opd":
+        kd_args = getattr(getattr(self, "args", None), "kd", None)
+        if getattr(kd_args, "kd_algorithm", None) == "mp_opd":
             from kdflow.algorithms._mp_opd_atoms import mp_content_ids
             content_ids, _ = mp_content_ids(sampled, stu_tok)
         response = stu_tok.decode(content_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False)
