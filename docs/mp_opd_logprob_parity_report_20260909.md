@@ -160,6 +160,11 @@ correct value is `log_softmax(student_logits / rollout_temperature)`.
 6. aborts on distributional mismatch (`mean > 0.1` or `p99 > 0.5`) instead of
    one isolated finite maximum.
 
+The final broader regression run also exposed an older exact-trajectory fixture
+failure introduced by the Gemma terminal-control change. The trainer now checks
+for MP-OPD arguments defensively, preserving the generic exact-trajectory path
+when a minimal caller has no `args` attribute.
+
 This retains a fail-closed check for systemic errors. The prior RunAI replay
 would pass because mean `0.006778` and p99 `0.1283` are small, while its single
 `1.6633` maximum remains visible in telemetry. A raw-vs-policy mismatch like
@@ -168,8 +173,10 @@ p99 is about `0.70`.
 
 ## Validation
 
-- Modal CPU, pinned runtime: `37 passed, 1 skipped` in `28.91s` for
-  `pytest -q /opt/overlay/tests/mp_opd`.
+- Modal CPU, pinned runtime: `37 passed, 1 skipped` in `28.91s` for the focused
+  `pytest -q /opt/overlay/tests/mp_opd` run.
+- Modal CPU, pinned runtime: `55 passed, 1 skipped` in `43.63s` for `tests/mp_opd`
+  plus paper-score, SpanCTKD-metric, trajectory, and exact-trajectory tests.
 - Local static checks: Python compilation and `git diff --check` passed.
 - B200 probe: completed with exit code 0 and emitted the final result marker.
 - A10 standard and FSDP probes: completed with exit code 0 and emitted final
@@ -194,12 +201,14 @@ The final billing snapshot at 2026-09-09 01:19 Asia/Ho_Chi_Minh had posted:
 | Successful A10 baseline | $0.10722 |
 | Successful B200 default + Triton probe | $0.67314 |
 | Successful A10 FSDP control | $0.09945 |
-| Two CPU regression runs | $0.00426 |
+| Two posted CPU regression runs | $0.00426 |
 | Total posted for all task app IDs | **$0.93765** |
 
 The workspace total at that snapshot was `$23.17067`. Billing can still be
 adjusted after credits or reservations, so `$0.93765` is the posted resource
-cost for the recorded app IDs rather than a final invoice amount.
+cost for the recorded app IDs rather than a final invoice amount. The failed
+broader CPU test and its successful rerun had not appeared in the latest
+snapshot; they used CPU only and will add a small pending amount.
 
 The B200 app itself cost `$0.67314`, below its approximately `$1.15` timeout
 ceiling. Using A10 for hypothesis elimination avoided additional B200 trials.
@@ -219,6 +228,7 @@ Important files:
 - `a10-fsdp-download/a10-fsdp-r1/result.json`
 - `b200-default-triton-r1.log`
 - `mp-opd-tests-r2.log`
+- `mp-opd-tests-final-rerun.log`
 
 The probes can be reproduced after selecting a funded Modal profile and passing
 the billing guard:
@@ -244,8 +254,9 @@ RunAI failure used the project SFT checkpoint with a Qwen teacher. The Modal
 experiment isolates the student rollout/trainer probability contract; it does
 not reproduce MP-OPD training quality or cross-tokenizer teacher scoring.
 
-The next production action is to apply commit `7b29b14` and `3a42b9e` to the
-RunAI source overlay, then run a five-update canary for atomic and fixed mode.
+The next production action is to apply commits `7b29b14`, `3a42b9e`, and
+`e580893` to the RunAI source overlay, then run a five-update canary for atomic
+and fixed mode.
 Acceptance criteria are:
 
 - at least one optimizer update completes;
