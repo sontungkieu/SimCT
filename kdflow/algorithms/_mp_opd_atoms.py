@@ -69,7 +69,26 @@ def _added_ids(tokenizer: Any) -> set[int]:
     getter = getattr(tokenizer, "get_added_vocab", None)
     if getter is None:
         return set()
+    special = getattr(tokenizer, "all_special_ids", None)
+    if special is not None:
+        return {int(value) for value in special}
     return {int(value) for value in getter().values()}
+
+
+def mp_content_ids(ids, tokenizer):
+    """Strip terminal controls from a copy; preserve sampled IDs and logprobs."""
+    terminal = set()
+    eos = getattr(tokenizer, "eos_token_id", None)
+    if eos is not None:
+        terminal.add(int(eos))
+    added = getattr(tokenizer, "get_added_vocab", lambda: {})()
+    eot = added.get("<end_of_turn>")
+    if eot is not None and int(eot) in set(getattr(tokenizer, "all_special_ids", ())):
+        terminal.add(int(eot))
+    content = [int(x) for x in ids]
+    while content and content[-1] in terminal:
+        content.pop()
+    return content, len(ids) - len(content)
 
 
 class SimCTAtomizer:
@@ -103,14 +122,8 @@ class SimCTAtomizer:
         *,
         sample_id: str,
     ) -> AtomizationResult:
-        stu_ids, stu_eos = self._mask_terminal_eos(
-            [int(x) for x in student_label_ids],
-            getattr(self.student_tokenizer, "eos_token_id", None),
-        )
-        tea_ids, tea_eos = self._mask_terminal_eos(
-            [int(x) for x in teacher_label_ids],
-            getattr(self.teacher_tokenizer, "eos_token_id", None),
-        )
+        stu_ids, stu_eos = mp_content_ids(student_label_ids, self.student_tokenizer)
+        tea_ids, tea_eos = mp_content_ids(teacher_label_ids, self.teacher_tokenizer)
         if not stu_ids or not tea_ids:
             return AtomizationResult((), False, AtomizationFailure.EMPTY_RESPONSE.value, 0, 0, stu_eos, tea_eos)
 
