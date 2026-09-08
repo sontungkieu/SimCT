@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 import gc
 import json
 import math
@@ -58,7 +59,7 @@ def _flatten(values: list[list[float]]) -> list[float]:
 
 
 def _token_ids(value: Any) -> list[int]:
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         value = value["input_ids"]
     if hasattr(value, "tolist"):
         value = value.tolist()
