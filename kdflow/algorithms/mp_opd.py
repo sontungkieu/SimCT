@@ -103,7 +103,11 @@ def _behavior_parity_metrics(
     if not math.isfinite(temperature) or temperature <= 0:
         raise ValueError("MP-OPD parity requires a positive finite rollout temperature")
 
-    real = torch.isfinite(behavior_log_probs)
+    if torch.isinf(behavior_log_probs).any():
+        raise RuntimeError("behavior logprobs contain infinity")
+    # Synthetic terminal events are represented by NaN and intentionally have
+    # no behavior probability. Infinity is never a valid sentinel.
+    real = ~torch.isnan(behavior_log_probs)
     if not real.any():
         return {}
     actual = (

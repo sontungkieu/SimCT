@@ -105,6 +105,19 @@ def test_behavior_parity_rejects_distributional_mismatch():
         _behavior_parity_metrics(logits, labels, behavior, 1.0)
 
 
+def test_behavior_parity_masks_nan_sentinel_but_rejects_infinity():
+    logits = torch.zeros(2, 2)
+    labels = torch.zeros(2, dtype=torch.long)
+    expected = logits.log_softmax(-1)[:, 0]
+    expected[1] = float("nan")
+    metrics = _behavior_parity_metrics(logits, labels, expected, 1.0)
+    assert metrics["trajectory_logprob_abs_max"].item() == 0.0
+
+    expected[1] = float("inf")
+    with pytest.raises(RuntimeError, match="infinity"):
+        _behavior_parity_metrics(logits, labels, expected, 1.0)
+
+
 class FakeTokenizer:
     def __init__(self, pieces, eos):
         self.pieces = pieces
