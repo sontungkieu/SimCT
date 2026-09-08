@@ -88,7 +88,7 @@ print('MP_PARITY_ASSETS_JSON=' + json.dumps(ready, sort_keys=True), flush=True)
     image=image,
     cpu=8,
     memory=32768,
-    timeout=1200,
+    timeout=720,
     retries=0,
     max_containers=1,
     volumes={"/assets": assets, "/runs": outputs},
@@ -119,7 +119,7 @@ def parity_probe(run_id: str, backends: str) -> dict:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     (output_path.parent / "invocation.json").write_text(json.dumps(invocation, indent=2) + "\n")
     try:
-        subprocess.run(command, env=runtime_environment(online=False), check=True, timeout=1080)
+        subprocess.run(command, env=runtime_environment(online=False), check=True, timeout=660)
         result = json.loads(output_path.read_text())
         return {
             "status": result["status"],

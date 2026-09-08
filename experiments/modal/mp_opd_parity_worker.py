@@ -107,7 +107,9 @@ def _server_info(engine: Any) -> dict[str, Any]:
     return result
 
 
-def _hf_scores(model_path: str, tokenized: list[dict[str, Any]], backend: str) -> list[list[float]]:
+def _hf_scores(
+    model_path: str, tokenized: list[dict[str, Any]], backend: str
+) -> dict[str, list[list[float]]]:
     import torch
     from transformers import AutoModelForCausalLM
 
@@ -117,7 +119,7 @@ def _hf_scores(model_path: str, tokenized: list[dict[str, Any]], backend: str) -
         dtype=torch.bfloat16,
         attn_implementation=backend,
     ).to("cuda").eval()
-    scores: list[list[float]] = []
+    scores: dict[str, list[list[float]]] = {"raw": [], "temperature": []}
     with torch.inference_mode():
         for record in tokenized:
             prompt_ids = record["prompt_ids"]
@@ -126,13 +128,14 @@ def _hf_scores(model_path: str, tokenized: list[dict[str, Any]], backend: str) -
             logits = model(input_ids=all_ids, use_cache=False).logits[0]
             response_logits = logits[len(prompt_ids) - 1 : len(prompt_ids) + len(output_ids) - 1]
             labels = torch.tensor(output_ids, device="cuda")
-            selected = (
-                (response_logits.float() / TEMPERATURE)
-                .log_softmax(dim=-1)
-                .gather(-1, labels[:, None])
-                .squeeze(-1)
-            )
-            scores.append(selected.cpu().tolist())
+            for name, temperature in (("raw", 1.0), ("temperature", TEMPERATURE)):
+                selected = (
+                    (response_logits.float() / temperature)
+                    .log_softmax(dim=-1)
+                    .gather(-1, labels[:, None])
+                    .squeeze(-1)
+                )
+                scores[name].append(selected.cpu().tolist())
     del model
     gc.collect()
     torch.cuda.empty_cache()
@@ -205,20 +208,25 @@ def run(model_path: str, output_path: Path, backends: list[str]) -> dict[str, An
                     )
             assert generated is not None
             full_ids = [record["prompt_ids"] + record["output_ids"] for record in generated]
-            rescored = engine.generate(
-                input_ids=full_ids,
-                sampling_params={"temperature": TEMPERATURE, "top_p": TOP_P, "max_new_tokens": 0},
-                return_logprob=True,
-                logprob_start_len=0,
-            )
-            rescored = rescored if isinstance(rescored, list) else [rescored]
-            batch_scores: list[list[float]] = []
-            for record, output in zip(generated, rescored):
-                entries = output["meta_info"]["input_token_logprobs"]
-                ids = _ids(entries)
-                assert ids == record["prompt_ids"] + record["output_ids"]
-                start = len(record["prompt_ids"])
-                batch_scores.append(_values(entries[start:]))
+            batch_scores_by_temperature: dict[str, list[list[float]]] = {}
+            for name, temperature in (("temperature", TEMPERATURE), ("raw_probe", 1.0)):
+                rescored = engine.generate(
+                    input_ids=full_ids,
+                    sampling_params={"temperature": temperature, "top_p": TOP_P, "max_new_tokens": 0},
+                    return_logprob=True,
+                    logprob_start_len=0,
+                )
+                rescored = rescored if isinstance(rescored, list) else [rescored]
+                batch_scores: list[list[float]] = []
+                for record, output in zip(generated, rescored):
+                    entries = output["meta_info"]["input_token_logprobs"]
+                    ids = _ids(entries)
+                    assert ids == record["prompt_ids"] + record["output_ids"]
+                    start = len(record["prompt_ids"])
+                    batch_scores.append(_values(entries[start:]))
+                batch_scores_by_temperature[name] = batch_scores
+
+            batch_scores = batch_scores_by_temperature["temperature"]
 
             individual_scores: list[list[float]] = []
             for record, ids in zip(generated, full_ids):
@@ -234,7 +242,12 @@ def run(model_path: str, output_path: Path, backends: list[str]) -> dict[str, An
                 individual_scores.append(_values(entries[len(record["prompt_ids"]):]))
 
             backend_result["prefill_batch_logprobs"] = batch_scores
+            backend_result["prefill_raw_probe_logprobs"] = batch_scores_by_temperature["raw_probe"]
             backend_result["prefill_individual_logprobs"] = individual_scores
+            backend_result["prefill_temperature_vs_raw_probe"] = _stats(
+                _flatten(batch_scores),
+                _flatten(batch_scores_by_temperature["raw_probe"]),
+            )
             backend_result["prefill_batch_vs_individual"] = _stats(
                 _flatten(batch_scores), _flatten(individual_scores)
             )
@@ -257,18 +270,22 @@ def run(model_path: str, output_path: Path, backends: list[str]) -> dict[str, An
     }
     comparisons: dict[str, Any] = {}
     for backend, values in sglang_results.items():
-        for hf_backend, scores in hf_results.items():
-            comparisons[f"sglang_{backend}_prefill_vs_hf_{hf_backend}"] = _stats(
-                _flatten(values["prefill_individual_logprobs"]), _flatten(scores)
-            )
-    comparisons["hf_eager_vs_sdpa"] = _stats(
-        _flatten(hf_results["eager"]), _flatten(hf_results["sdpa"])
-    )
+        for hf_backend, score_sets in hf_results.items():
+            for scale_name, scores in score_sets.items():
+                comparisons[f"sglang_{backend}_prefill_vs_hf_{hf_backend}_{scale_name}"] = _stats(
+                    _flatten(values["prefill_individual_logprobs"]), _flatten(scores)
+                )
+    for scale_name in ("raw", "temperature"):
+        comparisons[f"hf_eager_vs_sdpa_{scale_name}"] = _stats(
+            _flatten(hf_results["eager"][scale_name]),
+            _flatten(hf_results["sdpa"][scale_name]),
+        )
     first = backends[0]
-    comparisons[f"sglang_{first}_decode_vs_hf_eager"] = _stats(
-        _flatten([record["decode_logprobs"] for record in generated]),
-        _flatten(hf_results["eager"]),
-    )
+    for scale_name, scores in hf_results["eager"].items():
+        comparisons[f"sglang_{first}_decode_vs_hf_eager_{scale_name}"] = _stats(
+            _flatten([record["decode_logprobs"] for record in generated]),
+            _flatten(scores),
+        )
 
     result = {
         "status": "completed",
