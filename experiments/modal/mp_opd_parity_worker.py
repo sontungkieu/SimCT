@@ -57,6 +57,20 @@ def _flatten(values: list[list[float]]) -> list[float]:
     return [item for row in values for item in row]
 
 
+def _token_ids(value: Any) -> list[int]:
+    if isinstance(value, dict):
+        value = value["input_ids"]
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    if len(value) == 1 and isinstance(value[0], (list, tuple)):
+        value = value[0]
+    if not isinstance(value, (list, tuple)) or any(
+        isinstance(item, (list, tuple, dict)) for item in value
+    ):
+        raise TypeError(f"Expected one flat token-ID sequence, got {type(value).__name__}")
+    return [int(item) for item in value]
+
+
 def _engine_kwargs(model_path: str, gpu_name: str, backend: str) -> dict[str, Any]:
     fraction = 0.52 if "A10" in gpu_name else 0.25
     result: dict[str, Any] = {
@@ -134,11 +148,11 @@ def run(model_path: str, output_path: Path, backends: list[str]) -> dict[str, An
     gpu_name = torch.cuda.get_device_name(0)
     tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
     prompt_ids = [
-        tokenizer.apply_chat_template(
+        _token_ids(tokenizer.apply_chat_template(
             [{"role": "user", "content": prompt}],
             tokenize=True,
             add_generation_prompt=True,
-        )
+        ))
         for prompt in PROMPTS
     ]
     environment = {
