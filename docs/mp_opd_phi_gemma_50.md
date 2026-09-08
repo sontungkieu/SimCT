@@ -14,3 +14,16 @@ semantics, so this is not a loss-only ablation or full learned MP-OPD.
 CPU preflight uses cached pinned assets and tests/mp_opd plus baseline trajectory
 regressions. It must pass before GPU submission. Outputs are isolated in
 mp-opd-phi-gemma-nosft-50-r1. No automatic retries after failure/preemption.
+
+## Launch evidence (2026-09-08 UTC)
+
+Execution source: 14e066a (local-only). CPU preflight: 47 passed, 1 skipped
+in 44.29 seconds; skipped real tokenizer cache fixture.
+App: ap-SsFojf2dLvR5yYLQvet9TJ
+Function call: fc-01M1ZCEXYX15Q61M85Y36313EJ
+GPU allocation confirmed NVIDIA B200. Ray startup observed; no completed
+optimizer update verified at this entry.
+Submission log: /home/tung/simct-data-evidence/mp-opd-phi-gemma-50-train.log
+Remote volume: mp-opd-phi-gemma-nosft-50-r1; train.log/result.json/preflight.log.
+Guard at 02:09:48 UTC: usage18.88534074, estimate8.5, reserve1,
+projected28.38534074 against hard28.5 (WARN surfaced before launch).
