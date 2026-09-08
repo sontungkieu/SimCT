@@ -93,7 +93,7 @@ print('MP_PARITY_ASSETS_JSON=' + json.dumps(ready, sort_keys=True), flush=True)
     max_containers=1,
     volumes={"/assets": assets, "/runs": outputs},
 )
-def parity_probe(run_id: str, backends: str) -> dict:
+def parity_probe(run_id: str, backends: str, rl_on_policy_target: str) -> dict:
     ready = json.loads(Path("/assets/ready.json").read_text())
     assert ready["revision"] == STUDENT_REVISION
     output_path = Path("/runs") / run_id / "result.json"
@@ -108,12 +108,15 @@ def parity_probe(run_id: str, backends: str) -> dict:
         str(output_path),
         "--backends",
         backends,
+        "--rl-on-policy-target",
+        rl_on_policy_target,
     ]
     invocation = {
         "run_id": run_id,
         "image": IMAGE,
         "student": ready,
         "backends": backends.split(","),
+        "rl_on_policy_target": rl_on_policy_target,
         "command": command,
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -144,13 +147,21 @@ def local_hf_secret() -> modal.Secret:
 
 
 @app.local_entrypoint()
-def main(stage: str, run_id: str = "", gpu: str = "A10", backends: str = "default"):
+def main(
+    stage: str,
+    run_id: str = "",
+    gpu: str = "A10",
+    backends: str = "default",
+    rl_on_policy_target: str = "none",
+):
     if stage == "prepare":
         result = prepare_student.with_options(secrets=[local_hf_secret()]).remote()
     elif stage == "probe":
         if not run_id:
             raise ValueError("--run-id is required for probe")
-        result = parity_probe.with_options(gpu=gpu).remote(run_id, backends)
+        result = parity_probe.with_options(gpu=gpu).remote(
+            run_id, backends, rl_on_policy_target
+        )
     else:
         raise ValueError("stage must be prepare or probe")
     print("MP_PARITY_MODAL_RESULT=" + json.dumps(result, sort_keys=True), flush=True)

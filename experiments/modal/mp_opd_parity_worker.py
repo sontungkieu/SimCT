@@ -72,7 +72,12 @@ def _token_ids(value: Any) -> list[int]:
     return [int(item) for item in value]
 
 
-def _engine_kwargs(model_path: str, gpu_name: str, backend: str) -> dict[str, Any]:
+def _engine_kwargs(
+    model_path: str,
+    gpu_name: str,
+    backend: str,
+    rl_on_policy_target: str | None,
+) -> dict[str, Any]:
     fraction = 0.52 if "A10" in gpu_name else 0.25
     result: dict[str, Any] = {
         "model_path": model_path,
@@ -85,6 +90,8 @@ def _engine_kwargs(model_path: str, gpu_name: str, backend: str) -> dict[str, An
     }
     if backend != "default":
         result["attention_backend"] = backend
+    if rl_on_policy_target is not None:
+        result["rl_on_policy_target"] = rl_on_policy_target
     return result
 
 
@@ -142,7 +149,12 @@ def _hf_scores(
     return scores
 
 
-def run(model_path: str, output_path: Path, backends: list[str]) -> dict[str, Any]:
+def run(
+    model_path: str,
+    output_path: Path,
+    backends: list[str],
+    rl_on_policy_target: str | None,
+) -> dict[str, Any]:
     import sglang
     import torch
     import transformers
@@ -170,6 +182,7 @@ def run(model_path: str, output_path: Path, backends: list[str]) -> dict[str, An
         "top_p": TOP_P,
         "max_new_tokens": MAX_NEW_TOKENS,
         "return_original_logprob": os.environ.get("SGLANG_RETURN_ORIGINAL_LOGPROB"),
+        "requested_rl_on_policy_target": rl_on_policy_target,
     }
 
     generated: list[dict[str, Any]] | None = None
@@ -177,7 +190,9 @@ def run(model_path: str, output_path: Path, backends: list[str]) -> dict[str, An
     for backend_index, backend in enumerate(backends):
         engine = None
         try:
-            engine = sglang.Engine(**_engine_kwargs(model_path, gpu_name, backend))
+            engine = sglang.Engine(
+                **_engine_kwargs(model_path, gpu_name, backend, rl_on_policy_target)
+            )
             backend_result: dict[str, Any] = {"server_args": _server_info(engine)}
             if backend_index == 0:
                 outputs = engine.generate(
@@ -315,11 +330,13 @@ def main() -> None:
     parser.add_argument("--model-path", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--backends", required=True)
+    parser.add_argument("--rl-on-policy-target", choices=("none", "fsdp"), default="none")
     args = parser.parse_args()
     backends = [value.strip() for value in args.backends.split(",") if value.strip()]
     if not backends or backends[0] != "default":
         raise ValueError("The first backend must be default so it owns the sampled trajectory")
-    run(args.model_path, args.output, backends)
+    target = None if args.rl_on_policy_target == "none" else args.rl_on_policy_target
+    run(args.model_path, args.output, backends, target)
 
 
 if __name__ == "__main__":
