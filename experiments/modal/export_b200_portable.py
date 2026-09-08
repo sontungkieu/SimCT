@@ -104,8 +104,15 @@ for f in info.siblings:
 receipt=dict(repo=repo,revision=c.oid,private=info.private,status='uploaded_size_and_lfs_hash_verified')
 (root/'receipt.json').write_text(json.dumps(receipt));print('HF_RECEIPT',json.dumps(receipt),flush=True)
 """
-    subprocess.run([python,'-c',upload],check=True,timeout=600)
+    subprocess.run([python,'-c',upload],env={**os.environ,'HF_HUB_OFFLINE':'0'},check=True,timeout=600)
     volume.commit()
+
+@app.function(image=image,cpu=4,memory=8192,timeout=900,retries=0,volumes={'/export':volume})
+def upload_existing():
+    code="import os,json\nfrom pathlib import Path\nfrom huggingface_hub import HfApi\nroot=Path('/export/release-v1');api=HfApi(token=os.environ['HF_TOKEN'])\nrepo='codemaivanngu/simct-b200-portable-cu130'\nassert api.whoami()['name']=='codemaivanngu'\nif api.repo_exists(repo,repo_type='dataset'):raise RuntimeError('Existing repo requires inspection')\napi.create_repo(repo,repo_type='dataset',private=True)\nc=api.upload_folder(repo_id=repo,repo_type='dataset',folder_path=str(root),commit_message='Export pinned B200 runtime and source; target GPU check pending')\ninfo=api.repo_info(repo,repo_type='dataset',revision=c.oid,files_metadata=True)\nlocal={p.name:p for p in root.iterdir() if p.is_file()}\nfor f in info.siblings:\n if f.rfilename in local:\n  assert f.size==local[f.rfilename].stat().st_size\n  if f.lfs:\n   import hashlib\n   h=hashlib.sha256()\n   with local[f.rfilename].open('rb') as stream:\n    for b in iter(lambda:stream.read(8388608),b''):h.update(b)\n   assert f.lfs.sha256==h.hexdigest()\nreceipt=dict(repo=repo,revision=c.oid,private=info.private,status='uploaded_size_and_lfs_hash_verified')\n(root/'receipt.json').write_text(json.dumps(receipt));print('HF_RECEIPT',json.dumps(receipt),flush=True)\n"
+    subprocess.run(['/opt/venvs/simct-b200/bin/python','-c',code],env={**os.environ,'HF_HUB_OFFLINE':'0'},check=True,timeout=800)
+    volume.commit()
+
 @app.local_entrypoint()
 def main(stage:str='inspect'):
     if stage=='inspect':inspect.remote();return
@@ -115,5 +122,6 @@ def main(stage:str='inspect'):
     for line in Path('/home/tung/Collaborative-MORL/.secrets/talapas_secrets.env').read_text().splitlines():
         line=line.removeprefix('export ')
         if line.startswith('HF_TOKEN='):values['HF_TOKEN']=shlex.split(line.split('=',1)[1])[0]
-    call=package.with_options(secrets=[modal.Secret.from_dict(values)]).spawn('41eb5b3')
+    secret=modal.Secret.from_dict(values)
+    call=upload_existing.with_options(secrets=[secret]).spawn() if stage=='upload' else package.with_options(secrets=[secret]).spawn('41eb5b3')
     print('SUBMITTED',call.object_id,flush=True)
