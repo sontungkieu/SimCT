@@ -67,12 +67,41 @@ def analyze(root, mode):
                 rows=rows,bypass=bypass,stats=stats,derived=derived,
                 log_sha256=hashlib.sha256((run_dir/"train.log").read_bytes()).hexdigest())
 
+def import_profile(e, profile):
+    if profile == "legacy-bypass":
+        return dict(bypass=True, group="qwen-gemma-runai-20260908",
+                    provenance="collected after training; not an immutable launch snapshot",
+                    note="Completed diagnostic MP-OPD run with finite parity outliers bypassed.")
+    launch = json.loads((Path(e["run_dir"])/"launch-config.json").read_text())
+    opts = launch["options"]
+    if launch.get("source_commit") != "f0c218183bb7043afa8e2b07c8313cac2ad1602e" or launch.get("source_dirty") != "":
+        raise ValueError("MB4 source does not match audited clean launch commit")
+    for key, value in {"micro_train_batch_size": 4, "train_batch_size": 64,
+                       "diagnostic_max_updates": 0, "exact_token_trajectory": True,
+                       "diagnostic_collapse_gate": True, "use_wandb": False}.items():
+        if opts.get(key) != value:
+            raise ValueError(f"MB4 launch mismatch: {key}")
+    if opts["mp_opd_mode"] != e["config"]["kd"]["mp_opd_mode"] or e["config"]["train"]["micro_train_batch_size"] != 4:
+        raise ValueError("launch and logged config disagree")
+    if e["bypass"]:
+        raise ValueError("Guarded MB4 profile contains bypass messages")
+    for row in e["rows"]:
+        if not (0 <= row["trajectory_logprob_abs_mean"] <= .1 and 0 <= row["trajectory_logprob_abs_p99"] <= .5):
+            raise ValueError("MB4 aggregated parity metrics out of contract")
+    return dict(bypass=False, group="qwen-gemma-runai-20260909-mb4",
+                provenance="launch-config records clean source commit; log/summary collected after completion",
+                launch=launch,
+                note="Completed MB4 run with temperature-aware mean/p99 parity guard; no bypass messages observed.")
+
 def main():
     p=argparse.ArgumentParser()
     p.add_argument("--root",type=Path,required=True)
     p.add_argument("--upload",action="store_true")
+    p.add_argument("--profile",choices=("legacy-bypass","mb4-guarded"),default="legacy-bypass")
     args=p.parse_args()
     evidence=[analyze(args.root,m) for m in ("atomic","fixed")]
+    for e in evidence:
+        e["import_profile"] = import_profile(e, args.profile)
     (args.root/"analysis.json").write_text(json.dumps(evidence,indent=2))
     for e in evidence:
         print(e["name"],json.dumps(e["derived"]))
@@ -93,23 +122,25 @@ def main():
         raise RuntimeError("Matching run names already exist; inspect before modifying: "+str([r.id for r in existing]))
     receipts=[]
     for e in evidence:
+        profile=e["import_profile"]
         mode=e["config"]["kd"]["mp_opd_mode"]
         run_id="mpbackfill-"+hashlib.sha256(e["name"].encode()).hexdigest()[:16]
         tags=build_wandb_tags(method="mp-opd",regime="on-policy",objective="path-credit",
             variant="atomic" if mode=="atomic" else "fixed2",platform="runai",
             accelerator="b200x1",budget="312-update",stage="train",
             student="gemma2-sft-paper",teacher="qwen2.5-7b-instruct",
-            extras=(("import","historical-log"),("parity","diagnostic-bypass"))).split(",")
+            extras=(("import","historical-log"),("parity","diagnostic-bypass" if profile["bypass"] else "temperature-mean-p99-guard"))).split(",")
         config={**e["config"],"source_run_name":e["name"],"source_log_sha256":e["log_sha256"],
                 "historical_import":True,"original_training_wandb_enabled":False,
-                "parity_diagnostic_bypass":True,"provenance_snapshot":"collected after training; not an immutable launch snapshot",
+                "parity_diagnostic_bypass":profile["bypass"],"provenance_snapshot":profile["provenance"],
+                "launch_manifest":profile.get("launch"),
                 "resource_telemetry_scope":"node snapshots; concurrent run may be included",
                 "metric_aggregation":"trainer averages microbatch metrics, including trajectory_logprob_abs_max",
                 "sampling_timestamp_timezone":"unspecified in source log"}
         run=wandb.init(entity=entity,project=project,id=run_id,name=e["name"],
-            group="qwen-gemma-runai-20260908",job_type="historical-import",tags=tags,
+            group=profile["group"],job_type="historical-import",tags=tags,
             config=config,resume="never",dir=str(args.root),
-            notes="Completed diagnostic MP-OPD run with finite parity outliers bypassed. Not evidence of math/code efficacy. Historical metrics imported from rounded text logs.",
+            notes=profile["note"]+" Not evidence of math/code efficacy. Historical metrics imported from rounded text logs.",
             settings=wandb.Settings(x_disable_stats=True,disable_git=True,disable_code=True))
         run.define_metric("train/global_step")
         run.define_metric("train/*",step_metric="train/global_step")

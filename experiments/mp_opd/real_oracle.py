@@ -80,6 +80,8 @@ def prepare(args):
             excluded.add(identity(messages))
         excluded_files[str(path)] = digest(path)
     unique = {}
+    conflicting = set()
+    conflict_policy = getattr(args, "conflicting_references", "error")
     for row in rows:
         messages = row[args.messages_key]
         if args.reference_key == "@last-assistant":
@@ -95,8 +97,14 @@ def prepare(args):
         if key in excluded:
             continue
         record = {"id": key, "messages": messages, "reference": reference}
+        if key in conflicting:
+            continue
         if key in unique and unique[key]["reference"] != reference:
-            raise ValueError("same prompt has conflicting references")
+            if conflict_policy == "error":
+                raise ValueError("same prompt has conflicting references; use --conflicting-references exclude to exclude the entire prompt group")
+            conflicting.add(key)
+            del unique[key]
+            continue
         unique[key] = record
     candidates = sorted(unique.values(), key=lambda x: x["id"])
     random.Random(args.seed).shuffle(candidates)
@@ -111,11 +119,15 @@ def prepare(args):
                "excluded_files_sha256": excluded_files, "excluded_prompt_count": len(excluded),
                "reference_provenance": getattr(args, "reference_provenance", "unspecified"),
                "split_audit": checked, "groups": groups,
+               "conflicting_reference_policy": conflict_policy,
+               "conflicting_prompt_count": len(conflicting),
+               "conflicting_prompt_ids": sorted(conflicting),
                "reference_policy": "user-supplied references; quality not automatically established"}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with args.output.open("x") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
-    print(json.dumps({"prepared": str(args.output), "sha256": digest(args.output), **checked}))
+    print(json.dumps({"prepared": str(args.output), "sha256": digest(args.output),
+                      "conflicting_prompts_excluded": len(conflicting), **checked}))
 
 
 def run(args):
@@ -290,6 +302,7 @@ def main():
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--messages-key", default="messages")
     p.add_argument("--reference-key", required=True)
+    p.add_argument("--conflicting-references", choices=("error", "exclude"), default="error")
     p.add_argument("--exclude-prompts", type=Path, action="append", default=[],
                    help="Repeat for SFT/train/benchmark prompts or previous diagnostic groups")
     p.add_argument("--reference-provenance", default="unspecified",

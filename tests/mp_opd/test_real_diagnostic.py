@@ -191,3 +191,22 @@ def test_sft_conversation_reference_is_not_in_prompt(tmp_path):
         assert len(row['messages'])==1
         assert row['messages'][0]['content']!='0'
     assert result['groups'][0]['select']['reference']=='answer'
+
+
+def test_conflict_excludes_whole_prompt_order_independent(tmp_path):
+    from argparse import Namespace
+    rows=[{'messages':[{'role':'user','content':str(i)}],'reference':'ref'} for i in range(8)]
+    rows += [{'messages':rows[0]['messages'],'reference':'alternative'},rows[0]]
+    source=tmp_path/'source.jsonl'
+    args=Namespace(input=source,output=tmp_path/'default.json',messages_key='messages',reference_key='reference',groups=2,seed=42)
+    source.write_text('\n'.join(json.dumps(row) for row in rows))
+    with pytest.raises(ValueError,match='conflicting references'): prepare(args)
+    args.conflicting_references='exclude'; prepare(args)
+    result=json.loads(args.output.read_text())
+    assert result['conflicting_prompt_count']==1
+    assert all(row['messages'][0]['content']!='0' for group in result['groups'] for row in group.values())
+    source.write_text('\n'.join(json.dumps(row) for row in reversed(rows)))
+    args.output=tmp_path/'reversed.json';prepare(args)
+    reverse=json.loads(args.output.read_text())
+    assert reverse['groups']==result['groups']
+    assert reverse['conflicting_prompt_ids']==result['conflicting_prompt_ids']
