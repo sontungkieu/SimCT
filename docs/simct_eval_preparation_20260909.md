@@ -1,5 +1,10 @@
 # Chuẩn bị evaluation SimCT / MP-OPD
 
+Cập nhật triển khai: [contract runner](../scripts/evaluation/CONTRACT_README.md)
+đã có prepare/generate/score/summarize và CPU preflight. Phần dưới là audit ban
+đầu của legacy evaluator; các sai khác chưa được coi là đã biến mất.
+`paper-spec` ghi rõ phần tái dựng MBPP và revision LCB chưa được paper công bố.
+
 Trạng thái: protocol và inventory đã chuẩn bị; chưa có runner đạt đầy đủ paper,
 chưa chạy inference/scoring hoặc tải dataset. Không chạy eval_all_monitor.sh trên
 node training: script mặc định 8 GPU và có nhánh pkill SGLang rộng.

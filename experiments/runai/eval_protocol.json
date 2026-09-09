@@ -1,6 +1,9 @@
 {
   "schema": "simct-eval-preparation-v1",
-  "status": "preparation_only_not_launchable",
+  "status": "runner_implemented_remote_preflight_pending",
+  "runner": "scripts/evaluation/contract_eval.py",
+  "profiles": ["author-code", "paper-spec"],
+  "profile_note": "paper-spec is a disclosed reconstruction; unresolved author details are not silently claimed exact",
   "paper": "https://arxiv.org/html/2605.07711v1#A3",
   "temperature": 0.6,
   "top_p": 0.95,
@@ -27,7 +30,7 @@
     "Exact MBPP variant and official harness identity used by authors",
     "Paper versus released-code math prompt mismatch",
     "Pin scorer versions and validate sandbox 10-second per-test / 128-MB contract",
-    "Implement explicit generation seeds, error accounting and checkpoint identity checks",
+    "Qualify implemented generation and scorers in the company evaluation runtime before GPU use",
     "Verify final checkpoint completion and source provenance after active training ends"
   ]
 }

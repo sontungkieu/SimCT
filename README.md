@@ -187,6 +187,12 @@ bash scripts/ctopd/phi4_gemma2_span_mix10k_lr5e-7.sh
 
 ### Step 5: Evaluation
 
+For the pinned author-code contract and the separately labelled paper-spec
+profile, use [the contract runner](scripts/evaluation/CONTRACT_README.md).
+It adds offline data preparation, explicit seeds, result provenance and sandboxed
+scoring without starting GPU servers. The legacy commands below describe the
+original workflow and are not a verified RunAI deployment recipe.
+
 Evaluate on GSM8K, MATH-500, MBPP, and LiveCodeBench-v6:
 
 ```bash
