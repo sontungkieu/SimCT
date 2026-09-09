@@ -12,7 +12,9 @@ bash experiments/runai/run_single_gpu.sh 1 fixed 5
 ```
 
 Limit 5 is a canary; limit 0 requests the configured full 312 updates.
-Microbatch remains 2, eager attention, 2 epochs, train batch 64.
+Microbatch is 4, eager attention, 2 epochs, train batch 64 (16 accumulation steps).
+Microbatch 4 is user-requested and has not yet been GPU-validated with MP-OPD;
+the prior microbatch-2 canary does not validate its memory use or parity.
 Keep runtime libraries outside the checkout:
 MP_RUNTIME_DIR defaults to /workspace/storage-shared/nlp/tungks/MP-OPD/work-QA9lLufL.
 MP_RUN_ROOT defaults to simct-runs beside the checkout. Model/data defaults

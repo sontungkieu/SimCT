@@ -45,7 +45,7 @@ opts.update(
     train_dataset_path=os.environ.get("MP_DATASET_PATH", str(shared / "data/qwen-author/data/prompts.parquet")),
     num_epochs=2,
     train_batch_size=64,
-    micro_train_batch_size=2,
+    micro_train_batch_size=4,
     attn_implementation="eager",
     rollout_num_engines=1,
     rollout_tp_size=1,
