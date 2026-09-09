@@ -78,6 +78,27 @@ qualification must be checked on the company node, not inferred from local WSL.
 
 ## 2. Prepare local company data (offline)
 
+If the company LCB export lacks metadata, `download_lcb_v6.py` downloads the
+six canonical raw shards at pinned HF revision
+`0fe84c3912ea0c4d4a78037083943e8f0c4dd505` through an explicit company proxy.
+It requires stdlib Python only, not datasets' remote-code loader. Raw downloads
+total about 4.18 GiB; retaining raw shards and merged JSONL needs about 8.36 GiB
+plus reserve. It verifies each LFS SHA256, validates 1055 unique IDs and functional
+metadata, preserves every raw field, and writes `manifest.json`. Run on company
+storage only; this is not a request to download data onto the personal machine.
+
+```bash
+/usr/bin/python3.12 scripts/evaluation/download_lcb_v6.py \
+  --proxy http://10.30.154.118:80 \
+  --output /workspace/storage-shared/nlp/tungks/simct-eval-data/lcb-v6-0fe84c3
+```
+
+Re-running resumes `.part` downloads and re-verifies completed files. A normal
+failure releases `.download.lock`; after a hard kill inspect the process before
+removing that specific stale lock. Corrupt completed files are not overwritten.
+Only `LCB_V6_READY` indicates successful validation; a downloaded shard is not
+completion. This does not solve code-scoring isolation or authorize GPU work.
+
 Create output outside the training checkout, e.g. a dedicated directory under
 `/workspace/storage-shared/nlp/tungks/simct-eval/`. Use an isolated eval checkout
 or source export while training is active; do not run updater in its checkout.
