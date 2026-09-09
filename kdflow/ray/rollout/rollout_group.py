@@ -15,6 +15,7 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from kdflow.ray.rollout.rollout_actor import RolloutRayActor
 from kdflow.utils.logging_utils import init_logger
+from kdflow.port_config import configured_port
 
 logger = init_logger(__name__)
 
@@ -164,7 +165,7 @@ class RolloutActorGroup:
             )
 
             actor = self.actors[rank]
-            start_port = 15000
+            start_port = configured_port("KDFLOW_ROLLOUT_PORT_BASE", 15000)
 
             def get_port(consecutive=1):
                 nonlocal start_port
@@ -325,6 +326,11 @@ class RolloutActorGroup:
         from sglang_router.launch_router import RouterArgs, launch_router
 
         router_args = RouterArgs(host=host, port=port)
+        metrics_port = configured_port("KDFLOW_ROUTER_PROMETHEUS_PORT")
+        if metrics_port is not None:
+            router_args.prometheus_host = "127.0.0.1"
+            router_args.prometheus_port = metrics_port
+            logger.info(f"Router Prometheus port: {metrics_port}")
         router_args.policy = "round_robin"
         if hasattr(router_args, "log_level"):
             router_args.log_level = "warn"
