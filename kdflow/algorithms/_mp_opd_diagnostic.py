@@ -109,11 +109,16 @@ def diagnostic(params, atom_nll, base, weight, select_loss, eval_loss,
             "eval_improvement": before_eval - evaluated,
             "predicted_select_improvement": float(lr * sum((g * x).sum() for g, x in zip(gradient, v))),
             "gradient_norm": float(norm(gradient)),
+            "virtual_update_norm": float(lr * norm(gradient)),
+            "select_nll_change": before_select-selected,
+            "eval_nll_change": before_eval-evaluated,
             "partition": partitions.get(name),
         }
     if not all(torch.equal(p.detach(), snap) for p, snap in zip(params, snapshots)):
         raise RuntimeError("diagnostic mutated real adapter")
-    return {"before_select": before_select, "before_eval": before_eval, "controls": report,
+    return {"all_controls_eval_unchanged": all(x["eval_nll"] == before_eval for x in report.values()),
+            "meta_sft_select_unchanged": report["meta_sft"]["select_nll"] == before_select,
+            "before_select": before_select, "before_eval": before_eval, "controls": report,
             "random_degenerate": partitions["random_oracle_lengths"] == oracle,
             "atomic_zero_norm": bool(na == 0), "parameters_unchanged": True,
             "normalization": "sum valid student tokens", "subspace": "declared functional adapter",

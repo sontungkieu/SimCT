@@ -172,7 +172,8 @@ def run(args):
     torch.manual_seed(args.seed)
     args.output.mkdir(parents=True, exist_ok=False)
     device = torch.device(args.device)
-    dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
+    dtype_name = getattr(args,"model_dtype","auto")
+    dtype = torch.float32 if dtype_name == "float32" or device.type != "cuda" else torch.bfloat16
     for path in (args.student, args.teacher):
         if not path.is_dir():
             raise ValueError("models must be existing local directories")
@@ -236,8 +237,10 @@ def run(args):
     manifest = {"schema": "mp-real-oracle-v1", "data_sha256": digest(args.data), "split_audit": audit,
                 "args": {k: str(v) if isinstance(v, Path) else v for k,v in vars(args).items() if k != "func"},
                 "models": model_files, "torch": torch.__version__,
-                "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[2], text=True).strip(),
-                "source_diff_sha256": hashlib.sha256(subprocess.check_output(["git", "diff", "HEAD"], cwd=Path(__file__).resolve().parents[2])).hexdigest(),
+                "source_commit": getattr(args,"source_commit",None) or subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[2], text=True).strip(),
+                "source_diff_sha256": None if getattr(args,"source_commit",None) else hashlib.sha256(subprocess.check_output(["git", "diff", "HEAD"], cwd=Path(__file__).resolve().parents[2])).hexdigest(),
+                "effective_model_dtype": str(dtype),
+                "oracle_script_sha256": digest(Path(__file__)),
                 "scope": "frozen checkpoint, zero-initialized last-module low-rank B probe, virtual SGD",
                 "rollout_backend": "HF diagnostic; not SGLang parity validation", "credit_temperature": 1.,
                 "sampling": {"temperature": args.temperature, "top_p": args.top_p, "top_k": 0, "num_beams": 1, "repetition_penalty": 1.0},
@@ -337,6 +340,8 @@ def main():
         p.add_argument("--"+key, type=Path, required=True)
     p.add_argument("--adapter-module", required=True)
     p.add_argument("--device", default="cuda:0")
+    p.add_argument("--model-dtype", choices=("auto","bfloat16","float32"),default="auto")
+    p.add_argument("--source-commit",help="Audited source overlay commit for runners without .git")
     p.add_argument("--rank", type=int, default=4)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--max-span", type=int, default=4)
