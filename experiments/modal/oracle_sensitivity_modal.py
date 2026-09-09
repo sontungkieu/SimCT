@@ -1,4 +1,4 @@
-"""One A100-80GB, no retries, <=1800s GPU function; authorized $5 envelope."""
+"""One A10, no retries, <=1800s GPU function; authorized $5 envelope."""
 import json,os,subprocess
 from pathlib import Path
 import modal
@@ -8,7 +8,7 @@ root=Path(__file__).resolve().parents[2] if modal.is_local() else Path("/opt/ove
 image=modal.Image.from_registry(IMAGE).entrypoint([]).add_local_file(str(root/"experiments/modal/oracle_sensitivity_worker.py"),"/opt/probe.py")
 assets=modal.Volume.from_name("mp-opd-gemma-parity-assets-v1",create_if_missing=False)
 outputs=modal.Volume.from_name("mp-opd-gemma-parity-results-v1",create_if_missing=False)
-@app.function(image=image,gpu="A100-80GB",cpu=4,memory=32768,timeout=1800,retries=0,max_containers=1,volumes={"/assets":assets,"/runs":outputs})
+@app.function(image=image,gpu="A10",cpu=4,memory=32768,timeout=1800,retries=0,max_containers=1,volumes={"/assets":assets,"/runs":outputs})
 def probe(run_id,commit):
     ready=json.loads(Path("/assets/ready.json").read_text())
     assert ready["revision"]=="299a8560bedf22ed1c72a8a11e7dce4a7f9f51f8"
