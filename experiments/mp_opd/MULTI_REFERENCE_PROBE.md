@@ -43,5 +43,7 @@ partial groups are not efficacy evidence. No automatic W&B upload.
 CPU fake-HF end-to-end tests cover legacy and1/4/8 modes, unchanged real
 parameters, identical atomic eval NLL across counts, fixed eval IDs, nested
 select counts, independent group accounting, overlap rejection, and analytical
-gradients of the mean-reference objective. No GPU run of this new multi-reference
-path has been performed yet; the prior FP32 single-reference probe is separate.
+gradients of the mean-reference objective. The multi-reference path completed on Modal A100-80GB (lhtu05), app
+ap-uR42YdE7fVsJg3tbfZYE5h, source ee28346: four synthetic groups, base
+Gemma-2-2b-it / Phi-4-mini, FP32, virtual LR 0.1. Company SFT/Qwen remains
+unexecuted. See MP_OPD_OVERNIGHT_20260910.md for results and limitations.

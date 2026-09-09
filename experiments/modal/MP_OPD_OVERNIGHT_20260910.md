@@ -116,3 +116,43 @@ collection was attempted but blocked by missing local transformers in
  test_energy_and_integration.py; no dependency was installed. This is not a
 claim that the complete integration suite passed. The real-model FP32 and
 mixture probes did execute successfully in the existing remote runtime.
+
+
+## Completed nested-reference canary (02:01, September 10)
+
+App ap-uR42YdE7fVsJg3tbfZYE5h on lhtu05 A100-80GB completed at source
+ee28346. Worker 174.85 seconds; app lifetime 190 seconds; verified stopped,
+zero tasks. Cached base Gemma-2-2b-it and Phi-4-mini, FP32, virtual LR 0.1,
+four synthetic groups, one shared rollout per group, nested 1/4/8 select
+references and four fixed eval references. These closely related templates
+are mechanics evidence, not independent natural-task generalization.
+
+| Select references | Mean atomic minus oracle eval NLL | Positive groups |
+| --- | ---: | ---: |
+| 1 | 0.000014424324 | 4/4 |
+| 4 | 0.000014781952 | 4/4 |
+| 8 | 0.000014901161 | 4/4 |
+
+Increasing 1 to 8 gives only 0.000000476837 mean gain; group 3 improves more
+with 4 than 8. Oracle partitions change in two groups, remain identical in two.
+At eight references, oracle beats norm-matched atomic in only 2/4 groups;
+mean 0.000009655952 and exploratory interval crosses zero. Meta-SFT beats
+oracle in all four groups, with unmatched update norms. This does not establish
+a partition advantage or a reliable multi-reference improvement. Do not compare
+the 4/4 rate with the previous single-reference probe as a treatment effect:
+this probe changes the evaluation reference set and synthetic examples.
+
+Raw assertions passed: unchanged real parameters, identical atomic eval NLL
+across counts, fixed eval IDs. Four groups remain four units, not twelve.
+CPU-compatible suite: 39 passed, 1 skipped; complete integration collection
+not run locally because transformers is absent. Actual cached-model GPU path
+completed all four groups. Exact company SFT/Qwen execution remains pending.
+
+Billing snapshot: this app USD 0.15460920; refreshed total for three lhtu05
+apps plus the prior A10 app USD 0.29760436. Billing can still settle.
+Raw outputs and ledger are retained under remote_artifacts/modal-oracle-fp32-20260910/.
+
+Next meaningful experiment uses the exact SFT with separate train/dev reference
+prompts, stronger contextual signed weighting and norm-matched meta-SFT controls.
+The new company launcher refuses occupied or eval-reserved GPUs and times out
+after 15 minutes. No company evaluation was interrupted.
