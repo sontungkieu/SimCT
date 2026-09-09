@@ -41,8 +41,8 @@ def partition_rates(base, weight, partition):
 class AtomWeighting(torch.nn.Module):
     """Sign-preserving multiplier control, identity at initialization.
 
-    Multipliers average to one under token weights. This matches a magnitude
-    budget, NOT signed credit conservation; report that distinction explicitly.
+    Multipliers average to one under token weights. This fixes mean multiplier,
+    NOT signed/absolute credit mass or gradient norm; report these separately.
     """
     def __init__(self, hidden=32):
         super().__init__()
