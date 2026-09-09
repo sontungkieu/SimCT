@@ -16,21 +16,34 @@ thay cho lời giải teacher. Không cần sinh lại dữ liệu để kiểm 
 Code answers trong dữ liệu này chỉ qua format checks của tác giả, không phải
 đã pass execution tests. Chưa xác định phần nào được giữ ngoài SFT/train.
 
-## 1. Chuyển và giải nén gói
+## 1. Code kéo qua HF bundle
 
-Tải ZIP trong chat, đưa lên /workspace/storage-shared/nlp/tungks/ trên công ty.
-Chạy (file ZIP có tên mp-opd-abc-20260909.zip):
+Không cần chuyển ZIP source. Script 00-pull-hf.sh được publish cùng bundle trên
+HF repo codemaivanngu/simct. Dùng link revision và checksum của lần phát hành
+được gửi kèm trong chat để tải script, kiểm tra SHA256 rồi chạy:
 
 ```bash
-cd /workspace/storage-shared/nlp/tungks
-PACKAGE_DIR="$(mktemp -d /workspace/storage-shared/nlp/tungks/mp-abc-package-XXXXXXXX)"
-/usr/bin/python3.12 -m zipfile -e mp-opd-abc-20260909.zip "$PACKAGE_DIR"
-echo "PACKAGE_DIR=$PACKAGE_DIR"
-bash "$PACKAGE_DIR/01-setup.sh"
+bash /workspace/storage-shared/nlp/tungks/pull-mp-opd-abc.sh
 ```
 
-Setup verify checksum rồi clone bundle vào thư mục mới. Không sửa SimCT-git
-đang chạy train, không bật GPU, không tải model/dependency.
+Script resolve HF revision một lần (hoặc nhận HF_REVISION được pin), tải manifest
+và bundle từ cùng revision, verify SHA256 rồi clone vào thư mục mới. Không sửa
+SimCT-git đang chạy train. Nó in ABC_WORK và lệnh chuẩn bị dữ liệu kế tiếp.
+Trong shell hiện tại, đặt PACKAGE_DIR bằng đúng ABC_WORK vừa in, ví dụ:
+
+```bash
+PACKAGE_DIR=/workspace/storage-shared/nlp/tungks/mp-opd-abc-XXXXXXXX
+```
+
+Dùng giá trị thực tế, không chép nguyên XXXXXXXX. Không tải model/dependency,
+không dùng GPU ở bước này. Khi mọi run dùng checkout SimCT-git đã dừng, vẫn có
+thể cập nhật checkout đó bằng updater HF cũ:
+
+```bash
+bash /workspace/storage-shared/nlp/tungks/update-simct.sh
+```
+
+Updater chỉ fast-forward. Không chạy updater trên checkout đang train.
 
 ## 2. Chuẩn bị hai nhóm canary bằng selected.parquet đã có
 
@@ -75,6 +88,6 @@ Không khởi chạy learned soft full training: phần online meta-training D c
 
 38 tests pass, 1 skipped (thiếu tokenizer fixture); Python/shell syntax pass.
 Test toàn luồng dùng model giả lập. Suite cũ cần transformers chưa có local;
-chưa thực hiện real-model/GPU canary. Source này đã commit local; gói ZIP/bundle
-là bản chuyển file trực tiếp, không khẳng định GitHub/HF source đã cập nhật.
+chưa thực hiện real-model/GPU canary. Source được phát hành theo workflow GitHub → HF bundle; source-manifest.json
+cho biết commit cụ thể. Hướng dẫn tải riêng; code không cần chuyển ZIP thủ công.
 Dataset teacher trên HF ở revision trên đã được xác minh riêng.
