@@ -62,20 +62,42 @@ def validate_groups(groups):
     ids, prompts = set(), set()
     for group in groups:
         for role in ("rollout", "select", "eval"):
-            row = group[role]
-            messages = row["messages"]
-            if not messages or not all(isinstance(m, dict) and m.get("role") in {"user", "system", "assistant"}
-                                       and isinstance(m.get("content"), str) for m in messages):
-                raise ValueError("messages must be text chat messages")
-            if messages[-1]["role"] != "user":
-                raise ValueError("prompt must end with user, without reference answer")
-            key = identity(messages)
-            if str(row["id"]) in ids or key in prompts:
-                raise ValueError("duplicate/overlapping IDs or prompt content across groups/splits")
-            ids.add(str(row["id"])); prompts.add(key)
-            if role != "rollout" and (not isinstance(row.get("reference"), str) or not row["reference"].strip()):
-                raise ValueError("select/eval need explicit nonempty reference text")
-    return {"rows": len(ids), "prompt_id_sha256": hashlib.sha256("\n".join(sorted(prompts)).encode()).hexdigest()}
+            rows = reference_rows(group[role])
+            if role == "rollout" and len(rows) != 1:
+                raise ValueError("one rollout prompt per group required")
+            for row in rows:
+                messages = row["messages"]
+                if not messages or not all(isinstance(m,dict) and m.get("role") in {"user","system","assistant"} and isinstance(m.get("content"),str) for m in messages):
+                    raise ValueError("messages must be text chat messages")
+                if messages[-1]["role"] != "user": raise ValueError("prompt must end with user, without reference answer")
+                key=identity(messages)
+                if str(row["id"]) in ids or key in prompts:
+                    raise ValueError("duplicate/overlapping IDs or prompt content across groups/splits")
+                ids.add(str(row["id"]));prompts.add(key)
+                if role != "rollout" and (not isinstance(row.get("reference"),str) or not row["reference"].strip()):
+                    raise ValueError("select/eval need explicit nonempty reference text")
+    return {"rows":len(ids),"prompt_id_sha256":hashlib.sha256("\n".join(sorted(prompts)).encode()).hexdigest()}
+
+
+def reference_rows(value):
+    rows=value if isinstance(value,list) else [value]
+    if not rows or not all(isinstance(x,dict) for x in rows): raise ValueError("nonempty reference rows required")
+    return rows
+
+
+def reference_mean(callbacks):
+    """Equal weight per reference, each callback already averages its tokens."""
+    if not callbacks: raise ValueError("no references")
+    return lambda params: sum(fn(params) for fn in callbacks)/len(callbacks)
+
+
+def select_counts(groups, requested):
+    sizes={len(reference_rows(g["select"])) for g in groups}
+    if len(sizes)!=1: raise ValueError("select pool sizes must match across groups")
+    size=next(iter(sizes));counts=list(requested) if requested is not None else [size]
+    if not counts or counts!=sorted(set(counts)) or any(x<1 or x>size for x in counts):
+        raise ValueError("select counts must be increasing, unique and within prepared pool")
+    return counts
 
 
 def read_rows(path):
@@ -84,8 +106,8 @@ def read_rows(path):
         return load_dataset("parquet", data_files=str(path), split="train")
     if path.suffix == ".json":
         payload = json.loads(path.read_text())
-        if isinstance(payload, dict) and payload.get("schema") == "mp-oracle-data-v1":
-            return [row for group in payload["groups"] for row in group.values()]
+        if isinstance(payload, dict) and payload.get("schema") in {"mp-oracle-data-v1","mp-oracle-data-v2"}:
+            return [row for group in payload["groups"] for role in ("rollout","select","eval") for row in reference_rows(group[role])]
         if isinstance(payload, list):
             return payload
         raise ValueError("JSON input must be rows or a prepared oracle data file")
@@ -133,13 +155,19 @@ def prepare(args):
         unique[key] = record
     candidates = sorted(unique.values(), key=lambda x: x["id"])
     random.Random(args.seed).shuffle(candidates)
-    if len(candidates) < 3 * args.groups:
-        raise ValueError("need at least three unique prompts per group")
-    groups = [dict(zip(("rollout", "select", "eval"), candidates[i:i+3])) for i in range(0, 3*args.groups, 3)]
-    for g in groups:
-        g["rollout"].pop("reference")
+    ns=getattr(args,"select_references",1);ne=getattr(args,"eval_references",1)
+    if min(ns,ne)<=0: raise ValueError("reference counts must be positive")
+    stride=1+ns+ne
+    if len(candidates)<stride*args.groups:
+        raise ValueError(f"need at least {stride*args.groups} unique prompts")
+    groups=[]
+    for start in range(0,stride*args.groups,stride):
+        chunk=candidates[start:start+stride];chunk[0].pop("reference")
+        groups.append({"rollout":chunk[0],"select":chunk[1] if ns==1 else chunk[1:1+ns],
+                       "eval":chunk[1+ns] if ne==1 else chunk[1+ns:]})
     checked = validate_groups(groups)
-    payload = {"schema": "mp-oracle-data-v1", "source_sha256": digest(args.input),
+    payload = {"schema": "mp-oracle-data-v2" if ns>1 or ne>1 else "mp-oracle-data-v1",
+               "select_references":ns,"eval_references":ne, "source_sha256": digest(args.input),
                "seed": args.seed, "reference_key": args.reference_key,
                "excluded_files_sha256": excluded_files, "excluded_prompt_count": len(excluded),
                "reference_provenance": getattr(args, "reference_provenance", "unspecified"),
@@ -165,10 +193,11 @@ def run(args):
     from kdflow.algorithms._mp_opd_diagnostic import AtomWeighting, diagnostic, train_weighting_step
     from torch.func import functional_call
     data = json.loads(args.data.read_text())
-    if data.get("schema") != "mp-oracle-data-v1":
+    if data.get("schema") not in {"mp-oracle-data-v1","mp-oracle-data-v2"}:
         raise ValueError("unsupported data contract")
     groups = data["groups"]
     audit = validate_groups(groups)
+    counts = select_counts(groups,getattr(args,"select_counts",None))
     torch.manual_seed(args.seed)
     args.output.mkdir(parents=True, exist_ok=False)
     device = torch.device(args.device)
@@ -204,7 +233,9 @@ def run(args):
     param_name = args.adapter_module + ".b"
     params = (adapter.b,)
     weighting = AtomWeighting().to(device)
-    optimizer = torch.optim.AdamW(weighting.parameters(), lr=args.weighting_lr, weight_decay=0.)
+    import copy
+    weightings={n:copy.deepcopy(weighting) for n in counts}
+    optimizers={n:torch.optim.AdamW(weightings[n].parameters(),lr=args.weighting_lr,weight_decay=0.) for n in counts}
     atomizer = SimCTAtomizer(tokenizer, teacher_tokenizer)
 
     def prompt(tok, messages):
@@ -280,15 +311,26 @@ def run(args):
             def atom_nll(ps):
                 lp = scores(student, prefix, response, ps)
                 return torch.stack([-lp[a.student_start:a.student_end].sum() for a in atoms])
-            select_loss, eval_loss = outer(group["select"]), outer(group["eval"])
-            result = diagnostic(params, atom_nll, base, weight, select_loss, eval_loss,
-                                lr=args.virtual_lr, max_span=args.max_span, seed=args.seed+index, weighting=weighting)
-            trace.update(base_credit=base.tolist(), atom_weights=weight.tolist())
-            result.update(index=index, invalid=False, weighting_prior_groups=index-invalid,
-                          sampled_eos=ended, seconds=time.perf_counter()-started)
-            # Evaluation above predates any learning from this group's select data.
-            for _ in range(args.weighting_steps):
-                train_weighting_step(weighting, optimizer, params, atom_nll, base, weight, select_loss, args.virtual_lr)
+            select_callbacks=[outer(row) for row in reference_rows(group["select"])]
+            eval_loss=reference_mean([outer(row) for row in reference_rows(group["eval"])])
+            sweep={}
+            for count in counts:
+                select_loss=reference_mean(select_callbacks[:count])
+                report=diagnostic(params,atom_nll,base,weight,select_loss,eval_loss,
+                    lr=args.virtual_lr,max_span=args.max_span,seed=args.seed+index,weighting=weightings[count])
+                report.update(select_count=count,select_ids=[r["id"] for r in reference_rows(group["select"])[:count]],
+                              eval_ids=[r["id"] for r in reference_rows(group["eval"])])
+                sweep[str(count)]=report
+            result=dict(sweep[str(counts[-1])])
+            if len(counts)>1: result["select_count_sweep"]=sweep
+            trace.update(base_credit=base.tolist(),atom_weights=weight.tolist())
+            result.update(index=index,invalid=False,weighting_prior_groups=index-invalid,
+                          sampled_eos=ended,seconds=time.perf_counter()-started)
+            # Independent weighting states per select count; evaluation never trains them.
+            for count in counts:
+                select_loss=reference_mean(select_callbacks[:count])
+                for _ in range(args.weighting_steps):
+                    train_weighting_step(weightings[count],optimizers[count],params,atom_nll,base,weight,select_loss,args.virtual_lr)
         results.append(result)
         for name, value in (("results.jsonl", result), ("trajectories.jsonl", trace)):
             with (args.output/name).open("a") as f:
@@ -297,6 +339,9 @@ def run(args):
     valid_results = [x for x in results if not x["invalid"]]
     if not valid_results:
         raise RuntimeError("no valid groups; oracle gate unavailable")
+    if len(counts)>1:
+        paired={str(n):[{"group":x["index"],"atomic_minus_oracle_eval_nll":x["select_count_sweep"][str(n)]["controls"]["atomic"]["eval_nll"]-x["select_count_sweep"][str(n)]["controls"]["oracle"]["eval_nll"]} for x in valid_results] for n in counts}
+        (args.output/"paired-select-counts.json").write_text(json.dumps({"counts":counts,"independent_groups":len(valid_results),"paired":paired,"unit":"groups; counts are repeated measurements, not independent samples"},indent=2))
     gains = [x["controls"]["atomic"]["eval_nll"]-x["controls"]["oracle"]["eval_nll"] for x in valid_results]
     comparisons = {}
     rng = random.Random(args.seed)
@@ -309,13 +354,15 @@ def run(args):
         comparisons[name] = {"mean_oracle_gain": sum(values)/len(values),
                              "positive_fraction": sum(v>0 for v in values)/len(values),
                              "exploratory_group_bootstrap_95pct": ci}
-    summary = {"comparisons": comparisons, "completed_groups": len(results), "valid_groups": len(valid_results), "invalid_groups": invalid,
+    summary = {"reported_select_count":counts[-1],"select_counts":counts,"comparisons": comparisons, "completed_groups": len(results), "valid_groups": len(valid_results), "invalid_groups": invalid,
                "oracle_vs_atomic_mean_eval_gain": sum(gains)/len(gains),
                "oracle_vs_atomic_positive_fraction": sum(g>0 for g in gains)/len(gains),
                "evidence": "adapter-only diagnostic; no efficacy pass/fail from mean alone"}
-    torch.save({"network": weighting.state_dict(), "optimizer": optimizer.state_dict(),
+    torch.save({"network": weightings[counts[-1]].state_dict(), "optimizer": optimizers[counts[-1]].state_dict(),
                 "data_sha256": manifest["data_sha256"], "protocol": manifest["weighting_protocol"]}, args.output/"weighting.pt")
     (args.output/"summary.json").write_text(json.dumps(summary, indent=2))
+    for count in counts:
+        torch.save({"network":weightings[count].state_dict(),"optimizer":optimizers[count].state_dict(),"select_count":count,"data_sha256":manifest["data_sha256"]},args.output/f"weighting-select-{count}.pt")
     print(json.dumps(summary))
 
 
@@ -332,6 +379,8 @@ def main():
                    help="Repeat for SFT/train/benchmark prompts or previous diagnostic groups")
     p.add_argument("--reference-provenance", default="unspecified",
                    help="Teacher revision / generation artifact identifier; never credentials")
+    p.add_argument("--select-references",type=int,default=1)
+    p.add_argument("--eval-references",type=int,default=1)
     p.add_argument("--groups", type=int, default=32)
     p.add_argument("--seed", type=int, default=42)
     p.set_defaults(func=prepare)
@@ -340,6 +389,7 @@ def main():
         p.add_argument("--"+key, type=Path, required=True)
     p.add_argument("--adapter-module", required=True)
     p.add_argument("--device", default="cuda:0")
+    p.add_argument("--select-counts",type=int,nargs="+",help="Nested select subsets, e.g. 1 4 8; same rollout and eval")
     p.add_argument("--model-dtype", choices=("auto","bfloat16","float32"),default="auto")
     p.add_argument("--source-commit",help="Audited source overlay commit for runners without .git")
     p.add_argument("--rank", type=int, default=4)

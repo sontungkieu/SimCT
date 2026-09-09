@@ -110,7 +110,8 @@ def test_prepare_deterministic_and_no_overwrite(tmp_path):
     with pytest.raises(FileExistsError): prepare(args)
 
 
-def test_complete_runner_with_tiny_hf_transport(tmp_path, monkeypatch):
+@pytest.mark.parametrize("counts",[None,[1,4,8]])
+def test_complete_runner_with_tiny_hf_transport(tmp_path, monkeypatch,counts):
     import sys
     import types
     from argparse import Namespace
@@ -143,19 +144,32 @@ def test_complete_runner_with_tiny_hf_transport(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules,'transformers',fake)
     row=lambda i: {'id':str(i),'messages':[{'role':'user','content':str(i)}],'reference':'ab'}
     groups=[dict(zip(('rollout','select','eval'),[row(i+j) for j in range(3)])) for i in (0,3)]
-    data=tmp_path/'data.json';data.write_text(json.dumps({'schema':'mp-oracle-data-v1','groups':groups}))
+    if counts:
+        groups=[{'rollout':row(i),'select':[row(i+j) for j in range(1,9)],'eval':[row(i+j) for j in range(9,13)]} for i in (0,13)]
+    data=tmp_path/'data.json';data.write_text(json.dumps({'schema':'mp-oracle-data-v2' if counts else 'mp-oracle-data-v1','groups':groups}))
     for name in ('student','teacher'):
         (tmp_path/name).mkdir();(tmp_path/name/'config.json').write_text('{}')
     args=Namespace(student=tmp_path/'student',teacher=tmp_path/'teacher',data=data,output=tmp_path/'out',
                    adapter_module='block.q_proj',device='cpu',rank=2,seed=42,max_span=3,virtual_lr=.1,
                    weighting_lr=.01,weighting_steps=1,temperature=.6,top_p=.95,max_new_tokens=8,
                    max_prompt_tokens=16,max_reference_tokens=16)
+    args.select_counts=counts
     run(args)
     report=json.loads((args.output/'summary.json').read_text())
     assert report['valid_groups']==2
     results=[json.loads(x) for x in (args.output/'results.jsonl').read_text().splitlines()]
     assert [x['weighting_prior_groups'] for x in results]==[0,1]
     assert all(x['parameters_unchanged'] for x in results)
+    if counts:
+        for item in results:
+            sweep=item['select_count_sweep']
+            assert [len(sweep[str(n)]['select_ids']) for n in counts]==counts
+            assert all(sweep[str(n)]['eval_ids']==sweep['1']['eval_ids'] for n in counts)
+            assert all(sweep[str(n)]['controls']['atomic']['eval_nll']==sweep['1']['controls']['atomic']['eval_nll'] for n in counts)
+        paired=json.loads((args.output/'paired-select-counts.json').read_text())
+        assert paired['independent_groups']==2 and len(paired['paired']['8'])==2
+        assert report['reported_select_count']==8
+
     assert torch.count_nonzero(models[0].block.q_proj.b)==0
     assert (args.output/'weighting.pt').is_file()
     with pytest.raises(FileExistsError): run(args)
@@ -232,3 +246,20 @@ def test_tokenizer_batch_encoding_normalized_before_tensor():
     with pytest.raises(ValueError): chat_prompt_ids(Tokenizer(), [], 2)
     for bad in ([], [[2, 7]], [Encoding()], [True], [-1]):
         with pytest.raises(ValueError): token_ids(bad)
+
+
+def test_multireference_prepare_overlap_and_mean_gradient(tmp_path):
+    from argparse import Namespace
+    from experiments.mp_opd.real_oracle import reference_mean,select_counts
+    rows=[{'messages':[{'role':'user','content':str(i)}],'answer':'ref'} for i in range(30)]
+    source=tmp_path/'rows.json';source.write_text(json.dumps(rows))
+    args=Namespace(input=source,output=tmp_path/'prepared.json',messages_key='messages',reference_key='answer',groups=2,seed=42,select_references=8,eval_references=4)
+    prepare(args);data=json.loads(args.output.read_text())
+    assert data['schema']=='mp-oracle-data-v2' and data['split_audit']['rows']==26
+    assert select_counts(data['groups'],[1,4,8])==[1,4,8]
+    with pytest.raises(ValueError): select_counts(data['groups'],[1,9])
+    data['groups'][0]['eval'][0]=data['groups'][0]['select'][0]
+    with pytest.raises(ValueError,match='overlapping'): validate_groups(data['groups'])
+    x=torch.tensor(2.,requires_grad=True)
+    f=reference_mean([lambda ps:ps[0]**2,lambda ps:3*ps[0]**2])
+    assert torch.autograd.grad(f((x,)),x)[0].item()==8.
