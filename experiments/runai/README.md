@@ -1,5 +1,9 @@
 # RunAI single-GPU MP-OPD launcher
 
+Evaluation preparation (protocol, known paper/code mismatches, read-only inventory):
+[SimCT evaluation preparation](../../docs/simct_eval_preparation_20260909.md).
+This does not schedule evaluation or start GPU work.
+
 Adapted from the verified server scripts collected on 2026-09-09.
 Run one atomic job on slot 0 and fixed-2 on slot 1. Each job creates its own
 Ray runtime/cache, rollout port range and Prometheus listener.
