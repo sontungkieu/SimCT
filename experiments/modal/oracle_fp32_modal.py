@@ -27,13 +27,18 @@ def probe(run_id,commit):
     cmd=["/opt/venvs/simct-b200/bin/python","/opt/overlay/experiments/mp_opd/real_oracle.py","run","--student","/assets/student","--teacher","/assets/teacher","--data",str(data),"--output",str(root/"results"),"--adapter-module","model.layers.25.self_attn.q_proj","--model-dtype","float32","--virtual-lr","0.1","--max-new-tokens","32","--max-reference-tokens","64","--source-commit",commit]
     (root/"invocation.json").write_text(json.dumps({"command":cmd,"commit":commit,"image":IMAGE,"scope":"base Gemma/Phi; 4 synthetic mechanics groups; not company SFT"},indent=2))
     try:
-        subprocess.run(cmd,env=env,check=True,timeout=780)
-        return {"run_id":run_id,"elapsed_seconds":time.time()-start,"files":{p.name:p.read_text() for p in (root/"results").glob("*.json*")}}
+        files={}
+        for lr in (0.1,10.):
+            run_cmd=list(cmd);run_cmd[run_cmd.index("--virtual-lr")+1]=str(lr)
+            dest=root/("lr-"+str(lr));run_cmd[run_cmd.index("--output")+1]=str(dest)
+            subprocess.run(run_cmd,env=env,check=True,timeout=max(1,780-(time.time()-start)))
+            for p in dest.glob("*.json*"): files["lr-"+str(lr)+"-"+p.name]=p.read_text()
+        return {"run_id":run_id,"elapsed_seconds":time.time()-start,"files":files}
     finally:outputs.commit()
 @app.local_entrypoint()
 def main(run_id:str,commit:str):
     result=probe.remote(run_id,commit)
-    out=ROOT/"remote_artifacts/modal-oracle-fp32-20260910";out.mkdir(exist_ok=True)
+    out=ROOT/"remote_artifacts/modal-oracle-fp32-20260910"/run_id;out.mkdir(parents=True,exist_ok=False)
     (out/"download.json").write_text(json.dumps(result,indent=2))
     for name,text in result["files"].items(): (out/name).write_text(text)
     print("ORACLE_PROBE_DONE",result["elapsed_seconds"],list(result["files"]))

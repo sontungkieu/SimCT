@@ -98,6 +98,8 @@ def diagnostic(params, atom_nll, base, weight, select_loss, eval_loss,
     if weighting is not None:
         rates = weighting(base, weight).detach()
         gs["learned_weighting"] = gradients((rates * nll).sum() / denominator, params)
+    for alpha in (.25,.5,.75):
+        gs[f"atomic_oracle_mix_{alpha}"] = tuple((1-alpha)*a+alpha*o for a,o in zip(gs["atomic"],gs["oracle"]))
     before_select, before_eval = float(select_loss(params).detach()), float(eval_loss(params).detach())
     report = {}
     for name, gradient in gs.items():
@@ -112,8 +114,13 @@ def diagnostic(params, atom_nll, base, weight, select_loss, eval_loss,
             "virtual_update_norm": float(lr * norm(gradient)),
             "select_nll_change": before_select-selected,
             "eval_nll_change": before_eval-evaluated,
+            "gradient_delta_from_atomic_norm": float(norm(tuple(g-a for g,a in zip(gradient,gs["atomic"])))),
+            "rate_delta_from_atomic_norm": float((partition_rates(base,weight,partitions[name])-partition_rates(base,weight,partitions["atomic"])).norm()) if name in partitions else None,
             "partition": partitions.get(name),
         }
+    candidates=["atomic","atomic_oracle_mix_0.25","atomic_oracle_mix_0.5","atomic_oracle_mix_0.75","oracle"]
+    chosen=min(candidates,key=lambda name:report[name]["select_nll"])
+    report["select_chosen_atomic_oracle_mix"]={**report[chosen],"chosen_control":chosen,"selection":"actual select NLL only; extra candidate-forward compute"}
     if not all(torch.equal(p.detach(), snap) for p, snap in zip(params, snapshots)):
         raise RuntimeError("diagnostic mutated real adapter")
     return {"all_controls_eval_unchanged": all(x["eval_nll"] == before_eval for x in report.values()),

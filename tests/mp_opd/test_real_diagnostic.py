@@ -25,6 +25,10 @@ def test_oracle_actual_and_eval_independence():
     second = diagnostic(p,nll,b,w,select,lambda ps: -evaluate(ps),lr=.01,max_span=3)
     assert out['controls']['oracle']['partition'] == second['controls']['oracle']['partition']
     assert torch.equal(before,p[0]) and p[0].grad is None
+    candidates=["atomic","atomic_oracle_mix_0.25","atomic_oracle_mix_0.5","atomic_oracle_mix_0.75","oracle"]
+    chosen=out['controls']['select_chosen_atomic_oracle_mix']['chosen_control']
+    assert out['controls'][chosen]['select_nll']==min(out['controls'][x]['select_nll'] for x in candidates)
+    assert out['controls']['atomic']['gradient_delta_from_atomic_norm']==0
     assert out['controls']['skip']['eval_improvement'] == 0
     assert out['controls']['atomic_oracle_norm']['gradient_norm'] == pytest.approx(out['controls']['oracle']['gradient_norm'],abs=1e-7)
     gradient = torch.autograd.grad(((b/w)*nll(p)).sum()/w.sum(),p)[0]
