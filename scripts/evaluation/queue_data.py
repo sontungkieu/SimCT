@@ -17,7 +17,7 @@ RUNS={"atomic":"qwen-gemma-mp-atomic-gpu0-limit0-20260909-052816-153554",
 
 
 def script_hashes():
-    return {n:E.file_hash(E.HERE/n) for n in ("eval_queue.py","queue_data.py","internal_worker.py","contract_worker.py","contract_eval.py","evaluation.py","vendor/lcb_testing_util.py","vendor/provenance.json")}
+    return {n:E.file_hash(E.HERE/n) for n in ("eval_queue.py","context_check.py","queue_data.py","internal_worker.py","contract_worker.py","contract_eval.py","evaluation.py","vendor/lcb_testing_util.py","vendor/provenance.json")}
 
 
 def tiers():
@@ -145,7 +145,7 @@ def prepare(args):
             jobs.append({"id":f"{mode}-{step}","mode":mode,"step":step,"tier":tier,"checkpoint":identity})
     plan={"schema":"eval-queue-v1","profile":PROFILE,"seeds":list(SEEDS),"data":data,"jobs":jobs,
           "hours":args.hours,"admit_hours":min(18.,args.hours-1),"source":script_hashes(),
-          "protocol":{"temperature":.6,"top_p":.95,"n":1,"caps":E.CAPS,
+          "protocol":{"context_length":8192,"temperature":.6,"top_p":.95,"n":1,"caps":E.CAPS,
              "math":"author helpers, not math-verify","mbpp":"author assertion helper 10 seconds/problem",
              "lcb":"pinned official tester; public+private; functional-specific prompt",
              "code_execution":"explicit internal subprocess, NOT namespace/container isolation",

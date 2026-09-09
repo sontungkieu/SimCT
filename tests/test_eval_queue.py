@@ -13,6 +13,32 @@ import queue_data as D
 E=Q.E
 
 class QueueTests(unittest.TestCase):
+    def test_native_context_preserves_full_output_cap(self):
+        from context_check import check_items,CONTEXT_LENGTH
+        class Tok:
+            def apply_chat_template(self,messages,**kwargs):
+                assert kwargs["return_dict"] is False
+                return [1]*messages
+        self.assertEqual(CONTEXT_LENGTH,8192)
+        report=check_items(Tok(),[{"id":"fit","messages":4096},{"id":"long","messages":4097}],4096)
+        self.assertEqual([x["id"] for x in report["oversized"]],["long"])
+
+    def test_startup_recovery_preserves_clock_and_rejects_results(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            old=Path(tmp)/"old";old.mkdir();data=old/"data.json";E.write_new(data,{})
+            plan={"profile":D.PROFILE,"jobs":[{"id":"sft-0"}],"protocol":{},"data":{"x":{"path":str(data),"sha256":E.file_hash(data)}}}
+            E.write_new(old/"plan.json",plan)
+            state={"plan_sha256":E.file_hash(old/"plan.json"),"started":1,"admit_until":2,"deadline":3,"durations":[],"jobs":{"sft-0":{"status":"failed"}}}
+            E.write_new(old/"state.json",state)
+            new=Path(tmp)/"new"
+            Q.recover_startup(argparse.Namespace(from_plan=old/"plan.json",out=new))
+            recovered=E.read_json(new/"state.json")
+            self.assertEqual(recovered["deadline"],3);self.assertEqual(recovered["jobs"],{})
+            self.assertEqual(E.read_json(old/"state.json"),state)
+            (old/"cells").mkdir();E.write_new(old/"cells/results.json",{})
+            with self.assertRaises(ValueError):
+                Q.recover_startup(argparse.Namespace(from_plan=old/"plan.json",out=Path(tmp)/"bad"))
+
     def test_trajectory(self):
         rows=[x for tier in D.tiers() for x in tier]
         self.assertEqual(len(rows),17)

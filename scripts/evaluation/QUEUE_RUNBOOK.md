@@ -107,3 +107,13 @@ six-row mechanics JSON in the fresh bundle workspace, then run the copied
 eval worker will wait while mechanics owns memory. GPU0 can evaluate meanwhile.
 The tokenizer regression uses CPU mocks; the corrected real-model canary has
 not yet run on the company node.
+
+## Gemma 2 context correction
+
+The launcher now uses the native 8192-token context. Before GPU startup, the
+existing runtime tokenizer checks every exact chat prompt plus its full output
+cap. Overflow fails explicitly: no hidden truncation, omitted questions or
+long-context override. The earlier 16384 launcher setting was incorrect.
+`recover-startup --from-plan OLD --out NEW` supports only failed startup queues
+with no results, reuses verified prepared data, and preserves the original
+start/admission/deadline timestamps. It does not renew the 20-hour budget.

@@ -17,6 +17,7 @@ import threading
 import urllib.request
 import contract_eval as E
 import queue_data as D
+from context_check import CONTEXT_LENGTH
 
 
 class Deadline(Exception): pass
@@ -250,10 +251,16 @@ def run_checkpoint(root,plan,plan_hash,job,args,deadline):
              PYTHONPATH=str(E.HERE.parents[1]/"experiments/modal/vendor")+":"+str(E.HERE.parents[1]))
     for name in ("HTTP_PROXY","HTTPS_PROXY","ALL_PROXY","http_proxy","https_proxy","all_proxy","WANDB_API_KEY","HF_TOKEN"):
         env.pop(name,None)
+    env.pop("SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN",None)
+    subprocess.run(["bash",str(E.HERE.parents[1]/"experiments/runai/python-b200-host.sh"),
+                    str(E.HERE/"context_check.py"),"--plan",str(args.plan.resolve()),
+                    "--checkpoint",actual["path"]],env=dict(env,CUDA_VISIBLE_DEVICES=""),
+                   check=True,timeout=max(.1,min(300.,deadline-time.time())))
+    if time.time()>=deadline: raise Deadline("wall budget during context qualification")
     log=root/(job["id"]+f"-gpu{args.gpu}-server.log")
     command=["bash",str(E.HERE.parents[1]/"experiments/runai/python-b200-host.sh"),"-m","sglang.launch_server",
              "--model-path",actual["path"],"--served-model-name","eval-gemma","--host","127.0.0.1","--port",str(port),
-             "--tp-size","1","--mem-fraction-static","0.8","--context-length","16384",
+             "--tp-size","1","--mem-fraction-static","0.8","--context-length",str(CONTEXT_LENGTH),
              "--attention-backend","triton","--disable-cuda-graph","--random-seed","42"]
     with log.open("ab") as output:
         process=subprocess.Popen(command,env=env,stdout=output,stderr=subprocess.STDOUT,start_new_session=True)
@@ -357,6 +364,33 @@ def summarize(args):
     atomic_json(root/"summary-3seeds.json",output);print(json.dumps(output,indent=2))
 
 
+def recover_startup(args):
+    """Fork only a zero-result failed-startup queue; retain its original clock."""
+    old=args.from_plan.resolve();oldroot=old.parent
+    with locked(oldroot/"state.lock"), contextlib.ExitStack() as locks:
+        plan=E.read_json(old);state=E.read_json(oldroot/"state.json")
+        if state["plan_sha256"]!=E.file_hash(old) or plan["profile"]!=D.PROFILE:
+            raise ValueError("old plan identity mismatch")
+        if state["durations"] or not state["jobs"] or any(x["status"]!="failed" for x in state["jobs"].values()):
+            raise ValueError("recovery requires exclusively failed startup jobs")
+        if list(oldroot.glob("cells/**/*.json*")):
+            raise ValueError("results exist; use an audited migration instead")
+        for job in plan["jobs"]:
+            if locks.enter_context(locked(oldroot/(job["id"]+".lock"),blocking=False)) is None:
+                raise ValueError("old worker still owns a checkpoint")
+        for data in plan["data"].values():
+            if E.file_hash(data["path"])!=data["sha256"]: raise ValueError("old data changed")
+        root=args.out.resolve();root.mkdir(parents=True,exist_ok=False)
+        plan["source"]=D.script_hashes();plan["protocol"]["context_length"]=CONTEXT_LENGTH
+        plan["recovery"]={"from_plan":str(old),"sha256":E.file_hash(old),"reason":"Gemma2 native context startup fix; original clock retained"}
+        E.write_new(root/"plan.json",plan)
+        state.update(plan_sha256=E.file_hash(root/"plan.json"),jobs={},durations=[])
+        E.write_new(root/"state.json",state)
+        print("RECOVERED_PLAN="+str(root/"plan.json"))
+        print("REMAINING_HOURS="+str(max(0.,state["deadline"]-time.time())/3600))
+        print("Original deadline retained; no GPU started.")
+
+
 def main():
     p=argparse.ArgumentParser(description=__doc__);sub=p.add_subparsers(dest="cmd",required=True)
     q=sub.add_parser("prepare")
@@ -375,6 +409,7 @@ def main():
                    help="Explicit company-internal profile; resource limits are not an OS sandbox")
     q.set_defaults(func=worker)
     q=sub.add_parser("summarize");q.add_argument("--plan",type=Path,required=True);q.set_defaults(func=summarize)
+    q=sub.add_parser("recover-startup");q.add_argument("--from-plan",type=Path,required=True);q.add_argument("--out",type=Path,required=True);q.set_defaults(func=recover_startup)
     q=sub.add_parser("retry");q.add_argument("--plan",type=Path,required=True)
     def retry(a):
         root=a.plan.resolve().parent
