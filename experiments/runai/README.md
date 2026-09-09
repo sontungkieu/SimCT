@@ -18,7 +18,10 @@ bash experiments/runai/run_single_gpu.sh 0 atomic 5
 bash experiments/runai/run_single_gpu.sh 1 fixed 5
 ```
 
-Limit 5 is a canary; limit 0 requests the configured full 312 updates.
+Limit 5 is a canary, 50 is a pilot; limit 0 requests the configured full 312 updates.
+All retain a 312-update scheduler horizon. Atomic/fixed/random are supported.
+See [A/B/C contract and oracle guide](../../docs/mp_opd_abc_20260909.md) for seed/span
+overrides, CPU preflight, input hashes, baseline algorithm selection and controls.
 Microbatch is 4, eager attention, 2 epochs, train batch 64 (16 accumulation steps).
 Microbatch 4 is user-requested and has not yet been GPU-validated with MP-OPD;
 the prior microbatch-2 canary does not validate its memory use or parity.

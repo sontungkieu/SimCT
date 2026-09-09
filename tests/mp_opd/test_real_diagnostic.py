@@ -1,0 +1,193 @@
+import copy
+import json
+import torch
+import pytest
+from kdflow.algorithms._mp_opd_diagnostic import (
+    AtomWeighting, diagnostic, matched_partition, partition_rates, train_weighting_step)
+from experiments.mp_opd.real_oracle import validate_groups, prepare
+
+
+def fixture():
+    theta = torch.tensor([.2, -.15], dtype=torch.float64, requires_grad=True)
+    x = torch.tensor([[1., .5], [-.7, 1.], [.4, -.9]], dtype=torch.float64)
+    base = torch.tensor([.6, -.8, .3], dtype=torch.float64)
+    w = torch.tensor([1., 2., 1.], dtype=torch.float64)
+    nll = lambda ps: torch.nn.functional.softplus(x @ ps[0])
+    select = lambda ps: ((ps[0] - torch.tensor([-.1, .3], dtype=torch.float64)) ** 2).sum()/2
+    evaluate = lambda ps: ((ps[0] - torch.tensor([.1, .2], dtype=torch.float64)) ** 2).sum()/2
+    return (theta,), nll, base, w, select, evaluate
+
+
+def test_oracle_actual_and_eval_independence():
+    p, nll, b, w, select, evaluate = fixture()
+    before = p[0].detach().clone()
+    out = diagnostic(p,nll,b,w,select,evaluate,lr=.01,max_span=3)
+    second = diagnostic(p,nll,b,w,select,lambda ps: -evaluate(ps),lr=.01,max_span=3)
+    assert out['controls']['oracle']['partition'] == second['controls']['oracle']['partition']
+    assert torch.equal(before,p[0]) and p[0].grad is None
+    assert out['controls']['skip']['eval_improvement'] == 0
+    assert out['controls']['atomic_oracle_norm']['gradient_norm'] == pytest.approx(out['controls']['oracle']['gradient_norm'],abs=1e-7)
+    gradient = torch.autograd.grad(((b/w)*nll(p)).sum()/w.sum(),p)[0]
+    actual = float(evaluate((p[0]-.01*gradient,)).detach())
+    assert out['controls']['atomic']['eval_nll'] == pytest.approx(actual)
+
+
+def test_directional_prediction_and_oracle_enumeration():
+    from kdflow.algorithms._mp_opd_oracle import enumerate_partitions
+    p,nll,b,w,select,evaluate = fixture()
+    out = diagnostic(p,nll,b,w,select,evaluate,lr=1e-5,max_span=3)
+    predictions = []
+    outergrad = torch.autograd.grad(select(p),p)[0]
+    for part in enumerate_partitions(3,3):
+        h = (partition_rates(b,w,part)*nll(p)).sum()/w.sum()
+        g = torch.autograd.grad(h,p)[0]
+        predictions.append(float(1e-5*(outergrad*g).sum()))
+    assert out['controls']['oracle']['predicted_select_improvement'] == pytest.approx(max(predictions),abs=1e-10)
+    for value in out['controls'].values():
+        assert out['before_select']-value['select_nll'] == pytest.approx(value['predicted_select_improvement'],abs=1e-9)
+
+
+def test_matched_lengths_and_degeneracy():
+    reference = ((0,1),(1,4),(4,6),(6,7))
+    result = matched_partition(reference,42)
+    assert sorted(e-s for s,e in reference) == sorted(e-s for s,e in result)
+    assert result[0][0] == 0 and result[-1][1] == 7
+    assert matched_partition(((0,2),(2,4)),43) == ((0,2),(2,4))
+    with pytest.raises(ValueError):
+        matched_partition(((0,2),(3,4)),0)
+
+
+def test_weighting_hypergradient_and_no_student_mutation():
+    p,nll,b,w,select,evaluate = fixture()
+    net = AtomWeighting().double()
+    assert torch.allclose(net(b,w), b/w)
+    before = p[0].detach().clone()
+    old = copy.deepcopy(net.state_dict())
+    optimizer = torch.optim.SGD(net.parameters(),lr=.1)
+    train_weighting_step(net,optimizer,p,nll,b,w,select,.1)
+    assert torch.equal(before,p[0]) and p[0].grad is None
+    assert any(not torch.equal(v,old[k]) for k,v in net.state_dict().items())
+    # Compare the exact one-step hypergradient against finite difference.
+    from kdflow.algorithms._mp_opd_diagnostic import gradients
+    def objective():
+        g = gradients((net(b,w)*nll(p)).sum()/w.sum(),p,create_graph=True)
+        return select(tuple(x-.1*y for x,y in zip(p,g)))
+    target = net.net[-1].weight
+    analytic = torch.autograd.grad(objective(),target)[0][0,0].item()
+    saved = target.detach().clone()
+    values=[]
+    for delta in (1e-5,-1e-5):
+        with torch.no_grad():
+            target.copy_(saved); target[0,0] += delta
+        values.append(float(objective().detach()))
+    with torch.no_grad(): target.copy_(saved)
+    assert analytic == pytest.approx((values[0]-values[1])/2e-5,abs=1e-8)
+
+
+def test_split_overlap_content_not_only_id():
+    row = lambda i: {'id':str(i),'messages':[{'role':'user','content':str(i)}],'reference':'answer'}
+    group = {'rollout':row(1),'select':row(2),'eval':row(3)}
+    assert validate_groups([group])['rows']==3
+    group['eval']['messages']=group['select']['messages']
+    with pytest.raises(ValueError,match='overlapping'):
+        validate_groups([group])
+
+
+def test_prepare_deterministic_and_no_overwrite(tmp_path):
+    from argparse import Namespace
+    path=tmp_path/'source.jsonl'
+    path.write_text('\n'.join(json.dumps({'messages':[{'role':'user','content':str(i)}],'answer':'ref'}) for i in range(9)))
+    args=Namespace(input=path,output=tmp_path/'one.json',messages_key='messages',reference_key='answer',groups=3,seed=42)
+    prepare(args)
+    first=json.loads(args.output.read_text())
+    assert all('reference' not in g['rollout'] for g in first['groups'])
+    args.output=tmp_path/'two.json'; prepare(args)
+    assert json.loads(args.output.read_text())==first
+    with pytest.raises(FileExistsError): prepare(args)
+
+
+def test_complete_runner_with_tiny_hf_transport(tmp_path, monkeypatch):
+    import sys
+    import types
+    from argparse import Namespace
+    from experiments.mp_opd.real_oracle import run
+    class Tokenizer:
+        eos_token_id=7
+        all_special_ids=[7]
+        def apply_chat_template(self, messages, **kwargs): return [0,3]
+        def encode(self,text,**kwargs): return [1,2]
+        def decode(self,ids,**kwargs): return ''.join({1:'a',2:'b',7:'<eos>'}[i] for i in ids)
+        def get_added_vocab(self): return {'<eos>':7}
+    class Model(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.embed=torch.nn.Embedding(8,4)
+            self.block=torch.nn.Module()
+            self.block.q_proj=torch.nn.Linear(4,4)
+            self.head=torch.nn.Linear(4,8)
+        def forward(self,input_ids,**kwargs):
+            h=self.embed(input_ids).cumsum(1)
+            return types.SimpleNamespace(logits=self.head(torch.tanh(self.block.q_proj(h))))
+        def generate(self,input_ids,**kwargs):
+            return torch.cat([input_ids,torch.tensor([[1,2,7]])],dim=1)
+    models=[]
+    def load(*args,**kwargs):
+        m=Model(); models.append(m); return m
+    fake=types.ModuleType('transformers')
+    fake.AutoModelForCausalLM=types.SimpleNamespace(from_pretrained=load)
+    fake.AutoTokenizer=types.SimpleNamespace(from_pretrained=lambda *a,**k:Tokenizer())
+    monkeypatch.setitem(sys.modules,'transformers',fake)
+    row=lambda i: {'id':str(i),'messages':[{'role':'user','content':str(i)}],'reference':'ab'}
+    groups=[dict(zip(('rollout','select','eval'),[row(i+j) for j in range(3)])) for i in (0,3)]
+    data=tmp_path/'data.json';data.write_text(json.dumps({'schema':'mp-oracle-data-v1','groups':groups}))
+    for name in ('student','teacher'):
+        (tmp_path/name).mkdir();(tmp_path/name/'config.json').write_text('{}')
+    args=Namespace(student=tmp_path/'student',teacher=tmp_path/'teacher',data=data,output=tmp_path/'out',
+                   adapter_module='block.q_proj',device='cpu',rank=2,seed=42,max_span=3,virtual_lr=.1,
+                   weighting_lr=.01,weighting_steps=1,temperature=.6,top_p=.95,max_new_tokens=8,
+                   max_prompt_tokens=16,max_reference_tokens=16)
+    run(args)
+    report=json.loads((args.output/'summary.json').read_text())
+    assert report['valid_groups']==2
+    results=[json.loads(x) for x in (args.output/'results.jsonl').read_text().splitlines()]
+    assert [x['weighting_prior_groups'] for x in results]==[0,1]
+    assert all(x['parameters_unchanged'] for x in results)
+    assert torch.count_nonzero(models[0].block.q_proj.b)==0
+    assert (args.output/'weighting.pt').is_file()
+    with pytest.raises(FileExistsError): run(args)
+
+
+def test_prepare_excludes_sft_and_previous_groups(tmp_path):
+    from argparse import Namespace
+    path=tmp_path/'source.jsonl'
+    rows=[{'messages':[{'role':'user','content':str(i)}],'reference':'ref'} for i in range(12)]
+    path.write_text('\n'.join(json.dumps(row) for row in rows))
+    seen=tmp_path/'sft.jsonl'; seen.write_text(json.dumps(rows[0]))
+    args=Namespace(input=path,output=tmp_path/'one.json',messages_key='messages',reference_key='reference',groups=1,seed=42,exclude_prompts=[seen])
+    prepare(args)
+    first=json.loads(args.output.read_text())
+    assert first['excluded_prompt_count']==1
+    from experiments.mp_opd.real_oracle import identity
+    first_ids={identity(row['messages']) for row in first['groups'][0].values()}
+    assert identity(rows[0]['messages']) not in first_ids
+    args.exclude_prompts.append(args.output)
+    args.output=tmp_path/'two.json'; prepare(args)
+    second=json.loads(args.output.read_text())
+    second_ids={identity(row['messages']) for row in second['groups'][0].values()}
+    assert not first_ids & second_ids
+    assert second['excluded_prompt_count']==4
+
+
+def test_sft_conversation_reference_is_not_in_prompt(tmp_path):
+    from argparse import Namespace
+    path=tmp_path/'sft.jsonl'
+    rows=[{'messages':[{'role':'user','content':str(i)},{'role':'assistant','content':'answer'}]} for i in range(6)]
+    path.write_text('\n'.join(json.dumps(row) for row in rows))
+    excluded=tmp_path/'used.jsonl';excluded.write_text(json.dumps(rows[0]))
+    args=Namespace(input=path,output=tmp_path/'out.json',messages_key='messages',reference_key='@last-assistant',groups=1,seed=42,exclude_prompts=[excluded])
+    prepare(args)
+    result=json.loads(args.output.read_text())
+    for row in result['groups'][0].values():
+        assert len(row['messages'])==1
+        assert row['messages'][0]['content']!='0'
+    assert result['groups'][0]['select']['reference']=='answer'

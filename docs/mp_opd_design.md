@@ -225,3 +225,13 @@ Use exactly these evidence labels:
 - Oracle computations are adapter/subspace diagnostics; they make no claim
   about full-parameter FSDP optimization.
 - The toy positive headroom is an analytic fixture, not an LLM result.
+
+
+## A/B/C real-data diagnostic (2026-09-09)
+
+[Implementation and operating contract](mp_opd_abc_20260909.md) adds a standalone
+HF real-data runner with disjoint B/M_select/M_eval, a zero-initialized low-rank
+probe, actual functional virtual updates, matched-length/LR/norm/skip/SFT controls
+and prequential learned atom weighting. It does not wire the production KDFlow
+soft optimizer or validate full-parameter Adam. The existing toy harness remains
+a mathematical fixture. No GPU result is implied by the new runner's existence.

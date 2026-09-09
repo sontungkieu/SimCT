@@ -1,13 +1,15 @@
 import ast
+import hashlib
+import importlib.metadata
 import json
 import os
 import sys
 from pathlib import Path
 
 mode, limit, output = sys.argv[1:]
-assert mode in {"atomic", "fixed"}
+assert mode in {"atomic", "fixed", "random"}
 limit = int(limit)
-assert limit in {0, 5}
+assert limit in {0, 5, 50}
 
 root = Path(__file__).resolve().parents[2]
 run_dir = Path(output).resolve()
@@ -52,8 +54,12 @@ opts.update(
     teacher_tp_size=1,
     teacher_dp_size=1,
     mp_opd_mode=mode,
-    mp_opd_max_span_length=1 if mode == "atomic" else 2,
-    mp_opd_fixed_span_length=2,
+    kd_algorithm=os.environ.get("MP_ALGORITHM", "mp_opd"),
+    seed=int(os.environ.get("MP_SEED", "42")),
+    lr_scheduler_horizon_steps=312,
+    mp_opd_random_seed=int(os.environ.get("MP_PARTITION_SEED", "43")),
+    mp_opd_max_span_length=1 if mode == "atomic" else int(os.environ.get("MP_MAX_SPAN_LENGTH", "2")),
+    mp_opd_fixed_span_length=int(os.environ.get("MP_FIXED_SPAN_LENGTH", "2")),
     diagnostic_max_updates=limit,
     save_steps=-1 if limit else 20,
     save_path=str(run_dir / "checkpoint"),
@@ -61,8 +67,48 @@ opts.update(
     use_wandb=False,
 )
 
+if opts["kd_algorithm"] not in {"mp_opd", "span_ctkd", "xtoken"}:
+    raise ValueError("MP_ALGORITHM must be mp_opd, span_ctkd or xtoken")
+if opts["kd_algorithm"] != "mp_opd" and mode != "atomic":
+    raise ValueError("use atomic as the neutral launcher slot for non-MP algorithms")
+if opts["kd_algorithm"] == "xtoken":
+    projection = Path(os.environ["MP_XTOKEN_PROJECTION_PATH"])
+    expected = os.environ["MP_XTOKEN_PROJECTION_SHA256"]
+    actual = hashlib.sha256(projection.read_bytes()).hexdigest()
+    if actual != expected:
+        raise ValueError("X-Token projection checksum mismatch")
+    opts.update(xtoken_projection_path=str(projection), xtoken_projection_sha256=expected)
+if opts["mp_opd_fixed_span_length"] <= 0 or opts["mp_opd_max_span_length"] <= 0:
+    raise ValueError("span lengths must be positive")
+if mode == "fixed" and opts["mp_opd_fixed_span_length"] > opts["mp_opd_max_span_length"]:
+    raise ValueError("fixed length must not exceed MP_MAX_SPAN_LENGTH")
+
 for key in ("student_name_or_path", "teacher_name_or_path", "train_dataset_path"):
     assert Path(opts[key]).exists(), opts[key]
+
+def file_hash(path):
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(8 * 1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+model_manifest = {}
+for role in ("student", "teacher"):
+    path = Path(opts[role + "_name_or_path"])
+    print(f"Hashing {role} model files for provenance", flush=True)
+    model_manifest[role] = {
+        str(p.relative_to(path)): file_hash(p) for p in sorted(path.rglob("*"))
+        if p.is_file() and p.suffix in {".json", ".safetensors", ".bin", ".model", ".txt", ".tiktoken"}
+    }
+    if not model_manifest[role]:
+        raise ValueError("model directory contains no identifiable model files")
+versions = {}
+for package in ("torch", "transformers", "sglang", "ray"):
+    try:
+        versions[package] = importlib.metadata.version(package)
+    except importlib.metadata.PackageNotFoundError:
+        versions[package] = None
 
 (run_dir / "launch-config.json").write_text(json.dumps({
     "options": opts,
@@ -71,8 +117,24 @@ for key in ("student_name_or_path", "teacher_name_or_path", "train_dataset_path"
     "source_dirty": os.environ.get("MP_SOURCE_DIRTY"),
     "cuda_visible_devices": os.environ["CUDA_VISIBLE_DEVICES"],
     "variant": mode,
+    "models_sha256": model_manifest,
+    "dataset_sha256": file_hash(Path(opts["train_dataset_path"])),
+    "runtime_versions": versions,
+    "contract": {
+        "schema": "mp-runai-v2", "algorithm": opts["kd_algorithm"],
+        "execution_updates": limit or 312, "scheduler_horizon": 312,
+        "sampling_temperature": opts["temperature"],
+        "credit_logprob_temperature": 1.0,
+        "parity": {"mean_max": 0.1, "p99_max": 0.5} if opts["kd_algorithm"] == "mp_opd" else None,
+        "random_rule": "uniform-next-length; not histogram-matched",
+        "evaluation_contract": "external pinned eval manifest required",
+    },
     "gpu_mapping": "single visible GPU maps SGLang base_gpu_id to zero",
 }, indent=2))
+
+if os.environ.get("MP_PREFLIGHT_ONLY") == "1":
+    print(f"PREFLIGHT_READY={run_dir / 'launch-config.json'}")
+    raise SystemExit(0)
 
 import ray
 ray.init(

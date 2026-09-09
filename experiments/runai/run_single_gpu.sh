@@ -2,13 +2,15 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 CODE_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
-GPU="${1:?Usage: run_single_gpu.sh GPU atomic|fixed 0|5}"
+GPU="${1:?Usage: run_single_gpu.sh GPU atomic|fixed|random 0|5|50}"
 MODE="${2:?Missing mode}"
 LIMIT="${3:?Missing update limit}"
 [[ "$GPU" =~ ^[0-9]+$ ]] && (( GPU <= 7 )) || { echo "GPU must be a numeric slot 0..7" >&2; exit 2; }
-[[ "$MODE" == atomic || "$MODE" == fixed ]] || { echo "Mode must be atomic or fixed" >&2; exit 2; }
-[[ "$LIMIT" == 0 || "$LIMIT" == 5 ]] || { echo "Limit must be 0 (full) or 5 (canary)" >&2; exit 2; }
+[[ "$MODE" == atomic || "$MODE" == fixed || "$MODE" == random ]] || { echo "Mode must be atomic, fixed or random" >&2; exit 2; }
+[[ "$LIMIT" == 0 || "$LIMIT" == 5 || "$LIMIT" == 50 ]] || { echo "Limit must be 0 (full) 5 (canary), or 50 (pilot)" >&2; exit 2; }
 
+ALGORITHM="${MP_ALGORITHM:-mp_opd}"
+[[ "$ALGORITHM" == mp_opd || "$ALGORITHM" == span_ctkd || "$ALGORITHM" == xtoken ]] || { echo "Unsupported MP_ALGORITHM" >&2; exit 2; }
 export CUDA_VISIBLE_DEVICES="$GPU"
 export PYTHONPATH="$CODE_ROOT/experiments/modal/vendor:$CODE_ROOT"
 export HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 TRANSFORMERS_OFFLINE=1
@@ -30,7 +32,7 @@ export MP_SOURCE_DIRTY="$(git -C "$CODE_ROOT" status --porcelain --untracked-fil
 RUN_ROOT="${MP_RUN_ROOT:-$(dirname "$CODE_ROOT")/simct-runs}"
 mkdir -p "$RUN_ROOT"
 RUN_ROOT="$(cd -- "$RUN_ROOT" && pwd)"
-RUN_DIR="$RUN_ROOT/qwen-gemma-mp-${MODE}-gpu${GPU}-limit${LIMIT}-$(date +%Y%m%d-%H%M%S)-$$"
+RUN_DIR="$RUN_ROOT/qwen-gemma-${ALGORITHM}-${MODE}-gpu${GPU}-limit${LIMIT}-$(date +%Y%m%d-%H%M%S)-$$"
 echo "RUN_DIR=$RUN_DIR"
 cd "$CODE_ROOT"
 
