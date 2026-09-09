@@ -19,6 +19,31 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import time
 
 
+def token_ids(value, *, allow_empty=False):
+    """Normalize one tokenized sequence; never iterate BatchEncoding as IDs."""
+    from collections.abc import Mapping
+    from numbers import Integral
+    if isinstance(value, Mapping):
+        value = value["input_ids"]
+    if hasattr(value, "ids"):
+        value = value.ids
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    if not isinstance(value, (list, tuple)):
+        raise TypeError("tokenizer must return one flat sequence of integer token IDs")
+    if (not value and not allow_empty) or any(isinstance(x, bool) or not isinstance(x, Integral) or x < 0 for x in value):
+        raise ValueError("empty, batched or non-integer token IDs")
+    return [int(x) for x in value]
+
+
+def chat_prompt_ids(tok, messages, max_tokens):
+    ids = token_ids(tok.apply_chat_template(messages, tokenize=True,
+                                            add_generation_prompt=True, return_dict=False))
+    if len(ids) > max_tokens:
+        raise ValueError("prompt exceeds diagnostic cap; no silent truncation")
+    return ids
+
+
 def digest(path):
     h = hashlib.sha256()
     with Path(path).open("rb") as f:
@@ -182,24 +207,21 @@ def run(args):
     atomizer = SimCTAtomizer(tokenizer, teacher_tokenizer)
 
     def prompt(tok, messages):
-        ids = tok.apply_chat_template(messages, tokenize=True, add_generation_prompt=True)
-        if len(ids) > args.max_prompt_tokens:
-            raise ValueError("prompt exceeds diagnostic cap; no silent truncation")
-        return ids
+        return chat_prompt_ids(tok, messages, args.max_prompt_tokens)
 
     def scores(model, prefix, response, virtual=None):
-        ids = torch.tensor([prefix + response], device=device)
+        ids = torch.tensor([prefix + response], device=device, dtype=torch.long)
         kwargs = dict(input_ids=ids, attention_mask=torch.ones_like(ids), use_cache=False)
         if virtual is None:
             output = model(**kwargs)
         else:
             output = functional_call(model, {param_name: virtual[0]}, (), kwargs)
         logits = output.logits[0, len(prefix)-1:len(prefix)+len(response)-1]
-        return realized_token_log_probs(logits, torch.tensor(response, device=device))
+        return realized_token_log_probs(logits, torch.tensor(response, device=device, dtype=torch.long))
 
     def outer(row):
         prefix = prompt(tokenizer, row["messages"])
-        response = tokenizer.encode(row["reference"], add_special_tokens=False)
+        response = token_ids(tokenizer.encode(row["reference"], add_special_tokens=False))
         if tokenizer.eos_token_id is not None:
             response.append(tokenizer.eos_token_id)
         if not response or len(response) > args.max_reference_tokens:
@@ -227,7 +249,7 @@ def run(args):
         started = time.perf_counter()
         prefix = prompt(tokenizer, group["rollout"]["messages"])
         with torch.no_grad():
-            inp = torch.tensor([prefix], device=device)
+            inp = torch.tensor([prefix], device=device, dtype=torch.long)
             generated = student.generate(input_ids=inp, attention_mask=torch.ones_like(inp),
                         do_sample=True, temperature=args.temperature, top_p=args.top_p, top_k=0,
                         num_beams=1, repetition_penalty=1.0,
@@ -237,7 +259,7 @@ def run(args):
         ended = terminal_count > 0
         text = tokenizer.decode(response, skip_special_tokens=False, clean_up_tokenization_spaces=False)
         tea_prefix = prompt(teacher_tokenizer, group["rollout"]["messages"])
-        tea_response = teacher_tokenizer.encode(text, add_special_tokens=False)
+        tea_response = token_ids(teacher_tokenizer.encode(text, add_special_tokens=False), allow_empty=True)
         atomized = atomizer.atomize(response, tea_response, sample_id=group["rollout"]["id"])
         trace = {"index": index, "rollout_id": group["rollout"]["id"], "student_prompt_ids": prefix,
                  "student_response_ids": response, "sampled_student_ids": sampled_ids, "teacher_prompt_ids": tea_prefix,

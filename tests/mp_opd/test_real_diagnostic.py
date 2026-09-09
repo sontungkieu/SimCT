@@ -210,3 +210,21 @@ def test_conflict_excludes_whole_prompt_order_independent(tmp_path):
     reverse=json.loads(args.output.read_text())
     assert reverse['groups']==result['groups']
     assert reverse['conflicting_prompt_ids']==result['conflicting_prompt_ids']
+
+
+def test_tokenizer_batch_encoding_normalized_before_tensor():
+    from collections import UserDict
+    from experiments.mp_opd.real_oracle import token_ids, chat_prompt_ids
+    class Encoding:
+        ids = [2, 7, 9]
+    class Tokenizer:
+        def apply_chat_template(self, messages, **kwargs):
+            assert kwargs["return_dict"] is False
+            return UserDict(input_ids=[2, 7, 9], attention_mask=[1, 1, 1])
+    assert token_ids(Encoding()) == [2, 7, 9]
+    assert token_ids([], allow_empty=True) == []
+    assert chat_prompt_ids(Tokenizer(), [], 3) == [2, 7, 9]
+    assert torch.tensor([chat_prompt_ids(Tokenizer(), [], 3)], dtype=torch.long).shape == (1, 3)
+    with pytest.raises(ValueError): chat_prompt_ids(Tokenizer(), [], 2)
+    for bad in ([], [[2, 7]], [Encoding()], [True], [-1]):
+        with pytest.raises(ValueError): token_ids(bad)
