@@ -34,4 +34,19 @@ server's unconditional finite-outlier bypass is not restored.
 
 Validation: stdlib port regression tests plus Python AST and bash syntax checks.
 A GPU canary with the combined Git launcher is still required on the server.
-Full server source reconciliation is pending the requested archive.
+Full server source reconciled against simct-server-source-20260909-041655.tar.gz
+(SHA-256 8bda6cea97d65395befa4b13d1e8a29a584db4a105ea9a68cb1740938de62bde).
+Atomizer differences are whitespace-only. The newer trainer compatibility fix
+and temperature/mean/p99/NaN/Inf parity checks are retained. Historical backup
+files are kept in the local evidence archive and not installed as source.
+The server's port isolation and launcher/NVRTC changes are integrated here.
+No combined GPU training canary has been run after this reconciliation.
+
+Distribution uses the same source commit on GitHub and inside the public HF
+Git bundle at https://huggingface.co/codemaivanngu/simct. HF's repository commit
+identifies the bundle upload and differs from the source commit recorded in
+source-manifest.json. Download bundle and manifest at the same HF revision,
+verify SHA-256, then clone into a new directory or pull --ff-only from the bundle.
+Keep local model paths/runtime paths in environment variables and outputs
+outside the Git checkout. Git may still report conflicts for future source edits;
+this integration removes the need to reapply the known server patches manually.
