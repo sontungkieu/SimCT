@@ -13,6 +13,13 @@ import queue_data as D
 E=Q.E
 
 class QueueTests(unittest.TestCase):
+    def test_cli_accepts_32_16_128(self):
+        argv=['eval_queue.py','worker','--plan','plan.json','--gpu','0','--concurrency','32','--score-workers','16','--score-buffer','128','--internal-code-execution']
+        with patch.object(Q,'worker') as worker, patch.object(sys,'argv',argv):
+            Q.main()
+        a=worker.call_args.args[0]
+        self.assertEqual((a.concurrency,a.score_workers,a.score_buffer),(32,16,128))
+
     def test_native_context_preserves_full_output_cap(self):
         from context_check import check_items,CONTEXT_LENGTH
         class Tok:

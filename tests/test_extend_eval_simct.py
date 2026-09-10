@@ -13,7 +13,7 @@ E,D=Q.E,Q.D
 SCRIPT=ROOT/'experiments/runai/transfer/extend-eval-simct.py'
 
 
-@pytest.mark.parametrize("update",[False,True])
+@pytest.mark.parametrize("update",[False,"d574482","5199cb0"])
 def test_migration_preserves_results_and_clock(tmp_path,update):
     old=tmp_path/'old';old.mkdir();out=tmp_path/'new';simct=tmp_path/'simct';simct.mkdir()
     E.write_new(simct/'run-summary.json',dict(kd_algorithm='span_ctkd',status='completed',optimizer_updates=312,student='/sft'))
@@ -31,7 +31,7 @@ def test_migration_preserves_results_and_clock(tmp_path,update):
     if update:
         source=tmp_path/'old-source'
         shutil.copytree(ROOT/'scripts',source/'scripts',ignore=shutil.ignore_patterns('__pycache__'))
-        (source/'scripts/evaluation/eval_queue.py').write_bytes(subprocess.check_output(['git','show','d574482:scripts/evaluation/eval_queue.py'],cwd=ROOT))
+        (source/'scripts/evaluation/eval_queue.py').write_bytes(subprocess.check_output(['git','show',str(update)+':scripts/evaluation/eval_queue.py'],cwd=ROOT))
         hashes={name:E.file_hash(source/'scripts/evaluation'/name) for name in hashes}
         for step in (40,80,120,156,200,240,280,312): jobs.append(dict(id=f'simct-{step}',mode='simct',step=step,tier=0,checkpoint=E.checkpoint_identity(simct/f'step{step}')))
     plan=dict(profile=D.PROFILE,source=hashes,jobs=jobs,data=data,seeds=[42,43,44])
@@ -54,7 +54,7 @@ def test_migration_preserves_results_and_clock(tmp_path,update):
     if update:
         assert E.read_json(out/'plan.json')['source']==D.script_hashes()
         assert E.file_hash(source/'scripts/evaluation/eval_queue.py')==hashes['eval_queue.py']
-        assert E.read_json(out/'migration.json')['score_workers']==8
+        assert E.read_json(out/'migration.json')['score_workers']==16
     assert len(E.read_json(out/'plan.json')['jobs'])==25
     assert E.read_json(out/'state.json')['deadline']==state['deadline']
     assert E.read_json(out/'migration.json')['totals']=={'responses':1,'scores':1,'metrics':1}
