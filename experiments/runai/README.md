@@ -111,3 +111,9 @@ evaluation artifact. Existing training history is read back and checked as an
 unchanged prefix. Successful runs receive the `evaluated` tag with existing tags
 preserved. A source SHA marker prevents re-upload; partial imports fail closed.
 No training logs are replayed. Aggregate provenance is not a per-item audit.
+
+`publish_wandb_uncertainty.py --summary FILE --out DIR` appends seed dispersion
+to those already-evaluated runs. It uses sample variance (ddof=1), computes macro
+per seed before dispersion, and adds spread lines (mean/min/max/mean +/- std)
+and seed charts. These are evaluation-seed variability, not confidence intervals.
+History-prefix and endpoint readback checks follow each upload.
