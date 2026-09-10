@@ -20,6 +20,15 @@ class QueueTests(unittest.TestCase):
         a=worker.call_args.args[0]
         self.assertEqual((a.concurrency,a.score_workers,a.score_buffer),(32,16,128))
 
+    def test_cli_accepts_64_and_rejects_over_limit_or_small_buffer(self):
+        base=['eval_queue.py','worker','--plan','plan.json','--gpu','0','--score-workers','16','--internal-code-execution']
+        with patch.object(Q,'worker') as worker, patch.object(sys,'argv',base+['--concurrency','64','--score-buffer','128']):
+            Q.main()
+        self.assertEqual(worker.call_args.args[0].concurrency,64)
+        for concurrency,buffer in [('65','128'),('64','32')]:
+            with patch.object(sys,'argv',base+['--concurrency',concurrency,'--score-buffer',buffer]),self.assertRaises(SystemExit):
+                Q.main()
+
     def test_native_context_preserves_full_output_cap(self):
         from context_check import check_items,CONTEXT_LENGTH
         class Tok:

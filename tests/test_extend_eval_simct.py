@@ -13,7 +13,7 @@ E,D=Q.E,Q.D
 SCRIPT=ROOT/'experiments/runai/transfer/extend-eval-simct.py'
 
 
-@pytest.mark.parametrize("update",[False,"d574482","5199cb0"])
+@pytest.mark.parametrize("update",[False,"d574482","5199cb0","52a8428"])
 def test_migration_preserves_results_and_clock(tmp_path,update):
     old=tmp_path/'old';old.mkdir();out=tmp_path/'new';simct=tmp_path/'simct';simct.mkdir()
     E.write_new(simct/'run-summary.json',dict(kd_algorithm='span_ctkd',status='completed',optimizer_updates=312,student='/sft'))
@@ -55,6 +55,7 @@ def test_migration_preserves_results_and_clock(tmp_path,update):
         assert E.read_json(out/'plan.json')['source']==D.script_hashes()
         assert E.file_hash(source/'scripts/evaluation/eval_queue.py')==hashes['eval_queue.py']
         assert E.read_json(out/'migration.json')['score_workers']==16
+        assert E.read_json(out/'migration.json')['concurrency_by_gpu']=={'0':64,'1':32}
     assert len(E.read_json(out/'plan.json')['jobs'])==25
     assert E.read_json(out/'state.json')['deadline']==state['deadline']
     assert E.read_json(out/'migration.json')['totals']=={'responses':1,'scores':1,'metrics':1}
