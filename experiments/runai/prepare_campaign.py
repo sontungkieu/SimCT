@@ -7,13 +7,21 @@ def main(a):
     w=a.out.resolve();w.mkdir(parents=True,exist_ok=False)
     base=Path('/workspace/storage-shared/nlp/tungks')
     cfg=dict(dataset=str(base/'SimCT/data/qwen-author/data/prompts.parquet'),student=str(base/'SimCT/runs/qwen-gemma-sft-paper-20260908-045828/checkpoint'),teacher='/workspace/storage-shared/models/Qwen2.5-7B-Instruct',reference_input=str(a.references or base/'SimCT/data/qwen-author/data/selected.parquet'),reference_key=a.reference_key,exclude=a.exclude,eval_template=str(a.eval_template.resolve()),scope='external guide; provenance and near-duplicate audit still required' if a.references else 'SEEN-SFT mechanics only; not an unseen generalization gate')
-    for key in ('dataset','student','teacher','reference_input','eval_template'):
+    cfg['selected']=str(base/'SimCT/data/qwen-author/data/selected.parquet')
+    if not a.references:
+        cfg['reference_input']=str(w/'guide.jsonl')
+        cfg['scope']='unseen-source teacher pseudo-label guide; lexical dedup; exploratory only'
+    for key in ('dataset','student','teacher','selected','eval_template'):
         if not Path(cfg[key]).exists():raise ValueError('missing '+key+': '+cfg[key])
     (w/'config.json').write_text(json.dumps(cfg,indent=2))
     jobs=[]
     def add(key,action,hours,gpu=None,after=(),name='',lr='.1',self_locks=False):
         jobs.append(dict(id=key,gpu=gpu,after=list(after),budget_seconds=int(hours*3600),self_locks=self_locks,argv=['/usr/bin/python3.12',str(ROOT/'experiments/runai/campaign_job.py'),action,'--work',str(w),'--name',name,'--gpu',str(gpu or 0),'--lr',lr]))
-    add('prepare-guide','prepare-probe',.25)
+    if not a.references:
+        add('acquire-guide','guide-acquire',1)
+        add('generate-guide','guide-generate',1.5,1,('acquire-guide',))
+        add('filter-guide','guide-finalize',.1,after=('generate-guide',))
+    add('prepare-guide','prepare-probe',.25,after=() if a.references else ('filter-guide',))
     # One lane confirms fixed; the other probes before confirming atomic.
     add('canary-fixed','canary',.5,0,name='fixed')
     add('fixed43','train',6.5,0,('canary-fixed',),name='fixed')
@@ -27,6 +35,13 @@ def main(a):
         add('plan-'+mode,'eval-plan',.25,after=(mode+'43',),name=mode)
         add('gen-'+mode,'generate',2,gpu,('plan-'+mode,),name=mode,self_locks=True)
         add('score-'+mode,'score',4,after=('plan-'+mode,),name=mode)
+    # Extra partition control only after the primary endpoint has been generated.
+    # Admission still requires enough time for the complete bounded run.
+    add('canary-random','canary',.5,0,('gen-fixed',),name='random')
+    add('random43','train',6.5,0,('canary-random',),name='random')
+    add('plan-random','eval-plan',.25,after=('random43',),name='random')
+    add('gen-random','generate',1,0,('plan-random',),name='random',self_locks=True)
+    add('score-random','score',4,after=('plan-random',),name='random')
     plan=dict(config_sha256=hashlib.sha256((w/'config.json').read_bytes()).hexdigest(),schema='campaign-v1',hours=20,source=str(ROOT),source_commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),jobs=jobs,data_contract=cfg)
     (w/'plan.json').write_text(json.dumps(plan,indent=2));print('PLAN='+str(w/'plan.json'))
 if __name__=='__main__':

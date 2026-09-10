@@ -9,7 +9,9 @@ def main(a):
     work=a.work.resolve(); cfg=json.loads((work/'config.json').read_text())
     host=ROOT/'experiments/runai/python-b200-host.sh'
     trainenv=dict(os.environ,MP_ALGORITHM='mp_opd',MP_STUDENT_PATH=cfg['student'],MP_TEACHER_PATH=cfg['teacher'],MP_DATASET_PATH=cfg['dataset'],MP_MAX_SPAN_LENGTH='2',MP_FIXED_SPAN_LENGTH='2',MP_PARTITION_SEED='43',MP_SEED='43',MP_PREFLIGHT_ONLY='0')
-    if a.action in ('train','canary'):
+    if a.action.startswith('guide-'):
+        execute(['bash',host,ROOT/'experiments/runai/guide_data.py',a.action.removeprefix('guide-'),'--work',work])
+    elif a.action in ('train','canary'):
         env=dict(trainenv,MP_RUN_ROOT=str(work/(a.name if a.action=='train' else 'canary-'+a.name)))
         execute(['bash',ROOT/'experiments/runai/run_single_gpu.sh',a.gpu,a.name,0 if a.action=='train' else 5],env=env)
     elif a.action=='prepare-probe':
@@ -17,7 +19,7 @@ def main(a):
         for x in cfg['exclude']:argv+=['--exclude-prompts',x]
         execute(argv)
     elif a.action=='probe':
-        execute(['bash',host,ROOT/'experiments/mp_opd/real_oracle.py','run','--student',cfg['student'],'--teacher',cfg['teacher'],'--data',work/'probe-data.json','--output',work/a.name,'--adapter-module','model.layers.25.self_attn.q_proj','--device','cuda:0','--rank','4','--virtual-lr',a.lr,'--model-dtype','float32','--max-span','2','--weighting-steps',os.environ.get('PROBE_WEIGHTING_STEPS','1'),'--select-counts','1','4','--max-new-tokens','128','--max-reference-tokens','1024'])
+        execute(['bash',host,ROOT/'experiments/mp_opd/real_oracle.py','run','--student',cfg['student'],'--teacher',cfg['teacher'],'--data',work/'probe-data.json','--output',work/a.name,'--adapter-module','model.layers.25.self_attn.q_proj','--device','cuda:0','--rank','4','--virtual-lr',a.lr,'--model-dtype','float32','--max-span','2','--weighting-steps',os.environ.get('PROBE_WEIGHTING_STEPS','1'),'--select-counts','1','4','--max-new-tokens','128','--max-reference-tokens','2048'])
     elif a.action=='adaptive':
         decision=json.loads((work/'decision.json').read_text())
         if decision['branch']=='weighting-sensitivity':
@@ -30,8 +32,9 @@ def main(a):
         reports={}
         for p in work.glob('probe-*/summary.json'):reports[p.parent.name]=json.loads(p.read_text())
         primary=reports.get('probe-1',{});c=primary.get('comparisons',{}).get('atomic',{});ci=c.get('exploratory_group_bootstrap_95pct') or [-1,-1]
-        signal=primary.get('valid_groups',0)>=24 and primary.get('invalid_groups',99)<=8 and ci[0]>0 and c.get('positive_fraction',0)>=.6
-        decision={'branch':'weighting-sensitivity' if signal else 'random-pilot', 'gate':'fixed primary lr=.1; >=24 valid groups; <=8 invalid; bootstrap lower>0; positive fraction>=.6; exploratory only', 'scope':cfg['scope'],'reports':reports,'full_learned_training':'blocked','reason':'No qualified learned-partition training launcher; weighting probe is not interchangeable with partition energy','next':'audit paired guide gains and learned weighting; do not select using benchmark test'}
+        controls={k:primary.get('comparisons',{}).get(k,{}) for k in ('atomic','fixed','skip')}
+        signal=primary.get('valid_groups',0)>=24 and primary.get('invalid_groups',99)<=8 and all((v.get('exploratory_group_bootstrap_95pct') or [-1])[0]>0 and v.get('positive_fraction',0)>=.6 for v in controls.values())
+        decision={'branch':'weighting-sensitivity' if signal else 'random-pilot', 'gate':'primary lr=.1; >=24 valid groups; <=8 invalid; lower CI>0 and positive fraction>=.6 against EACH atomic/fixed/skip; exploratory only', 'scope':cfg['scope'],'reports':reports,'full_learned_training':'blocked','reason':'No qualified learned-partition training launcher; weighting probe is not interchangeable with partition energy','next':'audit paired guide gains and learned weighting; do not select using benchmark test'}
         (work/'decision.json').write_text(json.dumps(decision,indent=2))
         print(json.dumps(decision))
     elif a.action=='eval-plan':

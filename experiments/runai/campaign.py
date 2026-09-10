@@ -106,6 +106,8 @@ def run(path):
             terminate(known);p.wait();log.close()
             if lease:lease.close()
             state['jobs'][key].update(status='timeout',reason='campaign stopped or deadline',ended=time.time())
+        for job in plan['jobs']:
+            state['jobs'].setdefault(job['id'],dict(status='blocked',reason='campaign ended before admission'))
         state['ended']=time.time();write(statepath,state)
         for ep in root.glob('eval-*/plan.json'):
             with ep.with_name('summary.json').open('w') as f:
