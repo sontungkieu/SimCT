@@ -2,6 +2,7 @@
 """Two independent GPU workers; tier barriers; bounded resumable internal eval."""
 import argparse
 import concurrent.futures as cf
+from collections import deque
 import contextlib
 import fcntl
 import json
@@ -200,16 +201,35 @@ def run_cell(root,plan,plan_hash,job,benchmark,seed,base,server,args,deadline):
         row=responses.get(item["id"])
         if row is None: row=generate_one(base,item,benchmark,seed,deadline)
         return row
+    score_buffer=getattr(args,"score_buffer",64)
+    if score_buffer<args.concurrency: raise ValueError("score buffer must cover generation concurrency")
+    backlog=deque()
+    def grade_item(item):
+        # Decode potentially large/private tests only inside an active scorer slot.
+        row=responses[item["id"]]
+        payload={"profile":D.PROFILE,"benchmark":benchmark,"item":D.score_item(benchmark,item),
+                 "text":row["response"]["choices"][0]["message"]["content"]}
+        return score_job(args.score_python,payload,deadline)
+    print("PIPELINE",json.dumps({"generation_concurrency":args.concurrency,
+          "score_workers":args.score_workers,"score_buffer":score_buffer}),flush=True)
     try:
         with cf.ThreadPoolExecutor(max_workers=args.concurrency) as generation, cf.ThreadPoolExecutor(max_workers=args.score_workers) as grading:
             exhausted=False
-            while futures or not exhausted:
+            while futures or backlog or not exhausted:
                 if time.time()>=deadline: raise Deadline()
-                # Bounded outstanding work: prevents retaining decoded LCB tests for all tasks.
-                while not exhausted and len(futures)<args.concurrency+args.score_workers:
+                scoring=sum(kind=="score" for kind,_ in futures.values())
+                while backlog and scoring<args.score_workers:
+                    item=backlog.popleft()
+                    futures[grading.submit(grade_item,item)]=( "score",item)
+                    scoring+=1
+                generating=sum(kind=="generation" for kind,_ in futures.values())
+                # Reserve backlog capacity for in-flight generation; scorer backlog
+                # no longer consumes generation slots. Backpressure remains bounded.
+                while not exhausted and generating<args.concurrency and len(backlog)+generating<score_buffer:
                     try: item=next(pending)
                     except StopIteration: exhausted=True;break
                     futures[generation.submit(process_item,item)]=("generation",item)
+                    generating+=1
                 if not futures: break
                 done,_=cf.wait(futures,timeout=min(1.,max(.1,deadline-time.time())),return_when=cf.FIRST_COMPLETED)
                 for future in done:
@@ -217,10 +237,7 @@ def run_cell(root,plan,plan_hash,job,benchmark,seed,base,server,args,deadline):
                     if kind=="generation":
                         if item["id"] not in responses:
                             append(cell/"responses.jsonl",value);responses[item["id"]]=value
-                        score_input=D.score_item(benchmark,item)
-                        payload={"profile":D.PROFILE,"benchmark":benchmark,"item":score_input,
-                                 "text":value["response"]["choices"][0]["message"]["content"]}
-                        futures[grading.submit(score_job,args.score_python,payload,deadline)]=("score",item)
+                        backlog.append(item)
                     else:
                         value.update(id=item["id"],response_sha256=E.digest(E.encoded(responses[item["id"]])))
                         append(cell/"scores.jsonl",value);scores[item["id"]]=value
@@ -405,6 +422,7 @@ def main():
     q.add_argument("--plan",type=Path,required=True);q.add_argument("--gpu",type=int,choices=range(8),required=True)
     q.add_argument("--score-python",default="/usr/bin/python3.12")
     q.add_argument("--concurrency",type=int,default=8);q.add_argument("--score-workers",type=int,default=2)
+    q.add_argument("--score-buffer",type=int,default=64,help="Maximum waiting plus in-flight generated items; tests decoded only by active scorers")
     q.add_argument("--internal-code-execution",action="store_true",required=True,
                    help="Explicit company-internal profile; resource limits are not an OS sandbox")
     q.set_defaults(func=worker)
@@ -421,7 +439,7 @@ def main():
     q.set_defaults(func=retry)
     a=p.parse_args()
     if a.cmd=="prepare" and not 1<a.hours<=20: p.error("budget must be >1 and <=20 hours")
-    if a.cmd=="worker" and not (1<=a.concurrency<=32 and 1<=a.score_workers<=8): p.error("invalid concurrency")
+    if a.cmd=="worker" and not (1<=a.concurrency<=32 and 1<=a.score_workers<=8 and a.concurrency<=a.score_buffer<=256): p.error("invalid concurrency")
     a.func(a)
 
 if __name__=="__main__": main()

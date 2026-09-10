@@ -90,6 +90,43 @@ class QueueTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 D.score_item("live-code-bench-v6",{"raw":{"path":str(p),"offset":0,"length":2,"sha256":"wrong"}})
 
+    def test_slow_scores_do_not_consume_generation_slots(self):
+        import threading
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);data=root/"data.json"
+            items=[{"id":str(i),"messages":[{"role":"user","content":"sum"}],"gold":"#### 2"} for i in range(30)]
+            E.write_new(data,{"items":items})
+            plan={"data":{"gsm8k":{"path":str(data),"sha256":E.file_hash(data),"count":30}}}
+            job={"id":"atomic-40","checkpoint":{"sha256":"cp"}}
+            args=argparse.Namespace(concurrency=4,score_workers=2,score_buffer=8,score_python=sys.executable)
+            release=threading.Event();filled=threading.Event();lock=threading.Lock();counts={"generated":0,"decoded":0}
+            def generate(base,item,benchmark,seed,deadline):
+                with lock:
+                    counts["generated"]+=1
+                    if counts["generated"]>=10: filled.set()
+                return {"id":item["id"],"seed":seed,"request_sha256":E.digest(E.encoded(E.generation_payload("eval-gemma",item,benchmark,seed))),
+                        "response":{"choices":[{"finish_reason":"stop","message":{"content":"#### 2"}}]}}
+            def decode(benchmark,item):
+                with lock: counts["decoded"]+=1
+                return item
+            def score(*args):
+                if not release.wait(5): raise RuntimeError("test release timeout")
+                return {"passed":True}
+            evidence={}
+            def monitor():
+                evidence["filled"]=filled.wait(3)
+                time.sleep(.05)
+                with lock: evidence.update(counts)
+                release.set()
+            t=threading.Thread(target=monitor);t.start()
+            with patch.object(Q,"generate_one",side_effect=generate),patch.object(D,"score_item",side_effect=decode),patch.object(Q,"score_job",side_effect=score):
+                result=Q.run_cell(root,plan,"plan",job,"gsm8k",42,"",{},args,time.time()+20)
+            t.join()
+            self.assertTrue(evidence["filled"])
+            self.assertEqual(evidence["generated"],10) # 8 buffered/in-flight + 2 scorers
+            self.assertEqual(evidence["decoded"],2) # no queued decoded test payloads
+            self.assertEqual(result["count"],30)
+
     def test_cell_resume_no_repeated_generation_or_scores(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);data=root/"data.json"
