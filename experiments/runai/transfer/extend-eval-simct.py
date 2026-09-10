@@ -65,8 +65,9 @@ def stop_workers(plan,queue,pids):
 
 def main():
     a=argparse.ArgumentParser();a.add_argument('--plan',type=Path,required=True);a.add_argument('--source',type=Path,required=True)
-    a.add_argument('--out',type=Path,required=True);a.add_argument('--worker-pids',nargs='+',type=int,required=True)
-    a.add_argument('--simct',type=Path,required=True);args=a.parse_args()
+    a.add_argument('--out',type=Path,required=True);a.add_argument('--worker-pids',nargs='+',type=int)
+    a.add_argument('--queue-update',type=Path)
+    a.add_argument('--simct',type=Path);args=a.parse_args()
     old=args.plan.resolve(strict=True); source=args.source.resolve(strict=True); out=args.out.resolve()
     if out.exists() or out.is_relative_to(old.parent): raise ValueError('Output must be a new sibling directory')
     sys.path.insert(0,str(source/'scripts/evaluation'))
@@ -74,22 +75,43 @@ def main():
     E,D=Q.E,Q.D
     plan=E.read_json(old); oldhash=E.file_hash(old)
     if plan['source']!=D.script_hashes(): raise ValueError('Source differs from running plan')
-    if len(plan['jobs'])!=17 or any(j['mode'] not in ('sft','atomic','fixed') for j in plan['jobs']): raise ValueError('Unexpected old jobs')
+    expected_count=25 if args.queue_update else 17
+    allowed=('sft','atomic','fixed','simct') if args.queue_update else ('sft','atomic','fixed')
+    if len(plan['jobs'])!=expected_count or any(j['mode'] not in allowed for j in plan['jobs']): raise ValueError('Unexpected old jobs')
+    update_bytes=None
+    if args.queue_update:
+        update_bytes=args.queue_update.read_bytes()
+        if plan['source']['eval_queue.py']!='c64478394072d27fff38b432e6976e900a9b9a6a9065105590257ab34e8fa36d': raise ValueError('Unsupported original queue version')
+        if hashlib.sha256(update_bytes).hexdigest()!='616acf5249f5b7365b3f93ff7a17546c96b9d71ffdf5306b7981a6079bd0ce3e': raise ValueError('Unsupported queue update')
+    initial_state=E.read_json(old.parent/'state.json')
+    if time.time()>=initial_state['admit_until']: raise ValueError('Admission expired; workers left untouched')
     for j in plan['jobs']:
         if j['mode'] in D.RUNS and D.RUNS[j['mode']] not in Path(j['checkpoint']['path']).parts: raise ValueError('Wrong historical MP run')
-    summary=E.read_json(args.simct/'run-summary.json')
-    if summary['kd_algorithm']!='span_ctkd' or summary['status']!='completed' or summary['optimizer_updates']!=312: raise ValueError('SimCT summary invalid')
-    if summary['student']!=next(j['checkpoint']['path'] for j in plan['jobs'] if j['mode']=='sft'): raise ValueError('Different SFT initialization')
-    # Hash before stopping to avoid wasting idle GPU time on checkpoint inventory.
     extra=[]
-    for step in (312,156,80,240,40,200,120,280):
-        print('HASH_SIMCT',step,flush=True)
-        identity=E.checkpoint_identity(args.simct/f'step{step}')
-        tier=next(j['tier'] for j in plan['jobs'] if j['mode']=='atomic' and j['step']==step)
-        extra.append(dict(id=f'simct-{step}',mode='simct',step=step,tier=tier,checkpoint=identity))
+    if not args.queue_update:
+        if args.simct is None: raise ValueError('--simct required')
+        summary=E.read_json(args.simct/'run-summary.json')
+        if summary['kd_algorithm']!='span_ctkd' or summary['status']!='completed' or summary['optimizer_updates']!=312: raise ValueError('SimCT summary invalid')
+        if summary['student']!=next(j['checkpoint']['path'] for j in plan['jobs'] if j['mode']=='sft'): raise ValueError('Different SFT initialization')
+        # Hash before stopping to avoid wasting idle GPU time on checkpoint inventory.
+        for step in (312,156,80,240,40,200,120,280):
+            print('HASH_SIMCT',step,flush=True)
+            identity=E.checkpoint_identity(args.simct/f'step{step}')
+            tier=next(j['tier'] for j in plan['jobs'] if j['mode']=='atomic' and j['step']==step)
+            extra.append(dict(id=f'simct-{step}',mode='simct',step=step,tier=tier,checkpoint=identity))
     for data in plan['data'].values():
         if E.file_hash(data['path'])!=data['sha256']: raise ValueError('Data changed')
-    stop_workers(old,source/'scripts/evaluation/eval_queue.py',args.worker_pids)
+    pids=args.worker_pids
+    if pids is None:
+        pids=[]
+        for entry in Path('/proc').iterdir():
+            if not entry.name.isdigit(): continue
+            info=proc(int(entry.name))
+            if info and 'worker' in info['argv'] and '--plan' in info['argv']:
+                argv=info['argv']
+                if argv[argv.index('--plan')+1]==str(old): pids.append(info['pid'])
+        print('MATCHED_WORKERS',pids,flush=True)
+    stop_workers(old,source/'scripts/evaluation/eval_queue.py',pids)
     with contextlib.ExitStack() as stack:
         for gpu in (0,1):
             if stack.enter_context(Q.locked(Path(f'/tmp/simct-eval-gpu{gpu}.lock'),blocking=False)) is None: raise ValueError('GPU worker still active')
@@ -103,7 +125,16 @@ def main():
         receipt={'from_plan':str(old),'old_plan_sha256':oldhash,'source':str(source),'concurrency':16,'original_files':{},'status':'incomplete'}
         E.write_new(out/'migration.json',receipt)
         new=copy.deepcopy(plan);new['jobs']+=extra;new['jobs'].sort(key=lambda j:j['tier'])
-        new['migration']={'from_plan':str(old),'sha256':oldhash,'reason':'Add eight SimCT checkpoints; preserve journals and original clock'}
+        if update_bytes is not None:
+            target=out/'source'
+            shutil.copytree(source,target,ignore=shutil.ignore_patterns('.git','__pycache__','remote_artifacts'))
+            (target/'scripts/evaluation/eval_queue.py').write_bytes(update_bytes)
+            new['source']={name:E.file_hash(target/'scripts/evaluation'/name) for name in plan['source']}
+            if {k for k in new['source'] if new['source'][k]!=plan['source'][k]}!={'eval_queue.py'}: raise ValueError('Unexpected source changes')
+            receipt.update(source=str(target),previous_source=str(source),score_workers=8,score_buffer=64)
+            new['execution_transition']={'generation_concurrency':16,'score_workers':8,'score_buffer':64,'old_source':plan['source']}
+
+        new['migration']={'from_plan':str(old),'sha256':oldhash,'reason':('Decouple generation/scoring; preserve journals and clock' if update_bytes is not None else 'Add eight SimCT checkpoints; preserve journals and original clock')}
         E.write_new(out/'plan.json',new);newhash=E.file_hash(out/'plan.json')
         if (old.parent/'cells').exists(): shutil.copytree(old.parent/'cells',out/'cells')
         jobs={j['id']:j for j in plan['jobs']};datasets={b:{x['id']:x for x in E.read_json(d['path'])['items']} for b,d in plan['data'].items()}
@@ -144,6 +175,6 @@ def main():
         E.write_new(out/'state.json',state)
         receipt.update(status='verified',new_plan_sha256=newhash,totals=totals,deadline=state['deadline'])
         Q.atomic_json(out/'migration.json',receipt)
-        print('MIGRATION_PASS',json.dumps(totals),flush=True);print('NEW_PLAN='+str(out/'plan.json'));print('No GPU launched. Original deadline retained.')
+        print('MIGRATION_PASS',json.dumps(totals),flush=True);print('NEW_PLAN='+str(out/'plan.json'));print('NEW_SOURCE='+receipt['source']);print('No GPU launched. Original deadline retained.')
 
 if __name__=='__main__': main()

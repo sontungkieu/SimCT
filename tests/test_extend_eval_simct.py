@@ -3,6 +3,8 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import pytest
+import shutil
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'scripts/evaluation'))
@@ -11,7 +13,8 @@ E,D=Q.E,Q.D
 SCRIPT=ROOT/'experiments/runai/transfer/extend-eval-simct.py'
 
 
-def test_migration_preserves_results_and_clock(tmp_path):
+@pytest.mark.parametrize("update",[False,True])
+def test_migration_preserves_results_and_clock(tmp_path,update):
     old=tmp_path/'old';old.mkdir();out=tmp_path/'new';simct=tmp_path/'simct';simct.mkdir()
     E.write_new(simct/'run-summary.json',dict(kd_algorithm='span_ctkd',status='completed',optimizer_updates=312,student='/sft'))
     for step in (40,80,120,156,200,240,280,312):
@@ -23,7 +26,15 @@ def test_migration_preserves_results_and_clock(tmp_path):
     data={};item={'id':'one','messages':[{'role':'user','content':'1+1?'}]}
     for b in E.CAPS:
         path=tmp_path/(b+'.json');E.write_new(path,{'items':[item]});data[b]={'path':str(path),'sha256':E.file_hash(path),'count':1}
-    plan=dict(profile=D.PROFILE,source=D.script_hashes(),jobs=jobs,data=data,seeds=[42,43,44])
+    source=ROOT
+    hashes=D.script_hashes()
+    if update:
+        source=tmp_path/'old-source'
+        shutil.copytree(ROOT/'scripts',source/'scripts',ignore=shutil.ignore_patterns('__pycache__'))
+        (source/'scripts/evaluation/eval_queue.py').write_bytes(subprocess.check_output(['git','show','d574482:scripts/evaluation/eval_queue.py'],cwd=ROOT))
+        hashes={name:E.file_hash(source/'scripts/evaluation'/name) for name in hashes}
+        for step in (40,80,120,156,200,240,280,312): jobs.append(dict(id=f'simct-{step}',mode='simct',step=step,tier=0,checkpoint=E.checkpoint_identity(simct/f'step{step}')))
+    plan=dict(profile=D.PROFILE,source=hashes,jobs=jobs,data=data,seeds=[42,43,44])
     E.write_new(old/'plan.json',plan);ph=E.file_hash(old/'plan.json')
     import time
     state=dict(plan_sha256=ph,started=1,deadline=time.time()+3600,admit_until=time.time()+1800,jobs={'sft-0':{'status':'running'}},durations=[])
@@ -37,7 +48,13 @@ def test_migration_preserves_results_and_clock(tmp_path):
     metrics=dict(contract=contract,status='completed',count=1,score=1.,responses_sha256=E.file_hash(cell/'responses.jsonl'),scores_sha256=E.file_hash(cell/'scores.jsonl'))
     E.write_new(cell/'metrics.json',metrics)
     before={p.name:p.read_bytes() for p in cell.iterdir()}
-    subprocess.run([sys.executable,str(SCRIPT),'--source',str(ROOT),'--plan',str(old/'plan.json'),'--out',str(out),'--simct',str(simct),'--worker-pids','999999999'],check=True)
+    cmd=[sys.executable,str(SCRIPT),'--source',str(source),'--plan',str(old/'plan.json'),'--out',str(out),'--simct',str(simct),'--worker-pids','999999999']
+    if update: cmd+=['--queue-update',str(ROOT/'scripts/evaluation/eval_queue.py')]
+    subprocess.run(cmd,check=True)
+    if update:
+        assert E.read_json(out/'plan.json')['source']==D.script_hashes()
+        assert E.file_hash(source/'scripts/evaluation/eval_queue.py')==hashes['eval_queue.py']
+        assert E.read_json(out/'migration.json')['score_workers']==8
     assert len(E.read_json(out/'plan.json')['jobs'])==25
     assert E.read_json(out/'state.json')['deadline']==state['deadline']
     assert E.read_json(out/'migration.json')['totals']=={'responses':1,'scores':1,'metrics':1}

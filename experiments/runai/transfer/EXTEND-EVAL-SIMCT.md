@@ -42,9 +42,24 @@ dictionaries remain in memory as before, so this is not a total RAM cap.
 
 Deployment requires an audited source/plan migration: existing plan source hashes
 include eval_queue.py. Do not overwrite a running checkout or bypass source hash
-checks. The existing extend-eval-simct helper only handles the prior 17-job plan,
-not a second migration of an already extended 25-job plan.
+checks. Use the updated helper with --queue-update for a 25-job plan. This mode
+requires exactly the audited old and new queue SHA256 values, copies the source
+into the new output, updates only eval_queue.py, and binds copied cell contracts
+to the new plan. The default mode still extends 17 jobs to 25.
 
 Regression: a blocked two-scorer test allows eight buffered/in-flight items plus
 two active scorer items, limits decoded payloads to two, and completes all items
 after release. Existing resume tests verify completed cells are not regenerated.
+
+## Pipeline update deployment
+
+For the 25-job queue, pass --queue-update with the verified new eval_queue.py
+and omit --worker-pids to discover workers by exact --plan argument. The helper
+revalidates executable script/plan identity before signaling. It records new
+source, concurrency 16, score_workers 8, score_buffer 64 in migration.json.
+Only launch after status=verified, using that receipt's source and new plan.
+The source copy keeps runtime launch scripts; no Python dependencies are installed.
+Old plan/source/journals remain unchanged. Per-cell timing may omit the last
+interrupted segment when TERM bypasses Python cleanup; do not use migrated timing
+as an exact end-to-end throughput measurement. Scorer timeouts/limits and decoding
+parameters remain unchanged; execution ordering can still affect floating point.
