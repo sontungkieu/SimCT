@@ -5,7 +5,7 @@ TOOLS="$(cd -- "$(dirname -- "$0")" && pwd)"
 : "${EVAL_SOURCE:?Source the current pipeline64-queue.env first}"
 OLD_PLAN="$NEW_PLAN"
 OLD_SOURCE="$EVAL_SOURCE"
-OUT="$(dirname "$(dirname "$OLD_PLAN")")/separated-$(date -u +%Y%m%d-%H%M%S)-$$"
+OUT="$(dirname "$(dirname "$OLD_PLAN")")/trial128-$(date -u +%Y%m%d-%H%M%S)-$$"
 /usr/bin/python3.12 "$TOOLS/extend-eval-simct.py" --plan "$OLD_PLAN" --source "$OLD_SOURCE" --out "$OUT" --queue-update "$TOOLS/eval_queue.py"
 NEW_PLAN="$OUT/plan.json"
 EVAL_SOURCE="$OUT/source"
@@ -21,11 +21,13 @@ printf 'export NEW_PLAN=%q
 export EVAL_SOURCE=%q
 ' "$NEW_PLAN" "$EVAL_SOURCE" > "$OUT/queue.env"
 for GPU in 0 1; do
+  CONCURRENCY=64
+  if [ "$GPU" = 0 ]; then CONCURRENCY=128; fi
   LOG="$OUT/generate-gpu$GPU.log"
   nohup bash -c '
-    /usr/bin/python3.12 -u "$1/scripts/evaluation/eval_queue.py" worker --phase generate --plan "$2" --gpu "$3" --concurrency 64 --score-buffer 128 --internal-code-execution
+    /usr/bin/python3.12 -u "$1/scripts/evaluation/eval_queue.py" worker --phase generate --plan "$2" --gpu "$3" --concurrency "$5" --score-buffer 128 --internal-code-execution
     rc=$?; printf "%s\n" "$rc" > "$4.exitcode"; exit "$rc"
-  ' bash "$EVAL_SOURCE" "$NEW_PLAN" "$GPU" "$LOG" > "$LOG" 2>&1 < /dev/null &
+  ' bash "$EVAL_SOURCE" "$NEW_PLAN" "$GPU" "$LOG" "$CONCURRENCY" > "$LOG" 2>&1 < /dev/null &
   printf 'GENERATION_GPU=%s PID=%s LOG=%s
 ' "$GPU" "$!" "$LOG"
 done
@@ -37,3 +39,5 @@ nohup bash -c '
 printf 'SCORING_PID=%s LOG=%s
 ENV=%s
 ' "$!" "$LOG" "$OUT/queue.env"
+
+cp "$OUT/queue.env" "$TOOLS/launched.env"

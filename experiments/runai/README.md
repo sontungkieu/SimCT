@@ -89,3 +89,9 @@ The transfer package's `start-separated-eval.sh` validates and forks an existing
 25-checkpoint queue, preserves journals and the original clock, then launches two
 generation workers and one scoring coordinator. Source the old queue environment
 first. It prints the new `queue.env` and log paths. Old queue files remain intact.
+
+The 128-request trial enables up to 128 only for generation phase; combined
+workers remain capped at 64. The transfer launcher sets GPU0=128 and GPU1=64.
+Migration stops the exact scoring coordinator as well as generation workers,
+rebinds generation markers, and preserves completed generation jobs and clocks.
+The launcher writes `launched.env` alongside itself for telemetry commands.

@@ -13,7 +13,7 @@ E,D=Q.E,Q.D
 SCRIPT=ROOT/'experiments/runai/transfer/extend-eval-simct.py'
 
 
-@pytest.mark.parametrize("update",[False,"d574482","5199cb0","52a8428"])
+@pytest.mark.parametrize("update",[False,"d574482","5199cb0","52a8428","7ced1f1"])
 def test_migration_preserves_results_and_clock(tmp_path,update):
     old=tmp_path/'old';old.mkdir();out=tmp_path/'new';simct=tmp_path/'simct';simct.mkdir()
     E.write_new(simct/'run-summary.json',dict(kd_algorithm='span_ctkd',status='completed',optimizer_updates=312,student='/sft'))
@@ -47,15 +47,20 @@ def test_migration_preserves_results_and_clock(tmp_path,update):
     Q.append(cell/'scores.jsonl',dict(id='one',passed=True,response_sha256=E.digest(E.encoded(response))))
     metrics=dict(contract=contract,status='completed',count=1,score=1.,responses_sha256=E.file_hash(cell/'responses.jsonl'),scores_sha256=E.file_hash(cell/'scores.jsonl'))
     E.write_new(cell/'metrics.json',metrics)
+    if update=='7ced1f1':
+        E.write_new(cell/'generation-complete.json',dict(contract=contract,count=1,responses_sha256=E.file_hash(cell/'responses.jsonl')))
+        E.write_new(old/'generation-state.json',dict(state))
     before={p.name:p.read_bytes() for p in cell.iterdir()}
     cmd=[sys.executable,str(SCRIPT),'--source',str(source),'--plan',str(old/'plan.json'),'--out',str(out),'--simct',str(simct),'--worker-pids','999999999']
     if update: cmd+=['--queue-update',str(ROOT/'scripts/evaluation/eval_queue.py')]
     subprocess.run(cmd,check=True)
+    if update=='7ced1f1':
+        assert E.read_json(out/'cells'/cell.relative_to(old/'cells')/'generation-complete.json')['contract']['plan_sha256']==E.file_hash(out/'plan.json')
     if update:
         assert E.read_json(out/'plan.json')['source']==D.script_hashes()
         assert E.file_hash(source/'scripts/evaluation/eval_queue.py')==hashes['eval_queue.py']
         assert E.read_json(out/'migration.json')['score_workers']==16
-        assert E.read_json(out/'migration.json')['concurrency_by_gpu']=={'0':64,'1':64}
+        assert E.read_json(out/'migration.json')['concurrency_by_gpu']=={'0':128,'1':64}
     assert len(E.read_json(out/'plan.json')['jobs'])==25
     assert E.read_json(out/'state.json')['deadline']==state['deadline']
     assert E.read_json(out/'migration.json')['totals']=={'responses':1,'scores':1,'metrics':1}

@@ -529,7 +529,7 @@ def main():
     q.set_defaults(func=retry)
     a=p.parse_args()
     if a.cmd=="prepare" and not 1<a.hours<=20: p.error("budget must be >1 and <=20 hours")
-    if a.cmd=="worker" and not (1<=a.concurrency<=64 and 1<=a.score_workers<=16 and a.concurrency<=a.score_buffer<=256): p.error("invalid concurrency")
+    if a.cmd=="worker" and not (1<=a.concurrency<=(128 if a.phase=="generate" else 64) and 1<=a.score_workers<=16 and a.concurrency<=a.score_buffer<=256): p.error("invalid concurrency")
     global GENERATION_ONLY
     GENERATION_ONLY=a.cmd=="worker" and a.phase=="generate"
     a.func(a)

@@ -20,7 +20,7 @@ def stop_workers(plan,queue,pids):
             info=proc(pid)
             if info is None: continue
             args=info['argv']
-            if str(queue) not in args or 'worker' not in args or '--plan' not in args or args[args.index('--plan')+1]!=str(plan):
+            if str(queue) not in args or not any(x in args for x in ('worker','score-spool')) or '--plan' not in args or args[args.index('--plan')+1]!=str(plan):
                 raise ValueError('PID identity mismatch: '+str(pid))
             fd=os.pidfd_open(pid); again=proc(pid)
             if not again or again['start']!=info['start']: raise ValueError('PID changed')
@@ -81,8 +81,8 @@ def main():
     update_bytes=None
     if args.queue_update:
         update_bytes=args.queue_update.read_bytes()
-        if plan['source']['eval_queue.py'] not in ('c64478394072d27fff38b432e6976e900a9b9a6a9065105590257ab34e8fa36d','616acf5249f5b7365b3f93ff7a17546c96b9d71ffdf5306b7981a6079bd0ce3e','af7cdaa0fab262f597babc64a17d5e1861ec2fbb35644612a096785962678a51','c4c23d92039237e6a0717f9221f302d4965df98a1e02544e869a3e79987cde6f'): raise ValueError('Unsupported original queue version')
-        if hashlib.sha256(update_bytes).hexdigest()!='4645c8327a9610e1fc277a6b2b291e9162d07640b0d06714461779541d14040a': raise ValueError('Unsupported queue update')
+        if plan['source']['eval_queue.py'] not in ('c64478394072d27fff38b432e6976e900a9b9a6a9065105590257ab34e8fa36d','616acf5249f5b7365b3f93ff7a17546c96b9d71ffdf5306b7981a6079bd0ce3e','af7cdaa0fab262f597babc64a17d5e1861ec2fbb35644612a096785962678a51','c4c23d92039237e6a0717f9221f302d4965df98a1e02544e869a3e79987cde6f','4645c8327a9610e1fc277a6b2b291e9162d07640b0d06714461779541d14040a'): raise ValueError('Unsupported original queue version')
+        if hashlib.sha256(update_bytes).hexdigest()!='9d79384ae837af2b980d446e123c0f0cd5e5f396b74ffbf4da5d2c74ef2cf371': raise ValueError('Unsupported queue update')
     initial_state=E.read_json(old.parent/'state.json')
     if time.time()>=initial_state['admit_until']: raise ValueError('Admission expired; workers left untouched')
     for j in plan['jobs']:
@@ -107,7 +107,7 @@ def main():
         for entry in Path('/proc').iterdir():
             if not entry.name.isdigit(): continue
             info=proc(int(entry.name))
-            if info and 'worker' in info['argv'] and '--plan' in info['argv']:
+            if info and any(x in info['argv'] for x in ('worker','score-spool')) and '--plan' in info['argv']:
                 argv=info['argv']
                 if argv[argv.index('--plan')+1]==str(old): pids.append(info['pid'])
         print('MATCHED_WORKERS',pids,flush=True)
@@ -115,6 +115,7 @@ def main():
     with contextlib.ExitStack() as stack:
         for gpu in (0,1):
             if stack.enter_context(Q.locked(Path(f'/tmp/simct-eval-gpu{gpu}.lock'),blocking=False)) is None: raise ValueError('GPU worker still active')
+        if stack.enter_context(Q.locked(old.parent/'scoring.lock',blocking=False)) is None: raise ValueError('Scorer still active')
         stack.enter_context(Q.locked(old.parent/'state.lock'))
         for j in plan['jobs']:
             if stack.enter_context(Q.locked(old.parent/(j['id']+'.lock'),blocking=False)) is None: raise ValueError('Job still active')
@@ -131,10 +132,10 @@ def main():
             (target/'scripts/evaluation/eval_queue.py').write_bytes(update_bytes)
             new['source']={name:E.file_hash(target/'scripts/evaluation'/name) for name in plan['source']}
             if {k for k in new['source'] if new['source'][k]!=plan['source'][k]}!={'eval_queue.py'}: raise ValueError('Unexpected source changes')
-            receipt.update(source=str(target),previous_source=str(source),concurrency_by_gpu={"0":64,"1":64},score_workers=16,score_buffer=128)
+            receipt.update(source=str(target),previous_source=str(source),concurrency_by_gpu={"0":128,"1":64},score_workers=16,score_buffer=128)
             receipt['execution']='separate-generation-and-scoring'
             receipt.pop('concurrency',None)
-            new['execution_transition']={'generation_concurrency_by_gpu':{'0':64,'1':64},'score_workers':16,'score_buffer':128,'old_source':plan['source']}
+            new['execution_transition']={'generation_concurrency_by_gpu':{'0':128,'1':64},'score_workers':16,'score_buffer':128,'old_source':plan['source']}
 
         new['migration']={'from_plan':str(old),'sha256':oldhash,'reason':('Decouple generation/scoring; preserve journals and clock' if update_bytes is not None else 'Add eight SimCT checkpoints; preserve journals and original clock')}
         E.write_new(out/'plan.json',new);newhash=E.file_hash(out/'plan.json')
@@ -166,6 +167,11 @@ def main():
             if metrics:
                 if len(scores)!=len(items) or metrics['count']!=len(items) or metrics['score']!=sum(x['passed'] for x in scores.values())/len(items): raise ValueError('Metric count/score mismatch')
                 metrics['contract']={**contract,'plan_sha256':newhash};Q.atomic_json(cell/'metrics.json',metrics);totals['metrics']+=1
+            marker=cell/'generation-complete.json'
+            if marker.exists():
+                value=E.read_json(marker)
+                if value['contract']!=contract or value['count']!=len(items) or len(responses)!=len(items) or value['responses_sha256']!=E.file_hash(cell/'responses.jsonl'): raise ValueError('Generation marker mismatch')
+                value['contract']={**contract,'plan_sha256':newhash};Q.atomic_json(marker,value)
             Q.atomic_json(cell/'contract.json',{**contract,'plan_sha256':newhash})
             totals['responses']+=len(responses);totals['scores']+=len(scores)
         for rel,digest in receipt['original_files'].items():
@@ -175,6 +181,15 @@ def main():
         for jid in state['jobs']:
             if not all((out/'cells'/jid/b/str(s)/'metrics.json').exists() for b in E.CAPS for s in plan['seeds']): raise ValueError('Completed job lacks cells')
         E.write_new(out/'state.json',state)
+        if (old.parent/'generation-state.json').exists():
+            gs=E.read_json(old.parent/'generation-state.json')
+            if gs['plan_sha256']!=oldhash: raise ValueError('Generation state mismatch')
+            gs['plan_sha256']=newhash
+            gs['jobs']={k:v for k,v in gs['jobs'].items() if v['status']=='completed'}
+            for jid in gs['jobs']:
+                if not all(any((out/'cells'/jid/b/str(seed)/name).exists() for name in ('metrics.json','generation-complete.json')) for b in E.CAPS for seed in plan['seeds']): raise ValueError('Generation job lacks complete cells')
+            E.write_new(out/'generation-state.json',gs)
+
         receipt.update(status='verified',new_plan_sha256=newhash,totals=totals,deadline=state['deadline'])
         Q.atomic_json(out/'migration.json',receipt)
         print('MIGRATION_PASS',json.dumps(totals),flush=True);print('NEW_PLAN='+str(out/'plan.json'));print('NEW_SOURCE='+receipt['source']);print('No GPU launched. Original deadline retained.')
