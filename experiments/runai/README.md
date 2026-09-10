@@ -101,3 +101,13 @@ accepts up to 256. CPU scoring remains 16 workers with buffer 128. The worker
 CLI buffer 256 is validation-only in generation mode: responses spool to disk.
 Both phases resume after migration; scorer is briefly stopped for consistent
 copying, then restarted alongside generation. Original deadlines remain.
+
+### Append completed evaluation to W&B
+
+`scripts/evaluation/publish_wandb_eval.py --summary FILE --out DIR --publish`
+validates the 25-checkpoint aggregate and four exact finished run IDs before
+appending eval-only history, a checkpoint table, endpoint summaries and an
+evaluation artifact. Existing training history is read back and checked as an
+unchanged prefix. Successful runs receive the `evaluated` tag with existing tags
+preserved. A source SHA marker prevents re-upload; partial imports fail closed.
+No training logs are replayed. Aggregate provenance is not a per-item audit.
