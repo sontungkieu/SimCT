@@ -81,8 +81,8 @@ def main():
     update_bytes=None
     if args.queue_update:
         update_bytes=args.queue_update.read_bytes()
-        if plan['source']['eval_queue.py'] not in ('c64478394072d27fff38b432e6976e900a9b9a6a9065105590257ab34e8fa36d','616acf5249f5b7365b3f93ff7a17546c96b9d71ffdf5306b7981a6079bd0ce3e','af7cdaa0fab262f597babc64a17d5e1861ec2fbb35644612a096785962678a51'): raise ValueError('Unsupported original queue version')
-        if hashlib.sha256(update_bytes).hexdigest()!='c4c23d92039237e6a0717f9221f302d4965df98a1e02544e869a3e79987cde6f': raise ValueError('Unsupported queue update')
+        if plan['source']['eval_queue.py'] not in ('c64478394072d27fff38b432e6976e900a9b9a6a9065105590257ab34e8fa36d','616acf5249f5b7365b3f93ff7a17546c96b9d71ffdf5306b7981a6079bd0ce3e','af7cdaa0fab262f597babc64a17d5e1861ec2fbb35644612a096785962678a51','c4c23d92039237e6a0717f9221f302d4965df98a1e02544e869a3e79987cde6f'): raise ValueError('Unsupported original queue version')
+        if hashlib.sha256(update_bytes).hexdigest()!='4645c8327a9610e1fc277a6b2b291e9162d07640b0d06714461779541d14040a': raise ValueError('Unsupported queue update')
     initial_state=E.read_json(old.parent/'state.json')
     if time.time()>=initial_state['admit_until']: raise ValueError('Admission expired; workers left untouched')
     for j in plan['jobs']:
@@ -132,6 +132,7 @@ def main():
             new['source']={name:E.file_hash(target/'scripts/evaluation'/name) for name in plan['source']}
             if {k for k in new['source'] if new['source'][k]!=plan['source'][k]}!={'eval_queue.py'}: raise ValueError('Unexpected source changes')
             receipt.update(source=str(target),previous_source=str(source),concurrency_by_gpu={"0":64,"1":64},score_workers=16,score_buffer=128)
+            receipt['execution']='separate-generation-and-scoring'
             receipt.pop('concurrency',None)
             new['execution_transition']={'generation_concurrency_by_gpu':{'0':64,'1':64},'score_workers':16,'score_buffer':128,'old_source':plan['source']}
 

@@ -99,7 +99,8 @@ def score_job(python,job,deadline):
                 return {"passed":False,"timeout":True}
             out.seek(0); raw=out.read(1024**2)
             if p.returncode:
-                raise RuntimeError("scorer runtime error: "+raw.decode(errors="replace")[:1000])
+                err.seek(0)
+                raise RuntimeError(json.dumps({"error":"scorer runtime error", "returncode":p.returncode, "stdout":raw.decode(errors="replace")[:2000], "stderr":err.read(4096).decode(errors="replace")}))
             result=json.loads(raw)
             if type(result.get("passed")) is not bool: raise ValueError("invalid scorer result")
             return result
@@ -121,11 +122,18 @@ def preflight(python):
     return evidence
 
 
-def state_path(root): return root/"state.json"
+GENERATION_ONLY=False
+
+def state_path(root): return root/("generation-state.json" if GENERATION_ONLY else "state.json")
 
 
 def read_state(root,plan_hash,plan):
     path=state_path(root)
+    if GENERATION_ONLY and not path.exists():
+        original=E.read_json(root/"state.json")
+        if original["plan_sha256"]!=plan_hash: raise ValueError("plan mismatch")
+        original["jobs"]={}; original["durations"]=[]
+        atomic_json(path,original)
     if path.exists():
         state=E.read_json(path)
         if state["plan_sha256"]!=plan_hash: raise ValueError("queue plan changed")
@@ -192,6 +200,30 @@ def run_cell(root,plan,plan_hash,job,benchmark,seed,base,server,args,deadline):
         if len(scores)!=len(items) or m["responses_sha256"]!=E.file_hash(cell/"responses.jsonl") or m["scores_sha256"]!=E.file_hash(cell/"scores.jsonl"):
             raise ValueError("completed cell integrity mismatch")
         return m
+    if getattr(args,"phase","combined")=="generate":
+        # No scorer and no scoring backlog on this path. Journals are durable spool.
+        with cf.ThreadPoolExecutor(max_workers=args.concurrency) as pool:
+            pending=iter(x for x in items.values() if x["id"] not in responses)
+            active={}
+            while True:
+                if time.time()>=deadline: raise Deadline()
+                if __import__("shutil").disk_usage(root).free < args.min_free_gib*1024**3:
+                    raise RuntimeError("disk free-space guard; responses preserved")
+                while len(active)<args.concurrency:
+                    try: item=next(pending)
+                    except StopIteration: break
+                    active[pool.submit(generate_one,base,item,benchmark,seed,deadline)]=item["id"]
+                if not active: break
+                done,_=cf.wait(active,timeout=1,return_when=cf.FIRST_COMPLETED)
+                for future in done:
+                    key=active.pop(future); row=future.result()
+                    append(cell/"responses.jsonl",row);responses[key]=row
+        atomic_json(cell/"generation-complete.json",{"contract":contract,"count":len(items),
+                    "responses_sha256":E.file_hash(cell/"responses.jsonl")})
+        print("GENERATION_COMPLETE",job["id"],benchmark,seed,len(responses),flush=True)
+        return
+    if getattr(args,"phase","combined")=="score" and len(responses)!=len(items):
+        raise ValueError("scoring requires all responses; GPU generation forbidden")
     started=time.time()
     previous_seconds=E.read_json(cell/"timing.json").get("seconds",0.) if (cell/"timing.json").exists() else 0.
     pending=iter([x for x in items.values() if x["id"] not in scores])
@@ -209,7 +241,9 @@ def run_cell(root,plan,plan_hash,job,benchmark,seed,base,server,args,deadline):
         row=responses[item["id"]]
         payload={"profile":D.PROFILE,"benchmark":benchmark,"item":D.score_item(benchmark,item),
                  "text":row["response"]["choices"][0]["message"]["content"]}
-        return score_job(args.score_python,payload,deadline)
+        try: return score_job(args.score_python,payload,deadline)
+        except Deadline: raise
+        except Exception as exc: raise RuntimeError(f"item_id={item['id']} {exc}") from exc
     print("PIPELINE",json.dumps({"generation_concurrency":args.concurrency,
           "score_workers":args.score_workers,"score_buffer":score_buffer}),flush=True)
     try:
@@ -256,6 +290,8 @@ def run_cell(root,plan,plan_hash,job,benchmark,seed,base,server,args,deadline):
 
 
 def run_checkpoint(root,plan,plan_hash,job,args,deadline):
+    if GENERATION_ONLY and all((root/"cells"/job["id"]/b/str(seed)/"metrics.json").exists() for seed in plan["seeds"] for b in E.CAPS):
+        return
     actual=E.checkpoint_identity(job["checkpoint"]["path"])
     if time.time()>=deadline: raise Deadline("wall budget during checkpoint verification")
     if actual!=job["checkpoint"]: raise ValueError("checkpoint changed after plan")
@@ -309,11 +345,12 @@ def worker(args):
     if plan["profile"]!=D.PROFILE or plan["source"]!=D.script_hashes(): raise ValueError("queue source/profile changed")
     for data in plan["data"].values():
         if E.file_hash(data["path"])!=data["sha256"]: raise ValueError("prepared data changed")
-    qualification=preflight(args.score_python)
+    qualification=None if GENERATION_ONLY else preflight(args.score_python)
     with locked(root/"state.lock"):
         state=read_state(root,plan_hash,plan)
-        if "qualification" in state and state["qualification"]!=qualification: raise ValueError("grader version drift")
-        state["qualification"]=qualification;atomic_json(state_path(root),state)
+        if qualification is not None and "qualification" in state and state["qualification"]!=qualification: raise ValueError("grader version drift")
+        if qualification is not None: state["qualification"]=qualification
+        atomic_json(state_path(root),state)
     gpu_lock=Path(tempfile.gettempdir())/f"simct-eval-gpu{args.gpu}.lock"
     with locked(gpu_lock,blocking=False) as own:
         if own is None: raise RuntimeError("another eval worker owns this GPU")
@@ -353,6 +390,52 @@ def worker(args):
                     if result["status"]!="completed": return
                     break
             if not claimed: time.sleep(5)
+
+
+def score_spool(args):
+    root=args.plan.resolve().parent;plan=E.read_json(args.plan);ph=E.file_hash(args.plan)
+    if plan["profile"]!=D.PROFILE or plan["source"]!=D.script_hashes(): raise ValueError("source/profile mismatch")
+    for data in plan["data"].values():
+        if E.file_hash(data["path"])!=data["sha256"]: raise ValueError("data changed")
+    qualification=preflight(args.score_python)
+    original=E.read_json(root/"state.json")
+    if qualification!=original.get("qualification"): raise ValueError("grader version drift")
+    errors={}
+    with locked(root/"scoring.lock",blocking=False) as own:
+        if own is None: raise RuntimeError("another scoring coordinator is active")
+        while time.time()<original["deadline"]:
+            complete=0
+            for job in plan["jobs"]:
+                for seed in plan["seeds"]:
+                    for benchmark in E.CAPS:
+                        cell=root/"cells"/job["id"]/benchmark/str(seed)
+                        key=f"{job['id']}/{benchmark}/{seed}"
+                        if (cell/"metrics.json").exists():
+                            complete+=1;continue
+                        if key in errors or not (cell/"generation-complete.json").exists(): continue
+                        marker=E.read_json(cell/"generation-complete.json")
+                        try:
+                            if E.file_hash(cell/"responses.jsonl")!=marker["responses_sha256"]: raise ValueError("spool changed")
+                            server=marker["contract"]["server"]
+                            expected=cell_contract(ph,job,plan["data"],benchmark,seed,server)
+                            if marker["contract"]!=expected or marker["count"]!=plan["data"][benchmark]["count"]: raise ValueError("spool contract mismatch")
+                            run_cell(root,plan,ph,job,benchmark,seed,None,server,args,original["deadline"])
+                            complete+=1
+                        except Deadline: return
+                        except Exception as exc:
+                            errors[key]={"error":str(exc),"time":time.time()}
+                            atomic_json(root/"scoring-errors.json",errors)
+                            print("SCORING_ERROR",key,str(exc),flush=True)
+            if complete==len(plan["jobs"])*len(plan["seeds"])*len(E.CAPS):
+                print("SCORING_COMPLETE",flush=True);return
+            gs=root/"generation-state.json"
+            if gs.exists():
+                state=E.read_json(gs)
+                if all(state["jobs"].get(j["id"],{}).get("status")=="completed" for j in plan["jobs"]):
+                    print("SCORING_STOP",json.dumps(errors),flush=True)
+                    if errors: raise RuntimeError("scoring failures retained; generation unaffected")
+                    return
+            time.sleep(5)
 
 
 def summarize(args):
@@ -420,12 +503,19 @@ def main():
     q=sub.add_parser("preflight");q.add_argument("--score-python",default="/usr/bin/python3.12");q.set_defaults(func=lambda a:print(json.dumps(preflight(a.score_python),indent=2)))
     q=sub.add_parser("worker")
     q.add_argument("--plan",type=Path,required=True);q.add_argument("--gpu",type=int,choices=range(8),required=True)
+    q.add_argument("--phase",choices=("combined","generate"),default="combined")
+    q.add_argument("--min-free-gib",type=float,default=20)
     q.add_argument("--score-python",default="/usr/bin/python3.12")
     q.add_argument("--concurrency",type=int,default=8);q.add_argument("--score-workers",type=int,default=2)
     q.add_argument("--score-buffer",type=int,default=64,help="Maximum waiting plus in-flight generated items; tests decoded only by active scorers")
     q.add_argument("--internal-code-execution",action="store_true",required=True,
                    help="Explicit company-internal profile; resource limits are not an OS sandbox")
     q.set_defaults(func=worker)
+    q=sub.add_parser("score-spool")
+    q.add_argument("--plan",type=Path,required=True)
+    q.add_argument("--score-python",default="/usr/bin/python3.12")
+    q.add_argument("--internal-code-execution",action="store_true",required=True)
+    q.set_defaults(func=score_spool,phase="score",concurrency=1,score_workers=16,score_buffer=128)
     q=sub.add_parser("summarize");q.add_argument("--plan",type=Path,required=True);q.set_defaults(func=summarize)
     q=sub.add_parser("recover-startup");q.add_argument("--from-plan",type=Path,required=True);q.add_argument("--out",type=Path,required=True);q.set_defaults(func=recover_startup)
     q=sub.add_parser("retry");q.add_argument("--plan",type=Path,required=True)
@@ -440,6 +530,8 @@ def main():
     a=p.parse_args()
     if a.cmd=="prepare" and not 1<a.hours<=20: p.error("budget must be >1 and <=20 hours")
     if a.cmd=="worker" and not (1<=a.concurrency<=64 and 1<=a.score_workers<=16 and a.concurrency<=a.score_buffer<=256): p.error("invalid concurrency")
+    global GENERATION_ONLY
+    GENERATION_ONLY=a.cmd=="worker" and a.phase=="generate"
     a.func(a)
 
 if __name__=="__main__": main()

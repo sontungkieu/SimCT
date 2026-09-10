@@ -106,6 +106,28 @@ class QueueTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 D.score_item("live-code-bench-v6",{"raw":{"path":str(p),"offset":0,"length":2,"sha256":"wrong"}})
 
+    def test_generation_spool_then_cpu_scoring_without_gpu(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);data=root/"data.json"
+            items=[{"id":str(i),"messages":[{"role":"user","content":"sum"}],"gold":"#### 2"} for i in range(4)]
+            E.write_new(data,{"items":items})
+            plan={"data":{"gsm8k":{"path":str(data),"sha256":E.file_hash(data),"count":4}}}
+            job={"id":"a","checkpoint":{"sha256":"cp"}}
+            args=argparse.Namespace(phase="generate",min_free_gib=0,concurrency=2,score_workers=2,score_buffer=4,score_python=sys.executable)
+            def generate(base,item,benchmark,seed,deadline):
+                return {"id":item["id"],"seed":seed,"request_sha256":E.digest(E.encoded(E.generation_payload("eval-gemma",item,benchmark,seed))),"response":{"choices":[{"finish_reason":"stop","message":{"content":"#### 2"}}]}}
+            with patch.object(Q,"generate_one",side_effect=generate),patch.object(Q,"score_job",side_effect=AssertionError("GPU must not score")):
+                Q.run_cell(root,plan,"ph",job,"gsm8k",42,"",{},args,time.time()+20)
+            cell=root/"cells/a/gsm8k/42"
+            self.assertTrue((cell/"generation-complete.json").exists())
+            self.assertFalse((cell/"metrics.json").exists())
+            before=E.file_hash(cell/"responses.jsonl")
+            args.phase="score"
+            with patch.object(Q,"generate_one",side_effect=AssertionError("CPU must not generate")),patch.object(Q,"score_job",return_value={"passed":True}):
+                result=Q.run_cell(root,plan,"ph",job,"gsm8k",42,None,{},args,time.time()+20)
+            self.assertEqual(result["score"],1)
+            self.assertEqual(E.file_hash(cell/"responses.jsonl"),before)
+
     def test_slow_scores_do_not_consume_generation_slots(self):
         import threading
         with tempfile.TemporaryDirectory() as tmp:

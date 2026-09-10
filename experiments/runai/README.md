@@ -62,3 +62,30 @@ verify SHA-256, then clone into a new directory or pull --ff-only from the bundl
 Keep local model paths/runtime paths in environment variables and outputs
 outside the Git checkout. Git may still report conflicts for future source edits;
 this integration removes the need to reapply the known server patches manually.
+
+
+### Separate generation and CPU scoring
+
+`eval_queue.py worker --phase generate` writes durable response journals and a
+hash-bound `generation-complete.json` per cell. It never invokes the scorer.
+The two GPU workers use `generation-state.json`, independent of scoring failures;
+completed legacy metrics are reused. Generation reserves at least 20 GiB of free
+disk (`--min-free-gib`) and retains the existing admission/deadline budget.
+
+`eval_queue.py score-spool --plan PLAN --internal-code-execution` uses one
+coordinator and at most 16 CPU scorers. It consumes completed generation cells,
+reuses saved scores, never launches a model server, and records item IDs plus
+subprocess return codes/stdout/stderr on failures. Failed cells are skipped for
+that coordinator invocation; other cells continue. Restarting the coordinator
+retries unfinished scoring. No infrastructure failure is converted into an
+incorrect answer. Existing 120-second timeout semantics remain unchanged.
+
+Scoring starts after each full benchmark/seed cell is generated, not after the
+entire checkpoint. Both phases retain the original deadline. A generation job's
+completed status does not imply scoring completion; use `summarize` for metrics.
+GPU workers release their owned servers at checkpoint transitions and on exit.
+
+The transfer package's `start-separated-eval.sh` validates and forks an existing
+25-checkpoint queue, preserves journals and the original clock, then launches two
+generation workers and one scoring coordinator. Source the old queue environment
+first. It prints the new `queue.env` and log paths. Old queue files remain intact.
