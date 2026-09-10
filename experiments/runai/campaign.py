@@ -51,6 +51,8 @@ def run(path):
             row.update(status='failed',reason='manager interrupted; inspect checkpoint before retry')
     current=subprocess.check_output(['git','rev-parse','HEAD'],cwd=plan['source'],text=True).strip()
     if current!=plan['source_commit']:raise ValueError('source commit changed')
+    if plan.get('config_sha256') and hashlib.sha256((root/'config.json').read_bytes()).hexdigest()!=plan['config_sha256']:raise ValueError('config changed')
+    subprocess.run(['git','diff','--quiet','HEAD'],cwd=plan['source'],check=True)
     deadline=state['started']+plan['hours']*3600
     active={}; stopping=False
     def stop(*_):

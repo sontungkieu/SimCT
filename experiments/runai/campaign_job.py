@@ -8,8 +8,9 @@ def execute(argv,**kw):subprocess.run([str(x) for x in argv],check=True,**kw)
 def main(a):
     work=a.work.resolve(); cfg=json.loads((work/'config.json').read_text())
     host=ROOT/'experiments/runai/python-b200-host.sh'
+    trainenv=dict(os.environ,MP_ALGORITHM='mp_opd',MP_STUDENT_PATH=cfg['student'],MP_TEACHER_PATH=cfg['teacher'],MP_DATASET_PATH=cfg['dataset'],MP_MAX_SPAN_LENGTH='2',MP_FIXED_SPAN_LENGTH='2',MP_PARTITION_SEED='43',MP_SEED='43',MP_PREFLIGHT_ONLY='0')
     if a.action in ('train','canary'):
-        env=dict(os.environ,MP_SEED='43',MP_RUN_ROOT=str(work/(a.name if a.action=='train' else 'canary-'+a.name)))
+        env=dict(trainenv,MP_RUN_ROOT=str(work/(a.name if a.action=='train' else 'canary-'+a.name)))
         execute(['bash',ROOT/'experiments/runai/run_single_gpu.sh',a.gpu,a.name,0 if a.action=='train' else 5],env=env)
     elif a.action=='prepare-probe':
         argv=['bash',host,ROOT/'experiments/mp_opd/real_oracle.py','prepare','--input',cfg['reference_input'],'--reference-key',cfg['reference_key'],'--groups','32','--seed','20260910','--select-references','4','--eval-references','4','--conflicting-references','exclude','--reference-provenance',cfg['scope'],'--output',work/'probe-data.json']
@@ -22,7 +23,7 @@ def main(a):
         if decision['branch']=='weighting-sensitivity':
             a.action='probe';a.name='probe-weighting4';a.lr='.1';os.environ['PROBE_WEIGHTING_STEPS']='4';main(a)
         else:
-            execute(['bash',ROOT/'experiments/runai/run_single_gpu.sh',a.gpu,'random','50'],env=dict(os.environ,MP_SEED='43',MP_RUN_ROOT=str(work/'random-pilot')))
+            execute(['bash',ROOT/'experiments/runai/run_single_gpu.sh',a.gpu,'random','50'],env=dict(trainenv,MP_RUN_ROOT=str(work/'random-pilot')))
     elif a.action=='decision':
         # Prequential weighting is NOT a trained partition energy model.
         # Never promote its checkpoint to soft-mode full training.
