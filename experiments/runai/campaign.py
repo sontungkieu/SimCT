@@ -36,6 +36,15 @@ def eligible(job, state):
     if job.get('after_terminal') and all(x in ('completed','failed','timeout','blocked') for x in deps): return 'ready'
     if any(x in ('failed','timeout','blocked') for x in deps): return 'blocked'
     return 'ready' if all(x=='completed' for x in deps) else 'waiting'
+def external_ready(root, key):
+    path=root/'admission.json'
+    if not path.exists():return True
+    rule=json.loads(path.read_text()).get(key)
+    if not rule:return True
+    other=Path(rule['state'])
+    if not other.exists():return False
+    state=json.loads(other.read_text())
+    return state.get('jobs',{}).get(rule['job'],{}).get('status') in ('completed','failed','blocked','timeout')
 def run(path):
     plan=json.loads(path.read_text()); root=path.parent
     digest=hashlib.sha256(path.read_bytes()).hexdigest()
@@ -75,6 +84,7 @@ def run(path):
                 ready=eligible(job,state)
                 if ready=='blocked':state['jobs'][key]={'status':'blocked','reason':'dependency failed'};continue
                 if ready!='ready':continue
+                if not external_ready(root,key):continue
                 gpu=job.get('gpu')
                 if any(x[0].get('gpu')==gpu for x in active.values()):continue
                 if time.time()+job['budget_seconds']>deadline:
