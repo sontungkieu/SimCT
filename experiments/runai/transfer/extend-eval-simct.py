@@ -81,8 +81,8 @@ def main():
     update_bytes=None
     if args.queue_update:
         update_bytes=args.queue_update.read_bytes()
-        if plan['source']['eval_queue.py'] not in ('c64478394072d27fff38b432e6976e900a9b9a6a9065105590257ab34e8fa36d','616acf5249f5b7365b3f93ff7a17546c96b9d71ffdf5306b7981a6079bd0ce3e','af7cdaa0fab262f597babc64a17d5e1861ec2fbb35644612a096785962678a51','c4c23d92039237e6a0717f9221f302d4965df98a1e02544e869a3e79987cde6f','4645c8327a9610e1fc277a6b2b291e9162d07640b0d06714461779541d14040a'): raise ValueError('Unsupported original queue version')
-        if hashlib.sha256(update_bytes).hexdigest()!='9d79384ae837af2b980d446e123c0f0cd5e5f396b74ffbf4da5d2c74ef2cf371': raise ValueError('Unsupported queue update')
+        if plan['source']['eval_queue.py'] not in ('c64478394072d27fff38b432e6976e900a9b9a6a9065105590257ab34e8fa36d','616acf5249f5b7365b3f93ff7a17546c96b9d71ffdf5306b7981a6079bd0ce3e','af7cdaa0fab262f597babc64a17d5e1861ec2fbb35644612a096785962678a51','c4c23d92039237e6a0717f9221f302d4965df98a1e02544e869a3e79987cde6f','4645c8327a9610e1fc277a6b2b291e9162d07640b0d06714461779541d14040a','9d79384ae837af2b980d446e123c0f0cd5e5f396b74ffbf4da5d2c74ef2cf371'): raise ValueError('Unsupported original queue version')
+        if hashlib.sha256(update_bytes).hexdigest()!='2e496d087348ef919f00dc585c273030068c557e81e4bef7a66be979ddef469d': raise ValueError('Unsupported queue update')
     initial_state=E.read_json(old.parent/'state.json')
     if time.time()>=initial_state['admit_until']: raise ValueError('Admission expired; workers left untouched')
     for j in plan['jobs']:
@@ -132,10 +132,10 @@ def main():
             (target/'scripts/evaluation/eval_queue.py').write_bytes(update_bytes)
             new['source']={name:E.file_hash(target/'scripts/evaluation'/name) for name in plan['source']}
             if {k for k in new['source'] if new['source'][k]!=plan['source'][k]}!={'eval_queue.py'}: raise ValueError('Unexpected source changes')
-            receipt.update(source=str(target),previous_source=str(source),concurrency_by_gpu={"0":128,"1":64},score_workers=16,score_buffer=128)
+            receipt.update(source=str(target),previous_source=str(source),concurrency_by_gpu={"0":256,"1":128},score_workers=16,score_buffer=128)
             receipt['execution']='separate-generation-and-scoring'
             receipt.pop('concurrency',None)
-            new['execution_transition']={'generation_concurrency_by_gpu':{'0':128,'1':64},'score_workers':16,'score_buffer':128,'old_source':plan['source']}
+            new['execution_transition']={'generation_concurrency_by_gpu':{'0':256,'1':128},'score_workers':16,'score_buffer':128,'old_source':plan['source']}
 
         new['migration']={'from_plan':str(old),'sha256':oldhash,'reason':('Decouple generation/scoring; preserve journals and clock' if update_bytes is not None else 'Add eight SimCT checkpoints; preserve journals and original clock')}
         E.write_new(out/'plan.json',new);newhash=E.file_hash(out/'plan.json')

@@ -95,3 +95,9 @@ workers remain capped at 64. The transfer launcher sets GPU0=128 and GPU1=64.
 Migration stops the exact scoring coordinator as well as generation workers,
 rebinds generation markers, and preserves completed generation jobs and clocks.
 The launcher writes `launched.env` alongside itself for telemetry commands.
+
+The next trial uses GPU0=256 and GPU1=128 generation requests; only generation
+accepts up to 256. CPU scoring remains 16 workers with buffer 128. The worker
+CLI buffer 256 is validation-only in generation mode: responses spool to disk.
+Both phases resume after migration; scorer is briefly stopped for consistent
+copying, then restarted alongside generation. Original deadlines remain.

@@ -29,10 +29,10 @@ class QueueTests(unittest.TestCase):
             with patch.object(sys,'argv',base+['--concurrency',concurrency,'--score-buffer',buffer]),self.assertRaises(SystemExit):
                 Q.main()
 
-    def test_generation_128_only(self):
-        base=['eval_queue.py','worker','--plan','x','--gpu','0','--concurrency','128','--score-buffer','128','--internal-code-execution']
+    def test_generation_256_only(self):
+        base=['eval_queue.py','worker','--plan','x','--gpu','0','--concurrency','256','--score-buffer','256','--internal-code-execution']
         with patch.object(Q,'worker') as w,patch.object(sys,'argv',base+['--phase','generate']): Q.main()
-        self.assertEqual(w.call_args.args[0].concurrency,128)
+        self.assertEqual(w.call_args.args[0].concurrency,256)
         Q.GENERATION_ONLY=False
         with patch.object(sys,'argv',base),self.assertRaises(SystemExit): Q.main()
 
