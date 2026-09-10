@@ -55,7 +55,7 @@ def test_migration_preserves_results_and_clock(tmp_path,update):
         assert E.read_json(out/'plan.json')['source']==D.script_hashes()
         assert E.file_hash(source/'scripts/evaluation/eval_queue.py')==hashes['eval_queue.py']
         assert E.read_json(out/'migration.json')['score_workers']==16
-        assert E.read_json(out/'migration.json')['concurrency_by_gpu']=={'0':64,'1':32}
+        assert E.read_json(out/'migration.json')['concurrency_by_gpu']=={'0':64,'1':64}
     assert len(E.read_json(out/'plan.json')['jobs'])==25
     assert E.read_json(out/'state.json')['deadline']==state['deadline']
     assert E.read_json(out/'migration.json')['totals']=={'responses':1,'scores':1,'metrics':1}

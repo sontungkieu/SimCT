@@ -74,17 +74,17 @@ defaults remain unchanged; launch with explicit flags. No decoding or per-score
 resource limits change. Compare telemetry by benchmark, not utilization alone.
 Scorer throughput can remain constrained by per-process limits or long tests.
 
-## Mixed 64/32-request trial
+## 64-request trial on both GPUs
 
 The current helper installs the pinned worker supporting concurrency up to 64.
 It accepts the preceding 32-request source as well as the two audited earlier
-versions. Its receipt records concurrency_by_gpu={"0":64,"1":32}, 16 scorers,
-and buffer 128; there is no uniform concurrency field for this trial. Explicit
+versions. Its receipt records concurrency_by_gpu={"0":64,"1":64}, 16 scorers,
+and buffer 128; there is no uniform concurrency field for this per-GPU configuration. Explicit
 worker flags must match this profile. Default worker concurrency remains 8.
 All cells are preserved; worker source identity changes are audited as before.
 
-Capture ten minutes of external telemetry after server startup. The mixed GPUs
-process different queue jobs, so this is not a matched 64-vs-32 efficacy or speed
+Capture ten minutes of external telemetry after server startup. The two GPUs
+process different queue jobs, so comparison with earlier telemetry is not a matched 64-vs-32 efficacy or speed
 benchmark. No automatic performance-based rollback or deadline extension is
 implemented; use --concurrency 32 for subsequent workers if results warrant it.
 Keep the original timeout, decoding parameters and per-score resource limits.

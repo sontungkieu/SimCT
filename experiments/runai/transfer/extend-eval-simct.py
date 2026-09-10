@@ -131,9 +131,9 @@ def main():
             (target/'scripts/evaluation/eval_queue.py').write_bytes(update_bytes)
             new['source']={name:E.file_hash(target/'scripts/evaluation'/name) for name in plan['source']}
             if {k for k in new['source'] if new['source'][k]!=plan['source'][k]}!={'eval_queue.py'}: raise ValueError('Unexpected source changes')
-            receipt.update(source=str(target),previous_source=str(source),concurrency_by_gpu={"0":64,"1":32},score_workers=16,score_buffer=128)
+            receipt.update(source=str(target),previous_source=str(source),concurrency_by_gpu={"0":64,"1":64},score_workers=16,score_buffer=128)
             receipt.pop('concurrency',None)
-            new['execution_transition']={'generation_concurrency_by_gpu':{'0':64,'1':32},'score_workers':16,'score_buffer':128,'old_source':plan['source']}
+            new['execution_transition']={'generation_concurrency_by_gpu':{'0':64,'1':64},'score_workers':16,'score_buffer':128,'old_source':plan['source']}
 
         new['migration']={'from_plan':str(old),'sha256':oldhash,'reason':('Decouple generation/scoring; preserve journals and clock' if update_bytes is not None else 'Add eight SimCT checkpoints; preserve journals and original clock')}
         E.write_new(out/'plan.json',new);newhash=E.file_hash(out/'plan.json')
