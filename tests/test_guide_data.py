@@ -26,6 +26,26 @@ def test_source_allocation():
     assert all(len(s['revision']) == 40 for s in sources.values())
 
 
+def test_canonical_eval_envelope_excludes_benchmark_prompt(tmp_path):
+    import json
+    path = tmp_path / 'gsm8k.json'
+    item = {'id': '1', 'messages': [{'role': 'user', 'content': 'A benchmark question'}]}
+    path.write_text(json.dumps({'benchmark': 'gsm8k', 'items': [item], 'source': {}, 'profile': 'company-internal-v1'}))
+    d = g.Dedup()
+    for row in g.rows(path):
+        d.add(g.prompt(row))
+    assert d.matches('A benchmark question')
+
+
+def test_malformed_envelope_is_not_silently_skipped(tmp_path):
+    import json
+    import pytest
+    path = tmp_path / 'bad.json'
+    path.write_text(json.dumps({'benchmark': 'gsm8k', 'items': {}}))
+    with pytest.raises(ValueError):
+        list(g.rows(path))
+
+
 def test_filter_does_not_accept_truncated_references(tmp_path):
     import json
     import pytest

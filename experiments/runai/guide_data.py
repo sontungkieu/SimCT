@@ -64,8 +64,11 @@ def rows(path):
         with open(path) as stream:
             if Path(path).suffix == '.json':
                 data = json.load(stream)
+                # queue_data writes benchmark envelopes, not a bare row list.
+                if isinstance(data, dict) and isinstance(data.get('items'), list) and 'benchmark' in data:
+                    data = data['items']
                 if not isinstance(data, list):
-                    raise ValueError('Expected JSON row list: ' + str(path))
+                    raise ValueError('Expected JSON row list or benchmark/items envelope: ' + str(path))
                 yield from data
             else:
                 for line in stream:
@@ -87,6 +90,7 @@ def acquire(work):
             dedup.add(prompt(row))
             count += 1
         audit[str(path)] = {'rows': count, 'sha256': hashlib.sha256(Path(path).read_bytes()).hexdigest()}
+        print('EXCLUSION_LOADED', path, count, flush=True)
     sources = json.loads(Path(__file__).with_name('guide-sources.json').read_text())
     selected, stats = [], {}
     for name, source in sources.items():
@@ -109,6 +113,7 @@ def acquire(work):
             if accepted == target:
                 break
         stats[name] = {'target': target, 'accepted': accepted, 'scanned': scanned}
+        print('GUIDE_SOURCE', name, stats[name], flush=True)
         if accepted != target:
             raise ValueError('Insufficient unseen prompts: ' + name + ' ' + str(stats[name]))
     (work / 'guide-prompts.jsonl').write_text(''.join(json.dumps(r, ensure_ascii=False) + '\n' for r in selected))
