@@ -174,3 +174,68 @@ it does not require unrelated X-Token modules. The original campaign clock is
 preserved; the pilot budget shrinks to fit after qualification and canary with
 a three-minute margin. At least 40 minutes must remain. A timed-out pilot may
 produce only partial checkpoints; it is not a completed 50-update result.
+
+## Six-B200 continuation (`six_b200.py`)
+
+This campaign uses four borrowed GPUs for 12 hours and two owner GPUs without
+an allocation deadline. Initialize **on tungdd11-sparse-vllm-core-0-0** with
+`/usr/bin/python3.12 experiments/runai/six_b200.py init --hours 12`, then run
+`/usr/bin/python3.12 experiments/runai/six_b200.py submit` on both nodes, using
+the same immutable source checkout. The first init persists the borrowed node's
+wall clock in `borrow8-8MgodXcM/six-b200-v1/allocation-clock.json` before setup.
+It prints UTC and Vietnam time. Repeating init or submit never extends the clock.
+The 12-hour allocation must actually begin at initialization; this cannot extend
+an external RunAI allocation. Do not initialize ahead of the reserved window.
+
+| Node / slot | First work | Subsequent work |
+| --- | --- | --- |
+| Owner 0 | soft seed42, fresh SFT to 312 | shared generation pool |
+| Owner 1 | soft seed43, fresh SFT to 312 | shared generation pool |
+| Borrowed 0 | random seed43, fresh SFT to 312 | shared generation pool |
+| Borrowed 1, 2, 3 | shared generation pool | newly published checkpoints |
+
+Random43 is a full-horizon replay, not a third independent training seed and not
+an optimizer-state resume of the old run that stopped at 244. It is skipped if
+less than seven hours remain at admission. Its cooperative stop starts with
+15 minutes left, with an additional five-minute checkpoint reserve. Owner jobs
+have no allocation deadline; each has a 72-hour operational watchdog.
+Neither existing queues nor unrelated GPU processes are stopped. New managers
+use existing UUID lease files and idle-memory/utilization admission. GPU3 waits
+if the prior vLLM process still occupies it. Source, runtime, seed and energy
+checks precede work; the known parity gate is not relaxed.
+
+### Experiment contract
+
+Soft uses the same fixed energy checkpoint as the successful 50-update pilot,
+eager attention, batch64/microbatch4, 312-step LR horizon and fresh SFT weights.
+Two training seeds (42,43) are exploratory replication, not a precise variance
+estimate. Compare to the already completed fixed/atomic/SimCT curves using
+matched training seed and update count. Do not compare soft50 directly to a
+312-step baseline to decide failure. The existing random42-full312 and SimCT43
+full312 curves are added automatically; completed historical baseline pools
+remain unchanged. No oracle full training is launched: previous adapter-level
+headroom is small and not evidence of downstream efficacy.
+
+The shared pool publishes 40/80/120/156/200/240/280/312 only after training has
+advanced beyond the save, or a successful final summary plus exitcode exists.
+Each checkpoint has an immutable plan and ready record with training seed,
+checkpoint hash and source provenance. The publisher's final marker is written
+after its last checkpoint scan. Generation claims use cross-node file locks;
+scoring uses per-cell locks. Evaluation preserves the previous template's data,
+prompts, decoding and seeds42/43/44, with generation concurrency256 and separate
+scoring. Four borrowed and two owner coordinators each use four CPU scorers
+(24 total subprocess slots); scoring never reserves a GPU. LCBfix writes a
+separate result on the owner node after the original 12 cells complete.
+
+Generation uses the minimum of its worker deadline and borrowed allocation end,
+stopping admission with ten minutes left. Partial journals can be continued by
+owner workers. Score errors stay errors, not zero scores, and do not stop other
+cells. `generation-error.json`, `score-error.json` and `lcbfix-error.json` require
+inspection; there are no blind automatic retries. Pool metadata has a seven-day
+operational lifetime, distinct from the borrowed 12-hour allocation.
+
+Run `six_b200.py status` on either node to read the shared checkpoint/cell counts
+and that node's manager state. The shared receipts `six-b200-v1/HOST.json` hold
+the local manager path and every submitted job spec. Submission is idempotent.
+Local tests cover clock reuse, queue boundaries and checkpoint publication;
+they do not establish GPU execution or the remote filesystem lock behavior.
