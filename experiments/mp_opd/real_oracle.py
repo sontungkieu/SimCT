@@ -258,6 +258,15 @@ def run(args):
     import copy
     weightings={n:copy.deepcopy(weighting) for n in counts}
     optimizers={n:torch.optim.AdamW(weightings[n].parameters(),lr=args.weighting_lr,weight_decay=0.) for n in counts}
+    energies, energy_optimizers = {}, {}
+    if getattr(args, 'learn_partition', False):
+        from kdflow.algorithms._mp_opd_energy import MPAtomEnergy, energy_surrogate_loss, save_energy_checkpoint
+        # Fork RNG to preserve the existing rollout/weighting initialization sequence.
+        with torch.random.fork_rng(devices=[device.index or 0] if device.type == 'cuda' else []):
+            torch.manual_seed(args.seed + 1000)
+            template = MPAtomEnergy(10, hidden_dim=32, layers=2).to(device).eval()
+        energies = {n: copy.deepcopy(template) for n in counts}
+        energy_optimizers = {n: torch.optim.AdamW(energies[n].parameters(), lr=args.energy_lr, weight_decay=0.) for n in counts}
     atomizer = SimCTAtomizer(tokenizer, teacher_tokenizer)
 
     def prompt(tok, messages):
@@ -335,11 +344,22 @@ def run(args):
                 return torch.stack([-lp[a.student_start:a.student_end].sum() for a in atoms])
             select_callbacks=[outer(row) for row in reference_rows(group["select"])]
             eval_loss=reference_mean([outer(row) for row in reference_rows(group["eval"])])
+            features = None
+            if energies:
+                from kdflow.algorithms._mp_opd_credit import AtomCreditTensors
+                from kdflow.algorithms.mp_opd import atom_features
+                ts = torch.stack([tea[a.teacher_start:a.teacher_end].sum() for a in atoms])
+                ss = torch.stack([old[a.student_start:a.student_end].sum() for a in atoms])
+                features = atom_features(atoms, AtomCreditTensors(ts,ss,base,weight,base/weight,-ss))
             sweep={}
+            payloads={}
             for count in counts:
                 select_loss=reference_mean(select_callbacks[:count])
                 report=diagnostic(params,atom_nll,base,weight,select_loss,eval_loss,
-                    lr=args.virtual_lr,max_span=args.max_span,seed=args.seed+index,weighting=weightings[count])
+                    lr=args.virtual_lr,max_span=args.max_span,seed=args.seed+index,weighting=weightings[count],
+                    energy=energies.get(count),energy_features=features,energy_temperature=getattr(args,'energy_temperature',1.),
+                    training_payload=payloads.setdefault(count,{}) if energies else None,
+                    norm_controls=getattr(args,'norm_controls',False))
                 report.update(select_count=count,select_ids=[r["id"] for r in reference_rows(group["select"])[:count]],
                               eval_ids=[r["id"] for r in reference_rows(group["eval"])])
                 sweep[str(count)]=report
@@ -353,6 +373,27 @@ def run(args):
                 select_loss=reference_mean(select_callbacks[:count])
                 for _ in range(args.weighting_steps):
                     train_weighting_step(weightings[count],optimizers[count],params,atom_nll,base,weight,select_loss,args.virtual_lr)
+            if energies:
+                energy_updates={}
+                for count in counts:
+                    net, opt = energies[count], energy_optimizers[count]
+                    before = [p.detach().clone() for p in net.parameters()]
+                    for _ in range(args.energy_steps):
+                        opt.zero_grad(set_to_none=True)
+                        objective, distribution = energy_surrogate_loss(net,features,payloads[count]['utilities'],
+                            max_span_length=args.max_span,temperature=args.energy_temperature,
+                            virtual_learning_rate=args.virtual_lr,valid_mask=payloads[count]['valid'])
+                        objective.backward()
+                        grads=[p.grad for p in net.parameters() if p.grad is not None]
+                        if not grads or not all(torch.isfinite(g).all() for g in grads):
+                            raise RuntimeError('Invalid energy gradient')
+                        gn=torch.nn.utils.clip_grad_norm_(net.parameters(),1.)
+                        opt.step()
+                    delta=sum((p.detach()-b).square().sum() for p,b in zip(net.parameters(),before)).sqrt()
+                    energy_updates[str(count)]=dict(surrogate=float(objective.detach()),gradient_norm=float(gn),parameter_delta=float(delta))
+                    save_energy_checkpoint(args.output/f'energy-select-{count}.pt',net,opt,
+                        step=(index+1-invalid)*args.energy_steps,extra_config={'max_span_length':args.max_span})
+                result['energy_updates']=energy_updates
         results.append(result)
         for name, value in (("results.jsonl", result), ("trajectories.jsonl", trace)):
             with (args.output/name).open("a") as f:
@@ -420,6 +461,11 @@ def main():
     p.add_argument("--virtual-lr", type=float, required=True)
     p.add_argument("--weighting-lr", type=float, default=1e-3)
     p.add_argument("--weighting-steps", type=int, default=1)
+    p.add_argument("--norm-controls", action="store_true")
+    p.add_argument("--learn-partition", action="store_true")
+    p.add_argument("--energy-steps", type=int, default=4)
+    p.add_argument("--energy-lr", type=float, default=1e-3)
+    p.add_argument("--energy-temperature", type=float, default=1.)
     p.add_argument("--temperature", type=float, default=.6)
     p.add_argument("--top-p", type=float, default=.95)
     p.add_argument("--max-new-tokens", type=int, default=512)
@@ -433,6 +479,8 @@ def main():
             or args.weighting_lr <= 0 or args.weighting_steps <= 0 or args.temperature <= 0
             or not 0 < args.top_p <= 1 or min(args.max_new_tokens,args.max_prompt_tokens,args.max_reference_tokens)<=0):
         parser.error("invalid diagnostic settings")
+    if args.command == 'run' and (args.energy_steps <= 0 or not math.isfinite(args.energy_lr) or args.energy_lr <= 0 or not math.isfinite(args.energy_temperature) or args.energy_temperature <= 0):
+        parser.error('invalid energy settings')
     args.func(args)
 
 

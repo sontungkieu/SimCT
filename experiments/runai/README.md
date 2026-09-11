@@ -129,3 +129,29 @@ Start the returned plan with `python3.12 experiments/runai/campaign.py FRESH_WOR
 The original start/deadline is retained; sensitivity jobs share the remaining
 budget, timeouts preserve partial artifacts but are not completed results.
 No full training is promoted automatically. CPU endpoint scoring may continue.
+
+## Learned partition pilot
+
+`learned_partition_pilot.py prepare --prior ORACLE_WORK --original MAIN_WORK --work FRESH_WORK`
+prepares a GPU1-only DAG: 32-group guide energy learning (45-minute cap), CPU
+technical qualification, 5-update soft canary (20-minute cap), then fresh-SFT
+50-update soft student pilot (90-minute cap). Run with `campaign.py FRESH_WORK/plan.json`.
+The original campaign deadline is retained; jobs that cannot fit are skipped.
+GPU0 random training and independent endpoint scoring remain separate.
+
+The energy is the actual 10-feature MPAtomEnergy GRU/span scorer used by the soft
+student loss. It learns a first-order select-utility surrogate (normalized by
+student token count), not exact Adam hypergradients. Every group is evaluated
+before learning from that group's select references; eval does not train or
+admit the pilot. Each select-count has an independent network. Dropout is off
+via eval mode while gradients are enabled. Energy checkpoints are saved after
+every valid group; the student pilot freezes the learned energy. This is a
+staged learned-partition experiment, not simultaneous online bilevel training.
+
+`--norm-controls` adds fixed, random, oracle, weighting, learned-partition and
+meta-SFT updates rescaled to the atomic gradient norm in the adapter diagnostic;
+zero-norm matches are marked invalid. These norm controls do not normalize
+full-student Adam updates. Soft pilot checkpoints save every 20 updates and
+at completion. Record and compare common update checkpoints against baselines.
+The new GPU path needs company canary validation; local tiny-model tests do
+not establish B200 execution or efficacy.

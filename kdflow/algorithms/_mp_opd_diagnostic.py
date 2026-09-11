@@ -68,7 +68,8 @@ def norm(gs):
 
 
 def diagnostic(params, atom_nll, base, weight, select_loss, eval_loss,
-               *, lr, max_span=4, seed=43, weighting=None):
+               *, lr, max_span=4, seed=43, weighting=None, energy=None, energy_features=None,
+               energy_temperature=1., training_payload=None, norm_controls=False):
     if lr <= 0 or max_span <= 0 or len(base) == 0:
         raise ValueError("positive lr, span and atom count required")
     if not (base.shape == weight.shape == atom_nll(params).shape):
@@ -81,6 +82,8 @@ def diagnostic(params, atom_nll, base, weight, select_loss, eval_loss,
     # z_i = <grad log p_i, grad F_select>; no NLL/token double weighting.
     z = torch.stack([sum((g * x).sum() for g, x in zip(gradients(-h, params), v)) for h in nll]).detach()
     utilities, valid = span_utility_table(base, weight, z, max_span)
+    if training_payload is not None:
+        training_payload.update(utilities=utilities.detach() / weight.sum(), valid=valid.detach())
     oracle = hard_max_partition(utilities, valid).partition
     n = len(base)
     fixed = lambda length: tuple((i, min(i + length, n)) for i in range(0, n, length))
@@ -98,6 +101,29 @@ def diagnostic(params, atom_nll, base, weight, select_loss, eval_loss,
     if weighting is not None:
         rates = weighting(base, weight).detach()
         gs["learned_weighting"] = gradients((rates * nll).sum() / denominator, params)
+    energy_metrics = None
+    if energy is not None:
+        from ._mp_opd_semimarkov import semi_markov_partition
+        from ._mp_opd_credit import span_tables, expected_atom_rates, credit_conservation_residual
+        with torch.no_grad():
+            distribution = semi_markov_partition(energy(energy_features, max_span), temperature=energy_temperature, valid_mask=valid)
+            _, _, span_rates, _ = span_tables(base, weight, max_span)
+            rates = expected_atom_rates(distribution.marginals, span_rates).detach()
+            residual = credit_conservation_residual(base, weight, rates)
+        gs['learned_partition'] = gradients((rates * nll).sum() / denominator, params)
+        energy_metrics = dict(entropy=float(distribution.entropy), expected_span_length=float(distribution.expected_span_length),
+                             coverage_max_error=float(distribution.coverage_max_error), credit_residual=float(residual))
+        if not torch.isfinite(rates).all() or float(distribution.coverage_max_error)>1e-3:
+            raise RuntimeError('Invalid learned partition marginals')
+    norm_valid = {}
+    if norm_controls:
+        for name in ('fixed2','fixed4','random_oracle_lengths','oracle','learned_weighting','learned_partition','meta_sft'):
+            if name not in gs: continue
+            size = norm(gs[name])
+            ok = bool(torch.isfinite(size) and size > 0 and na > 0)
+            key = name + '_atomic_norm'
+            norm_valid[key] = ok
+            gs[key] = tuple(g * na / size.clamp_min(1e-30) for g in gs[name])
     for alpha in (.25,.5,.75):
         gs[f"atomic_oracle_mix_{alpha}"] = tuple((1-alpha)*a+alpha*o for a,o in zip(gs["atomic"],gs["oracle"]))
     before_select, before_eval = float(select_loss(params).detach()), float(eval_loss(params).detach())
@@ -107,6 +133,7 @@ def diagnostic(params, atom_nll, base, weight, select_loss, eval_loss,
         selected = float(select_loss(updated).detach())
         evaluated = float(eval_loss(updated).detach())
         report[name] = {
+            "norm_match_valid": norm_valid.get(name),
             "select_nll": selected, "eval_nll": evaluated,
             "eval_improvement": before_eval - evaluated,
             "predicted_select_improvement": float(lr * sum((g * x).sum() for g, x in zip(gradient, v))),
@@ -126,6 +153,7 @@ def diagnostic(params, atom_nll, base, weight, select_loss, eval_loss,
     return {"all_controls_eval_unchanged": all(x["eval_nll"] == before_eval for x in report.values()),
             "meta_sft_select_unchanged": report["meta_sft"]["select_nll"] == before_select,
             "before_select": before_select, "before_eval": before_eval, "controls": report,
+            "learned_partition": energy_metrics,
             "random_degenerate": partitions["random_oracle_lengths"] == oracle,
             "atomic_zero_norm": bool(na == 0), "parameters_unchanged": True,
             "normalization": "sum valid student tokens", "subspace": "declared functional adapter",

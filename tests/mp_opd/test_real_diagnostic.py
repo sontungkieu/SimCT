@@ -154,7 +154,11 @@ def test_complete_runner_with_tiny_hf_transport(tmp_path, monkeypatch,counts):
                    weighting_lr=.01,weighting_steps=1,temperature=.6,top_p=.95,max_new_tokens=8,
                    max_prompt_tokens=16,max_reference_tokens=16)
     args.select_counts=counts
+    args.learn_partition=True;args.energy_steps=2;args.energy_lr=.001;args.energy_temperature=1.;args.norm_controls=True
     run(args)
+    assert (args.output / "energy-select-1.pt").is_file()
+    saved=torch.load(args.output / "energy-select-1.pt",weights_only=False)
+    assert saved["step"]>0 and saved["config"]["feature_dim"]==10
     report=json.loads((args.output/'summary.json').read_text())
     assert report['valid_groups']==2
     results=[json.loads(x) for x in (args.output/'results.jsonl').read_text().splitlines()]
@@ -263,3 +267,32 @@ def test_multireference_prepare_overlap_and_mean_gradient(tmp_path):
     x=torch.tensor(2.,requires_grad=True)
     f=reference_mean([lambda ps:ps[0]**2,lambda ps:3*ps[0]**2])
     assert torch.autograd.grad(f((x,)),x)[0].item()==8.
+
+
+def test_learned_partition_norm_controls_and_energy_learning():
+    from kdflow.algorithms._mp_opd_energy import MPAtomEnergy, energy_surrogate_loss
+    p,nll,b,w,select,evaluate=fixture()
+    net=MPAtomEnergy(10,hidden_dim=4,layers=1).eval()
+    features=torch.randn(3,10)
+    weighting=AtomWeighting().double()
+    original=p[0].detach().clone()
+    payload={}
+    out=diagnostic(p,nll,b,w,select,evaluate,lr=.1,max_span=2,weighting=weighting,
+                   energy=net,energy_features=features,training_payload=payload,norm_controls=True)
+    controls=out['controls']
+    for name in ('learned_partition','learned_weighting','fixed2','random_oracle_lengths'):
+        c=controls[name+'_atomic_norm']
+        assert c['norm_match_valid']
+        assert c['virtual_update_norm']==pytest.approx(controls['atomic']['virtual_update_norm'],rel=1e-5)
+    assert out['learned_partition']['coverage_max_error']<1e-5
+    before={k:v.clone() for k,v in net.state_dict().items()}
+    opt=torch.optim.AdamW(net.parameters(),lr=.01)
+    loss,_=energy_surrogate_loss(net,features,payload['utilities'],max_span_length=2,
+                                temperature=1.,virtual_learning_rate=.1,valid_mask=payload['valid'])
+    opt.zero_grad();loss.backward();opt.step()
+    assert any(not torch.equal(v,before[k]) for k,v in net.state_dict().items())
+    assert torch.equal(p[0],original) and p[0].grad is None
+    payload2={}
+    diagnostic(p,nll,b,w,select,lambda ps:-evaluate(ps),lr=.1,max_span=2,
+               energy=net,energy_features=features,training_payload=payload2)
+    assert torch.equal(payload['utilities'],payload2['utilities'])

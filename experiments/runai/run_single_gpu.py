@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 mode, limit, output = sys.argv[1:]
-assert mode in {"atomic", "fixed", "random"}
+assert mode in {"atomic", "fixed", "random", "soft"}
 limit = int(limit)
 assert limit in {0, 5, 50}
 
@@ -61,11 +61,16 @@ opts.update(
     mp_opd_max_span_length=1 if mode == "atomic" else int(os.environ.get("MP_MAX_SPAN_LENGTH", "2")),
     mp_opd_fixed_span_length=int(os.environ.get("MP_FIXED_SPAN_LENGTH", "2")),
     diagnostic_max_updates=limit,
-    save_steps=-1 if limit else 20,
+    save_steps=20 if mode == "soft" or not limit else -1,
     save_path=str(run_dir / "checkpoint"),
     ckpt_path=str(run_dir / "checkpoints"),
     use_wandb=False,
 )
+
+if mode == "soft":
+    energy_path = Path(os.environ['MP_ENERGY_CHECKPOINT'])
+    if not energy_path.is_file(): raise ValueError('Missing trained energy checkpoint')
+    opts.update(mp_opd_energy_checkpoint=str(energy_path),mp_opd_partition_temperature=1.)
 
 if opts["kd_algorithm"] not in {"mp_opd", "span_ctkd", "xtoken"}:
     raise ValueError("MP_ALGORITHM must be mp_opd, span_ctkd or xtoken")
@@ -117,6 +122,7 @@ for package in ("torch", "transformers", "sglang", "ray"):
     "source_dirty": os.environ.get("MP_SOURCE_DIRTY"),
     "cuda_visible_devices": os.environ["CUDA_VISIBLE_DEVICES"],
     "variant": mode,
+    "energy_sha256": file_hash(energy_path) if mode == "soft" else None,
     "models_sha256": model_manifest,
     "dataset_sha256": file_hash(Path(opts["train_dataset_path"])),
     "runtime_versions": versions,

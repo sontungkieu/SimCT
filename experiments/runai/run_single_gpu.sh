@@ -2,11 +2,11 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 CODE_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
-GPU="${1:?Usage: run_single_gpu.sh GPU atomic|fixed|random 0|5|50}"
+GPU="${1:?Usage: run_single_gpu.sh GPU atomic|fixed|random|soft 0|5|50}"
 MODE="${2:?Missing mode}"
 LIMIT="${3:?Missing update limit}"
 [[ "$GPU" =~ ^[0-9]+$ ]] && (( GPU <= 7 )) || { echo "GPU must be a numeric slot 0..7" >&2; exit 2; }
-[[ "$MODE" == atomic || "$MODE" == fixed || "$MODE" == random ]] || { echo "Mode must be atomic, fixed or random" >&2; exit 2; }
+[[ "$MODE" == atomic || "$MODE" == fixed || "$MODE" == random || "$MODE" == soft ]] || { echo "Mode must be atomic, fixed, random or soft" >&2; exit 2; }
 [[ "$LIMIT" == 0 || "$LIMIT" == 5 || "$LIMIT" == 50 ]] || { echo "Limit must be 0 (full) 5 (canary), or 50 (pilot)" >&2; exit 2; }
 
 ALGORITHM="${MP_ALGORITHM:-mp_opd}"
