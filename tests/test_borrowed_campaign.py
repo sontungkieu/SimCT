@@ -76,5 +76,11 @@ def test_prepared_queue_preserves_budget_and_independent_branches(tmp_path,monke
     assert jobs['soft-train']['gpus']==['GPU-b']
     assert jobs['fixed-train']['gpus']==['GPU-a']
     assert jobs['new-eval-plan']['dependencies']==['soft-train','fixed-train']
+    assert jobs['old-score']['gpus']==0
+    assert jobs['old-score']['dependencies']==[]
+    assert jobs['old-score']['cpu_slots']==4
+    assert jobs['new-score']['dependencies']==['new-eval-plan']
+    assert 'old-score' in jobs['collect']['dependencies']
+    assert 'new-score' in jobs['collect']['dependencies']
     assert jobs['collect']['deadline']==started+8*3600
     assert json.loads((work/'campaign.json').read_text())['started']==started

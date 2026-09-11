@@ -13,6 +13,14 @@ import queue_data as D
 E=Q.E
 
 class QueueTests(unittest.TestCase):
+    def test_default_is_separated_generation_256(self):
+        argv=['eval_queue.py','worker','--plan','x','--gpu','0','--internal-code-execution']
+        with patch.object(Q,'worker') as worker, patch.object(sys,'argv',argv):
+            Q.main()
+        a=worker.call_args.args[0]
+        self.assertEqual((a.phase,a.concurrency,a.score_buffer),('generate',256,256))
+        Q.GENERATION_ONLY=False
+
     def test_cli_accepts_32_16_128(self):
         argv=['eval_queue.py','worker','--plan','plan.json','--gpu','0','--concurrency','32','--score-workers','16','--score-buffer','128','--internal-code-execution']
         with patch.object(Q,'worker') as worker, patch.object(sys,'argv',argv):
@@ -21,7 +29,7 @@ class QueueTests(unittest.TestCase):
         self.assertEqual((a.concurrency,a.score_workers,a.score_buffer),(32,16,128))
 
     def test_cli_accepts_64_and_rejects_over_limit_or_small_buffer(self):
-        base=['eval_queue.py','worker','--plan','plan.json','--gpu','0','--score-workers','16','--internal-code-execution']
+        base=['eval_queue.py','worker','--plan','plan.json','--gpu','0','--phase','combined','--score-workers','16','--internal-code-execution']
         with patch.object(Q,'worker') as worker, patch.object(sys,'argv',base+['--concurrency','64','--score-buffer','128']):
             Q.main()
         self.assertEqual(worker.call_args.args[0].concurrency,64)
@@ -34,7 +42,7 @@ class QueueTests(unittest.TestCase):
         with patch.object(Q,'worker') as w,patch.object(sys,'argv',base+['--phase','generate']): Q.main()
         self.assertEqual(w.call_args.args[0].concurrency,256)
         Q.GENERATION_ONLY=False
-        with patch.object(sys,'argv',base),self.assertRaises(SystemExit): Q.main()
+        with patch.object(sys,'argv',base+['--phase','combined']),self.assertRaises(SystemExit): Q.main()
 
     def test_native_context_preserves_full_output_cap(self):
         from context_check import check_items,CONTEXT_LENGTH

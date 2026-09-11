@@ -21,8 +21,7 @@ printf 'export NEW_PLAN=%q
 export EVAL_SOURCE=%q
 ' "$NEW_PLAN" "$EVAL_SOURCE" > "$OUT/queue.env"
 for GPU in 0 1; do
-  CONCURRENCY=128
-  if [ "$GPU" = 0 ]; then CONCURRENCY=256; fi
+  CONCURRENCY=256
   LOG="$OUT/generate-gpu$GPU.log"
   nohup bash -c '
     /usr/bin/python3.12 -u "$1/scripts/evaluation/eval_queue.py" worker --phase generate --plan "$2" --gpu "$3" --concurrency "$5" --score-buffer 256 --internal-code-execution

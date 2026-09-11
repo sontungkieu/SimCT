@@ -270,11 +270,16 @@ def prepare(work, manager, started, expected_host):
     job('soft-train',['bash',ROOT/'experiments/runai/run_single_gpu.sh','1','soft','156'],1,['validate-canary'],
         end=started+5.5*3600,env=common|dict(MP_RUN_ROOT=str(work/'soft-train')))
     job('old-eval',adapter('eval')+['--name','eval-old','--gpu','0'],0,end=started+2*3600)
+    job('old-score',adapter('score')+['--name','eval-old'],end=deadline-600)
     job('fixed-train',['bash',ROOT/'experiments/runai/run_single_gpu.sh','0','fixed','156'],0,['old-eval'],policy='terminal',
         end=started+5.5*3600,env=common|dict(MP_RUN_ROOT=str(work/'fixed-train')))
     job('new-eval-plan',adapter('new-eval-plan'),deps=['soft-train','fixed-train'],end=deadline-1200)
     for slot in (0,1):
         job(f'new-eval-{slot}',adapter('eval')+['--name','eval-new','--gpu',str(slot)],slot,['new-eval-plan'],end=deadline-600)
+    job('new-score',adapter('score')+['--name','eval-new'],deps=['new-eval-plan'],end=deadline-600)
+    for entry in jobs:
+        if entry['id'] in ('old-score','new-score'):
+            entry['cpu_slots']=4
     job('collect',adapter('collect'),deps=[j['id'] for j in jobs],policy='terminal',end=deadline)
     db=connect(state)
     try: submit(db,jobs)
@@ -297,7 +302,7 @@ def collect(work):
 
 
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('action',choices=['prepare','numeric','validate-canary','new-eval-plan','eval','collect'])
+    p=argparse.ArgumentParser();p.add_argument('action',choices=['prepare','numeric','validate-canary','new-eval-plan','eval','score','collect'])
     p.add_argument('--work',type=Path,required=True);p.add_argument('--manager',type=Path)
     p.add_argument('--started',type=float);p.add_argument('--expected-host',default='tungdd11-sparse-vllm-core-0-0')
     p.add_argument('--name');p.add_argument('--gpu',type=int)
@@ -307,7 +312,10 @@ if __name__=='__main__':
     elif a.action=='validate-canary':validate_canary(work)
     elif a.action=='new-eval-plan':prepare_new_eval(work)
     elif a.action=='collect':collect(work)
+    elif a.action=='score':
+        execute([sys.executable,ROOT/'scripts/evaluation/eval_queue.py','score-spool','--plan',work/a.name/'plan.json',
+                 '--score-workers','4','--internal-code-execution'])
     else:
         execute([sys.executable,ROOT/'scripts/evaluation/eval_queue.py','worker','--plan',work/a.name/'plan.json',
-                 '--gpu',a.gpu,'--phase','combined','--concurrency','32','--score-workers','4',
-                 '--score-buffer','64','--internal-code-execution'])
+                 '--gpu',a.gpu,'--phase','generate','--concurrency','256',
+                 '--score-buffer','256','--internal-code-execution'])
