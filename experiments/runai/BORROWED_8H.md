@@ -57,6 +57,15 @@ do not swap source hashes or start a separated scorer over an active combined
 worker. Migrate only after the old workers have stopped and journals are verified.
 # Follow-up SimCT and soft diagnostics
 
+`queue_soft_next.py submit` on each node registers the unattended soft50 chain.
+Owner: successful soft50 -> verified step50 evaluation plan; owner gen completion
+and plan readiness -> two-hour adapter oracle diagnostic; CPU scoring -> LCBfix.
+Borrowed: a CPU-only readiness waiter and successful gen2 completion -> soft50
+generation at concurrency256. The borrowed deadline remains in force. Existing
+jobs are not cancelled. Oracle uses the original guide data on the soft50 student,
+not an independent benchmark or direct frozen-energy soft selector comparison.
+Submission checks that the original guide exists. No long training is promoted.
+
 `submit_followup.py simct` runs only on the borrowed host and creates a separate
 GPU1 manager with no allocation deadline. The full312 seed43 SimCT job uses
 `span_ctkd` and the historical `sdpa` backend. `MP_ATTN_IMPLEMENTATION` defaults
