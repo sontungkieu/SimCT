@@ -183,6 +183,25 @@ def prepare(args):
                       "conflicting_prompts_excluded": len(conflicting), **checked}))
 
 
+def preflight_lengths(groups, tokenizer, teacher_tokenizer, prompt_cap, reference_cap):
+    """Check every role before model allocation, with actionable failure identities."""
+    maxima={'student_prompt':0,'teacher_prompt':0,'reference':0}
+    for index,group in enumerate(groups):
+        for role in ('rollout','select','eval'):
+            for row in reference_rows(group[role]):
+                for label,tok in [('student',tokenizer)]+([('teacher',teacher_tokenizer)] if role=='rollout' else []):
+                    ids=token_ids(tok.apply_chat_template(row['messages'],tokenize=True,add_generation_prompt=True,return_dict=False))
+                    maxima[label+'_prompt']=max(maxima[label+'_prompt'],len(ids))
+                    if len(ids)>prompt_cap:
+                        raise ValueError(f'group={index} role={role} id={row.get("id")} {label} prompt={len(ids)} cap={prompt_cap}; no truncation')
+                if role!='rollout':
+                    n=len(token_ids(tokenizer.encode(row['reference'],add_special_tokens=False)))+int(tokenizer.eos_token_id is not None)
+                    maxima['reference']=max(maxima['reference'],n)
+                    if n>reference_cap:
+                        raise ValueError(f'group={index} role={role} id={row.get("id")} reference={n} cap={reference_cap}; no truncation')
+    return maxima
+
+
 def run(args):
     # The run subcommand is the explicit GPU boundary. Imports below are lazy.
     import torch
@@ -208,6 +227,9 @@ def run(args):
             raise ValueError("models must be existing local directories")
     tokenizer = AutoTokenizer.from_pretrained(args.student, local_files_only=True, trust_remote_code=False)
     teacher_tokenizer = AutoTokenizer.from_pretrained(args.teacher, local_files_only=True, trust_remote_code=False)
+    lengths=preflight_lengths(groups,tokenizer,teacher_tokenizer,args.max_prompt_tokens,args.max_reference_tokens)
+    (args.output/'length-preflight.json').write_text(json.dumps(lengths,indent=2))
+    print('LENGTH_PREFLIGHT',json.dumps(lengths),flush=True)
     student = AutoModelForCausalLM.from_pretrained(args.student, local_files_only=True, trust_remote_code=False,
                 torch_dtype=dtype, attn_implementation="eager").to(device).eval()
     teacher = AutoModelForCausalLM.from_pretrained(args.teacher, local_files_only=True, trust_remote_code=False,
