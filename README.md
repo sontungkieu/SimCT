@@ -243,6 +243,9 @@ This codebase is built on top of [KDFlow](https://github.com/songmzhang/KDFlow),
 
 For new contract evaluations, use separated generation/scoring: 256 concurrent
 generation requests per GPU (`eval_queue.py worker`, default phase `generate`)
-and one independent CPU `score-spool` coordinator per plan. The borrowed campaign
+and independent CPU `score-spool` workers on any node sharing the plan. The borrowed campaign
 creates both jobs automatically. See `experiments/runai/BORROWED_8H.md` for the
 contract and migration constraints. This does not reconfigure running workers.
+
+The shared pool protocol and worker commands are documented in
+`experiments/runai/SHARED_EVAL_POOL.md`.

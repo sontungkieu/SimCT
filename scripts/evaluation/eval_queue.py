@@ -30,9 +30,9 @@ def atomic_json(path,value):
 
 
 @contextlib.contextmanager
-def locked(path,blocking=True):
+def locked(path,blocking=True,shared=False):
     with path.open("a+") as f:
-        try: fcntl.flock(f,fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+        try: fcntl.flock(f,(fcntl.LOCK_SH if shared else fcntl.LOCK_EX) | (0 if blocking else fcntl.LOCK_NB))
         except BlockingIOError:
             yield None; return
         try: yield f
@@ -400,11 +400,11 @@ def score_spool(args):
     qualification=preflight(args.score_python)
     original=E.read_json(root/"state.json")
     if qualification!=original.get("qualification"): raise ValueError("grader version drift")
-    errors={}
-    with locked(root/"scoring.lock",blocking=False) as own:
-        if own is None: raise RuntimeError("another scoring coordinator is active")
+    # New coordinators coexist; an old exclusive coordinator blocks admission.
+    with locked(root/"scoring.lock",blocking=False,shared=True) as own:
+        if own is None: raise RuntimeError("legacy scoring coordinator still active")
         while time.time()<original["deadline"]:
-            complete=0
+            complete=0;busy=False;errors={}
             for job in plan["jobs"]:
                 for seed in plan["seeds"]:
                     for benchmark in E.CAPS:
@@ -412,30 +412,41 @@ def score_spool(args):
                         key=f"{job['id']}/{benchmark}/{seed}"
                         if (cell/"metrics.json").exists():
                             complete+=1;continue
-                        if key in errors or not (cell/"generation-complete.json").exists(): continue
-                        marker=E.read_json(cell/"generation-complete.json")
-                        try:
-                            if E.file_hash(cell/"responses.jsonl")!=marker["responses_sha256"]: raise ValueError("spool changed")
-                            server=marker["contract"]["server"]
-                            expected=cell_contract(ph,job,plan["data"],benchmark,seed,server)
-                            if marker["contract"]!=expected or marker["count"]!=plan["data"][benchmark]["count"]: raise ValueError("spool contract mismatch")
-                            run_cell(root,plan,ph,job,benchmark,seed,None,server,args,original["deadline"])
-                            complete+=1
-                        except Deadline: return
-                        except Exception as exc:
-                            errors[key]={"error":str(exc),"time":time.time()}
-                            atomic_json(root/"scoring-errors.json",errors)
-                            print("SCORING_ERROR",key,str(exc),flush=True)
+                        if not (cell/"generation-complete.json").exists(): continue
+                        with locked(cell/"score.lock",blocking=False) as claim:
+                            if claim is None:
+                                busy=True;continue
+                            # Another node may have completed while we were claiming.
+                            if (cell/"metrics.json").exists():
+                                complete+=1;continue
+                            if (cell/"score-error.json").exists():
+                                errors[key]=E.read_json(cell/"score-error.json");continue
+                            try:
+                                marker=E.read_json(cell/"generation-complete.json")
+                                if E.file_hash(cell/"responses.jsonl")!=marker["responses_sha256"]: raise ValueError("spool changed")
+                                server=marker["contract"]["server"]
+                                expected=cell_contract(ph,job,plan["data"],benchmark,seed,server)
+                                if marker["contract"]!=expected or marker["count"]!=plan["data"][benchmark]["count"]: raise ValueError("spool contract mismatch")
+                                print("SCORING_CLAIM",key,os.uname().nodename,os.getpid(),flush=True)
+                                run_cell(root,plan,ph,job,benchmark,seed,None,server,args,original["deadline"])
+                                complete+=1
+                            except Deadline: return
+                            except Exception as exc:
+                                errors[key]={"error":str(exc),"time":time.time(),"host":os.uname().nodename}
+                                atomic_json(cell/"score-error.json",errors[key])
+                                print("SCORING_ERROR",key,str(exc),flush=True)
             if complete==len(plan["jobs"])*len(plan["seeds"])*len(E.CAPS):
                 print("SCORING_COMPLETE",flush=True);return
             gs=root/"generation-state.json"
             if gs.exists():
                 state=E.read_json(gs)
-                if all(state["jobs"].get(j["id"],{}).get("status")=="completed" for j in plan["jobs"]):
+                if not busy and all(state["jobs"].get(j["id"],{}).get("status")=="completed" for j in plan["jobs"]):
                     print("SCORING_STOP",json.dumps(errors),flush=True)
                     if errors: raise RuntimeError("scoring failures retained; generation unaffected")
-                    return
+                    # Markers may have appeared after this pass visited a cell.
+                    # Rescan rather than declare success or race another writer.
             time.sleep(5)
+    raise Deadline("scoring worker deadline reached with incomplete pool")
 
 
 def summarize(args):
@@ -462,6 +473,23 @@ def summarize(args):
         if result["complete"]: result["average"]=statistics.mean(x["mean"] for x in benchmarks.values())
         output["checkpoints"][job["id"]]=result
     atomic_json(root/"summary-3seeds.json",output);print(json.dumps(output,indent=2))
+
+
+def retry_scoring(args):
+    """Explicitly acknowledge failed cells without discarding their journals."""
+    root=args.plan.resolve().parent
+    plan=E.read_json(args.plan)
+    for job in plan['jobs']:
+        for seed in plan['seeds']:
+            for benchmark in E.CAPS:
+                cell=root/'cells'/job['id']/benchmark/str(seed)
+                error=cell/'score-error.json'
+                if not error.exists():continue
+                with locked(cell/'score.lock',blocking=False) as claim:
+                    if claim is None:raise RuntimeError('scoring cell is active: '+str(cell))
+                    if error.exists():
+                        error.rename(cell/f'score-error-ack-{time.time_ns()}.json')
+                        print('SCORING_RETRY_READY',job['id'],benchmark,seed,flush=True)
 
 
 def recover_startup(args):
@@ -518,6 +546,7 @@ def main():
     q.add_argument("--score-workers",type=int,choices=range(1,17),default=16)
     q.set_defaults(func=score_spool,phase="score",concurrency=1,score_buffer=256)
     q=sub.add_parser("summarize");q.add_argument("--plan",type=Path,required=True);q.set_defaults(func=summarize)
+    q=sub.add_parser("retry-scoring");q.add_argument("--plan",type=Path,required=True);q.set_defaults(func=retry_scoring)
     q=sub.add_parser("recover-startup");q.add_argument("--from-plan",type=Path,required=True);q.add_argument("--out",type=Path,required=True);q.set_defaults(func=recover_startup)
     q=sub.add_parser("retry");q.add_argument("--plan",type=Path,required=True)
     def retry(a):

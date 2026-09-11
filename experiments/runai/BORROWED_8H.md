@@ -45,8 +45,8 @@ python3 -m job_manager --state /var/tmp/RECORDED-STATE events --limit 100
 New evaluations use **separated generation/scoring**, with **256 concurrent
 generation requests per GPU worker**. This is request concurrency, not a fixed
 SGLang batch size. `eval_queue.py worker` defaults to `--phase generate
---concurrency 256 --score-buffer 256`; launch one separate `score-spool`
-coordinator for the same plan. Without that coordinator only responses are
+--concurrency 256 --score-buffer 256`; launch separate `score-spool`
+workers for the same plan, on any shared-storage node. Without a scorer only responses are
 generated, not final scores. The borrowed campaign submits CPU scoring jobs
 alongside generation and waits for both before collecting results. Scoring
 backlog does not throttle generation; the generation disk-space guard remains.
