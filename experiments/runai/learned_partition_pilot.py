@@ -1,5 +1,5 @@
 """Fresh guide-energy training, technical qualification, soft student canary/pilot."""
-import argparse, copy, hashlib, json, math, subprocess, sys, time
+import argparse, copy, hashlib, json, math, os, subprocess, sys, time
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[2]
 
@@ -12,6 +12,7 @@ def qualify(work):
     if not all(math.isfinite(x) for x in deltas) or not any(x>0 for x in deltas):raise ValueError('Energy did not update')
     if any(x['learned_partition']['coverage_max_error']>1e-3 for x in valid):raise ValueError('Invalid partition coverage')
     sys.path.insert(0,str(ROOT))
+    os.environ["KDFLOW_LIGHTWEIGHT_ALGORITHM_IMPORT"] = "1"
     import torch
     from kdflow.algorithms._mp_opd_energy import MPAtomEnergy,load_energy_checkpoint
     net=MPAtomEnergy(10,32,2);opt=torch.optim.AdamW(net.parameters())
@@ -47,8 +48,29 @@ def prepare(prior, original, out):
     (out/'campaign-state.json').write_text(json.dumps(dict(plan_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),started=state['started'],jobs={}),indent=2))
     print('READY',out,'ORIGINAL_DEADLINE',deadline,flush=True)
 
+def recover(prior, out):
+    old=json.loads((prior/'plan.json').read_text())
+    state=json.loads((prior/'campaign-state.json').read_text())
+    if state['jobs']['energy']['status']!='completed':raise ValueError('Energy must be completed')
+    remaining=int(state['started']+old['hours']*3600-time.time())
+    if remaining<2400:raise ValueError('Less than 40 minutes remain; preserve original clock')
+    out.mkdir(parents=True,exist_ok=False)
+    (out/'energy').symlink_to(prior/'energy',target_is_directory=True)
+    jobs=copy.deepcopy([j for j in old['jobs'] if j['id']!='energy'])
+    for j in jobs:
+        j['argv']=[str(x).replace(old['source'],str(ROOT)).replace(str(prior),str(out)) for x in j['argv']]
+        if j['id']=='qualify':j.pop('require_success',None)
+        if 'env' in j:
+            j['env']={k:str(v).replace(str(prior),str(out)) for k,v in j['env'].items()}
+        if j['id']=='soft-pilot':j['budget_seconds']=min(5400,remaining-180-1200-180)
+    plan=dict(hours=old['hours'],source=str(ROOT),source_commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),jobs=jobs)
+    path=out/'plan.json';path.write_text(json.dumps(plan,indent=2))
+    (out/'campaign-state.json').write_text(json.dumps(dict(plan_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),started=state['started'],jobs={}),indent=2))
+    print('READY',out,'REUSED_ENERGY',prior/'energy','PILOT_BUDGET_SECONDS',jobs[-1]['budget_seconds'],flush=True)
+
 if __name__=='__main__':
-    p=argparse.ArgumentParser();p.add_argument('action',choices=['prepare','qualify']);p.add_argument('--work',type=Path,required=True);p.add_argument('--prior',type=Path);p.add_argument('--original',type=Path)
+    p=argparse.ArgumentParser();p.add_argument('action',choices=['prepare','qualify','recover']);p.add_argument('--work',type=Path,required=True);p.add_argument('--prior',type=Path);p.add_argument('--original',type=Path)
     a=p.parse_args()
     if a.action=='qualify':qualify(a.work.resolve())
+    elif a.action=='recover':recover(a.prior.resolve(),a.work.resolve())
     else:prepare(a.prior.resolve(),a.original.resolve(),a.work.resolve())

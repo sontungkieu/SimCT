@@ -161,3 +161,13 @@ surrogate backward: cuDNN inference-mode RNNs do not support backward. This
 keeps dropout disabled consistently in evaluation and energy learning; the
 backend flag is scoped to the GRU forward and restored immediately. A CUDA
 regression test runs when CUDA is available (otherwise explicitly skipped).
+
+### Recover completed learned energy
+
+`learned_partition_pilot.py recover --prior OLD_WORK --work NEW_WORK` reuses
+the completed energy directory and reruns technical qualification, canary, then
+student pilot on GPU1. Qualification uses the lightweight algorithm import so
+it does not require unrelated X-Token modules. The original campaign clock is
+preserved; the pilot budget shrinks to fit after qualification and canary with
+a three-minute margin. At least 40 minutes must remain. A timed-out pilot may
+produce only partial checkpoints; it is not a completed 50-update result.
