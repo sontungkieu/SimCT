@@ -247,3 +247,39 @@ missing `min_free_gib=20` argument. It archives only matching generation errors
 under the checkpoint lock, preserves unrelated errors, and retains job GPU
 leases, training dependencies and deadlines. It does not modify the old source,
 plans or training jobs. Repeated recovery uses the same replacement IDs.
+
+### Matched seed44 extension
+
+Run `queue_seed44.py submit` on borrowed then owner nodes, from a new checkout.
+It retains the original training/evaluator source and original allocation end
+as a reporting reference. It creates new local managers with no allocation
+deadline, shared GPU lease directories, 64 borrowed / 40 owner CPU slots, and
+72-hour per-job operational watchdogs. The 12-hour reference does not terminate
+new workers. Existing active training is left alone: random43 retains its
+previously captured cooperative and supervisor deadlines; editing the database
+cannot remove those in-memory limits. Its full312 completion must be verified.
+Borrowed GPUs1/2/3 finish the initial 16-checkpoint gen batch or spend at most
+45 further minutes on gen, then switch to fixed2/atomic/SimCT seed44 full312.
+The handoff cancels only their named gen adapters; durable response journals
+remain resumable. New training has no allocation-based early stop. GPU0 random43
+is left running; a bridge waits for its old manager terminal state before gen.
+
+Owner GPU0 runs random44 after soft42; owner GPU1 runs soft44 after soft43.
+Both return to shared gen afterwards. A replacement CPU publisher includes all
+eight new campaign training runs plus the two existing completed runs; its final
+marker waits for the extended producer set. Old scorer coordinators are replaced
+with workers using the same evaluator and no allocation cutoff. Queue
+terminal statuses are exported so blocked/failed training cannot masquerade as
+a successful run or keep the publisher waiting indefinitely. No existing active
+training run is canceled. Historical fixed/atomic/SimCT42 and fixed/atomic43
+results are reused, not retrained.
+
+Use `queue_seed44.py status`: the extended new pool has at most 80 checkpoint
+plans / 960 cells. Existing baseline curves remain outside this pool. Analysis
+compares five methods across three training seeds, paired at the eight declared
+steps, with three eval seeds each. Random43 full replay replaces the truncated
+run in that comparison; it is not counted as an additional independent seed.
+Frozen energy is shared across soft seeds; this does not measure energy-training
+variance. Report raw per-training-seed results, original LCB and LCBfix separately,
+and missing/failed cells. No score-based checkpoint selection or automatic
+oracle promotion is performed.
