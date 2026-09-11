@@ -55,3 +55,25 @@ Combined mode is an explicit override and requires concurrency at most 64.
 Existing running jobs and pinned plans keep their original source/configuration;
 do not swap source hashes or start a separated scorer over an active combined
 worker. Migrate only after the old workers have stopped and journals are verified.
+# Follow-up SimCT and soft diagnostics
+
+`submit_followup.py simct` runs only on the borrowed host and creates a separate
+GPU1 manager with no allocation deadline. The full312 seed43 SimCT job uses
+`span_ctkd` and the historical `sdpa` backend. `MP_ATTN_IMPLEMENTATION` defaults
+to eager and MP-OPD remains restricted to eager for parity qualification.
+This is not a claim of byte-identical reproduction of the historical runtime.
+
+`submit_followup.py soft` runs only on the owner host, requires the completed
+capture canary, and submits a 50-update seed42 diagnostic with unchanged parity
+thresholds and failure capture. Neither command changes running jobs. Both new
+jobs retain a 24-hour watchdog; no eight-hour cutoff is inherited.
+
+Existing worker deadlines are captured at startup. Editing queue config or job
+JSON cannot extend them, nor can it change a running trainer's environment.
+Existing borrowed random and generation workers must not be described as
+extended by these commands. Infrastructure allocation is independently controlled
+by RunAI.
+
+`audit_lcb_outputs.py --root HISTORICAL_QUEUE_ROOT` reads completed LCB journals,
+checks their hashes, and reports truncation, extraction, syntax and outer timeout
+flags separately from correctness. It never edits metrics or reruns code.

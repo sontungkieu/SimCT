@@ -48,7 +48,7 @@ opts.update(
     num_epochs=2,
     train_batch_size=64,
     micro_train_batch_size=4,
-    attn_implementation="eager",
+    attn_implementation=os.environ.get("MP_ATTN_IMPLEMENTATION", "eager"),
     rollout_num_engines=1,
     rollout_tp_size=1,
     teacher_tp_size=1,
@@ -66,6 +66,11 @@ opts.update(
     ckpt_path=str(run_dir / "checkpoints"),
     use_wandb=False,
 )
+
+if opts['attn_implementation'] not in {'eager', 'sdpa'}:
+    raise ValueError('MP_ATTN_IMPLEMENTATION must be eager or sdpa')
+if opts['kd_algorithm'] == 'mp_opd' and opts['attn_implementation'] != 'eager':
+    raise ValueError('MP parity qualification requires eager attention')
 
 if mode == "soft":
     energy_path = Path(os.environ['MP_ENERGY_CHECKPOINT'])
@@ -180,8 +185,8 @@ try:
 
     # Diagnostic backend with Gemma attention softcapping.
     args = cli.init_args()
-    args.model.attn_implementation = "eager"
-    print("MP_CANARY_ATTN_OVERRIDE=eager", flush=True)
+    args.model.attn_implementation = opts['attn_implementation']
+    print(f"TRAIN_ATTN_OVERRIDE={opts['attn_implementation']}", flush=True)
     cli.train(args)
 
     summary = json.loads(
