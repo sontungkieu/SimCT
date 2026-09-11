@@ -181,6 +181,14 @@ def run_cell(root,plan,plan_hash,job,benchmark,seed,base,server,args,deadline):
     else: E.write_new(manifest,contract)
     dataset=E.read_json(plan["data"][benchmark]["path"])
     items={x["id"]:x for x in dataset["items"]}
+    marker=cell/"generation-complete.json"
+    if getattr(args,"phase","combined")=="generate" and marker.exists():
+        value=E.read_json(marker)
+        if value['contract']!=contract or value['count']!=len(items) or value['responses_sha256']!=E.file_hash(cell/'responses.jsonl'):
+            raise ValueError('completed generation spool mismatch')
+        # A scorer may be appending scores right now. Generation must never
+        # read/repair its live journal once the response spool is immutable.
+        return
     if (cell/"metrics.json").exists():
         complete=E.read_json(cell/"metrics.json")
         for name in ("responses","scores"):
