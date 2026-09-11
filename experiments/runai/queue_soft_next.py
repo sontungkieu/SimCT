@@ -74,7 +74,7 @@ def submit():
         if not (energy.parent.parent/'probe-data.json').is_file():
             raise ValueError('Original oracle guide missing: '+str(energy.parent.parent/'probe-data.json'))
     cfg=json.loads((BASE/('owner-tungks-0-1' if owner else 'extra-eval-gpu2')/'campaign.json').read_text())
-    sys.path.insert(0,cfg['manager'])
+    sys.path.insert(0,str(cfg.get('manager') or BASE/'job-manager'))
     from job_manager.store import connect,rows,submit as put,setting,transaction,event
     from job_manager.__main__ import snapshot
     db=connect(Path(cfg['state']))
