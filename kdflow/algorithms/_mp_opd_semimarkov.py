@@ -37,7 +37,10 @@ def semi_markov_partition(
     if max_length < 1:
         raise ValueError("L must be at least one for n>0")
 
-    score = energies.float() / float(temperature)
+    # Long atom sequences accumulate a large log partition. FP32 cancellation
+    # in alpha + score + beta - logZ then corrupts full-cover marginals.
+    # Keep the small O(nL) DP in FP64; gradients still flow to the energy dtype.
+    score = energies.double() / float(temperature)
     geometric = torch.zeros_like(score, dtype=torch.bool)
     for start in range(n):
         geometric[start, : min(max_length, n - start)] = True
@@ -84,7 +87,7 @@ def semi_markov_partition(
                 coverage[start:end] += marginal
                 length_mass += marginal * float(offset + 1)
     expected_count = marginals.sum()
-    expected_length = length_mass / expected_count.clamp_min(torch.finfo(torch.float32).tiny)
+    expected_length = length_mass / expected_count.clamp_min(torch.finfo(score.dtype).tiny)
     finite_score = torch.where(mask, score, torch.zeros_like(score))
     entropy = alpha[n] - (marginals * finite_score).sum()
     return SemiMarkovResult(

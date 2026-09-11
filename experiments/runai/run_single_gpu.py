@@ -9,7 +9,7 @@ from pathlib import Path
 mode, limit, output = sys.argv[1:]
 assert mode in {"atomic", "fixed", "random", "soft"}
 limit = int(limit)
-assert limit in {0, 5, 50}
+assert 0 <= limit <= 312
 
 root = Path(__file__).resolve().parents[2]
 run_dir = Path(output).resolve()
@@ -123,6 +123,9 @@ for package in ("torch", "transformers", "sglang", "ray"):
     "cuda_visible_devices": os.environ["CUDA_VISIBLE_DEVICES"],
     "variant": mode,
     "energy_sha256": file_hash(energy_path) if mode == "soft" else None,
+    "partition_dp_dtype": "float64" if mode == "soft" else None,
+    "cooperative_stop_at": os.environ.get("MP_TRAIN_STOP_AT"),
+    "checkpoint_reserve_seconds": os.environ.get("MP_CHECKPOINT_RESERVE_SECONDS", "300"),
     "models_sha256": model_manifest,
     "dataset_sha256": file_hash(Path(opts["train_dataset_path"])),
     "runtime_versions": versions,
@@ -183,8 +186,14 @@ try:
         (run_dir / "checkpoint/run-summary.json").read_text()
     )
     expected = limit or 312
-    assert summary["status"] == "completed", summary
-    assert summary["optimizer_updates"] == expected, summary
-    print(f"RUN_VERIFIED: {mode}, {expected} updates", flush=True)
+    if summary["status"] == "stopped" and summary.get("stop_reason") == "deadline_checkpoint_reserve":
+        updates = summary["optimizer_updates"]
+        checkpoint = run_dir / "checkpoint" / f"step{updates}"
+        assert updates >= 1 and checkpoint.is_dir(), summary
+        print(f"RUN_PARTIAL_SAVED: {mode}, {updates}/{expected} updates; checkpoint={checkpoint}", flush=True)
+    else:
+        assert summary["status"] == "completed", summary
+        assert summary["optimizer_updates"] == expected, summary
+        print(f"RUN_VERIFIED: {mode}, {expected} updates", flush=True)
 finally:
     ray.shutdown()

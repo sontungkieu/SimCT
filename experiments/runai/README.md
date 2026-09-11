@@ -18,8 +18,11 @@ bash experiments/runai/run_single_gpu.sh 0 atomic 5
 bash experiments/runai/run_single_gpu.sh 1 fixed 5
 ```
 
-Limit 5 is a canary, 50 is a pilot; limit 0 requests the configured full 312 updates.
-All retain a 312-update scheduler horizon. Atomic/fixed/random are supported.
+Positive limits 1..312 bound executed updates; 5 is a canary, 50 a pilot, and 0
+requests the configured full 312 updates. All retain a 312-update scheduler horizon.
+Atomic/fixed/random/soft are supported. Soft requires a compatible energy checkpoint.
+See [borrowed eight-hour campaign](BORROWED_8H.md) for the separate-host queue,
+FP64 partition DP qualification and cooperative checkpoint cutoff.
 See [A/B/C contract and oracle guide](../../docs/mp_opd_abc_20260909.md) for seed/span
 overrides, CPU preflight, input hashes, baseline algorithm selection and controls.
 Microbatch is 4, eager attention, 2 epochs, train batch 64 (16 accumulation steps).

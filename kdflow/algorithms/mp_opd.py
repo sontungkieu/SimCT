@@ -249,6 +249,8 @@ class MetaPartitionedOPD:
             distribution = semi_markov_partition(
                 energies, temperature=self.temperature, valid_mask=valid
             )
+            if not torch.isfinite(distribution.coverage_max_error) or distribution.coverage_max_error > 1e-6:
+                raise RuntimeError("MP-OPD partition coverage failed after FP64 DP; inspect before retry")
             rates_per_atom = expected_atom_rates(distribution.marginals, rates)
             metrics.update(
                 {

@@ -2,16 +2,22 @@
 set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 CODE_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
-GPU="${1:?Usage: run_single_gpu.sh GPU atomic|fixed|random|soft 0|5|50}"
+GPU="${1:?Usage: run_single_gpu.sh GPU atomic|fixed|random|soft LIMIT_0_TO_312}"
 MODE="${2:?Missing mode}"
 LIMIT="${3:?Missing update limit}"
 [[ "$GPU" =~ ^[0-9]+$ ]] && (( GPU <= 7 )) || { echo "GPU must be a numeric slot 0..7" >&2; exit 2; }
 [[ "$MODE" == atomic || "$MODE" == fixed || "$MODE" == random || "$MODE" == soft ]] || { echo "Mode must be atomic, fixed, random or soft" >&2; exit 2; }
-[[ "$LIMIT" == 0 || "$LIMIT" == 5 || "$LIMIT" == 50 ]] || { echo "Limit must be 0 (full) 5 (canary), or 50 (pilot)" >&2; exit 2; }
+[[ "$LIMIT" =~ ^[0-9]+$ ]] && (( 10#$LIMIT <= 312 )) || { echo "Limit must be an integer 0..312 (0 means full)" >&2; exit 2; }
 
 ALGORITHM="${MP_ALGORITHM:-mp_opd}"
 [[ "$ALGORITHM" == mp_opd || "$ALGORITHM" == span_ctkd || "$ALGORITHM" == xtoken ]] || { echo "Unsupported MP_ALGORITHM" >&2; exit 2; }
-export CUDA_VISIBLE_DEVICES="$GPU"
+# The generic job manager assigns physical UUIDs. Keep its lease mapping;
+# GPU argument is still used for host port separation and output labels.
+if [[ -z "${JM_JOB_ID:-}" ]]; then
+  export CUDA_VISIBLE_DEVICES="$GPU"
+else
+  [[ -n "${CUDA_VISIBLE_DEVICES:-}" && "$CUDA_VISIBLE_DEVICES" != *,* ]] || { echo "Expected one leased GPU" >&2; exit 2; }
+fi
 export PYTHONPATH="$CODE_ROOT/experiments/modal/vendor:$CODE_ROOT"
 export HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 export KDFLOW_TRUST_REMOTE_CODE=0 TOKENIZERS_PARALLELISM=false

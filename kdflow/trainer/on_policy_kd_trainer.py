@@ -15,6 +15,7 @@ import torch
 import torch.distributed as dist
 
 from kdflow.trajectory import trajectory_tokens, collapse_observation
+from kdflow.deadline import stop_before_rollout
 from kdflow.datasets.utils import get_tokenizer_or_processor
 from kdflow.utils.logging_utils import init_logger
 from kdflow.utils.tensorboard_utils import create_tensorboard_logger
@@ -221,6 +222,7 @@ class OnPolicyKDTrainer:
         self._collapse_streak = 0
         self._collapse_stop = False
         self.stop_reason = None
+        previous_step_seconds = 0.0
         
         # Print training configuration and initialize loggers
         self._print_training_config()
@@ -242,6 +244,9 @@ class OnPolicyKDTrainer:
             
             for prompt_batch in self.train_dataloader:
                 if self.completed_optimizer_updates >= expected_updates:
+                    break
+                if stop_before_rollout(time.time(), previous_step_seconds):
+                    self.stop_reason = "deadline_checkpoint_reserve"
                     break
                 self.global_step += 1
                 step_started = time.time()
@@ -327,6 +332,7 @@ class OnPolicyKDTrainer:
                     self.student.sleep()
 
                 step_wall_time = time.time() - step_started
+                previous_step_seconds = step_wall_time
                 self.log_state["step_wall_time"].append(step_wall_time)
                 self.log_state["completed_optimizer_updates"].append(
                     float(self.completed_optimizer_updates)
