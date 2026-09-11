@@ -239,3 +239,11 @@ and that node's manager state. The shared receipts `six-b200-v1/HOST.json` hold
 the local manager path and every submitted job spec. Submission is idempotent.
 Local tests cover clock reuse, queue boundaries and checkpoint publication;
 they do not establish GPU execution or the remote filesystem lock behavior.
+
+For the original `2d4d3ea` adapter, `repair_six_gen.py recover` replaces only
+generation jobs on the current node. Run it on borrowed then owner nodes using
+a new checkout; it imports the old pinned source at runtime and supplies the
+missing `min_free_gib=20` argument. It archives only matching generation errors
+under the checkpoint lock, preserves unrelated errors, and retains job GPU
+leases, training dependencies and deadlines. It does not modify the old source,
+plans or training jobs. Repeated recovery uses the same replacement IDs.

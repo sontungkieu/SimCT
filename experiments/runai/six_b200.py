@@ -234,7 +234,7 @@ def generate(slot):
                 for data in plan['data'].values():
                     if E.file_hash(data['path'])!=data['sha256']:raise ValueError('Evaluation dataset drift')
                 args=argparse.Namespace(plan=path,gpu=slot,phase='generate',concurrency=256,
-                    score_workers=1,score_buffer=256,score_python='/usr/bin/python3.12')
+                    score_workers=1,score_buffer=256,score_python='/usr/bin/python3.12',min_free_gib=20)
                 try:
                     print('GEN_CLAIM',root.name,socket.gethostname(),slot,flush=True)
                     Q.run_checkpoint(root,plan,E.file_hash(path),plan['jobs'][0],args,end)
