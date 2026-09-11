@@ -283,3 +283,25 @@ Frozen energy is shared across soft seeds; this does not measure energy-training
 variance. Report raw per-training-seed results, original LCB and LCBfix separately,
 and missing/failed cells. No score-based checkpoint selection or automatic
 oracle promotion is performed.
+
+### Unattended scoring recovery
+
+From a new pinned checkout, run `resilient_score.py submit` on each node. It
+replaces only `score-seed44-*` coordinators in the seed44 manager with stable
+`score-resilient-*` IDs. It leaves training, generation, datasets, responses and
+the pinned evaluator hashes unchanged. Concurrent retries own the same cell
+`score.lock`; completed metrics are not reopened. Each polling pass can recover
+eligible markers left by a coordinator replacement on either host.
+
+SIGTERM scorer failures receive up to three retries per cell; SIGKILL and
+SIGSEGV receive one diagnostic retry each, with at most four retries total.
+Every reservation is persisted in `score-recovery.json` before retry, so process
+restarts do not reset budgets. Retry uses one scoring worker and a ten-second
+delay for failures caught in-process, resuming the existing score journal.
+Marker recovery archives the original error and starts serially. Unknown errors,
+contract/hash mismatches and deadline exceptions are not automatically retried.
+Repeated native crashes remain unresolved errors, never incorrect-answer zeros.
+Other cells continue. At coordinator completion, `HOST.scoring-attention.json`
+lists remaining scoring/LCBfix errors and causes a nonzero job exit. This is an
+artifact for review, not an external notification service. LCBfix subprocess
+retries and whole-manager/host recovery are outside this adapter's scope.
