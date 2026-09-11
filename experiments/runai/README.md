@@ -117,3 +117,15 @@ to those already-evaluated runs. It uses sample variance (ddof=1), computes macr
 per seed before dispersion, and adds spread lines (mean/min/max/mean +/- std)
 and seed charts. These are evaluation-seed variability, not confidence intervals.
 History-prefix and endpoint readback checks follow each upload.
+
+## Oracle recovery from prepared guide
+
+`recover_oracle.py --original MAIN_WORK --guide GUIDE_WORK --out FRESH_WORK`
+uses existing local tokenizers (run through `python-b200-host.sh`) before model
+allocation. It preserves every prepared guide row, verifies split identities,
+uses explicit 4096 prompt/reference caps with no truncation, and checks context
+capacity. It prepares GPU0 primary LR .1 and GPU1 sequential .01/1.0 diagnostics.
+Start the returned plan with `python3.12 experiments/runai/campaign.py FRESH_WORK/plan.json`.
+The original start/deadline is retained; sensitivity jobs share the remaining
+budget, timeouts preserve partial artifacts but are not completed results.
+No full training is promoted automatically. CPU endpoint scoring may continue.
