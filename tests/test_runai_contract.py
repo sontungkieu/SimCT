@@ -22,6 +22,7 @@ def test_preflight_configuration_and_input_hashes(tmp_path):
     assert config['options']['mp_opd_fixed_span_length']==4
     assert config['contract']['scheduler_horizon']==312
     assert config['contract']['execution_updates']==50
+    assert config['options']['save_steps']==20
     assert len(config['dataset_sha256'])==64
     assert config['models_sha256']['student']['config.json']
     # Check manifest changes on data drift; no Ray or model execution.

@@ -61,7 +61,7 @@ opts.update(
     mp_opd_max_span_length=1 if mode == "atomic" else int(os.environ.get("MP_MAX_SPAN_LENGTH", "2")),
     mp_opd_fixed_span_length=int(os.environ.get("MP_FIXED_SPAN_LENGTH", "2")),
     diagnostic_max_updates=limit,
-    save_steps=20 if mode == "soft" or not limit else -1,
+    save_steps=20,
     save_path=str(run_dir / "checkpoint"),
     ckpt_path=str(run_dir / "checkpoints"),
     use_wandb=False,
