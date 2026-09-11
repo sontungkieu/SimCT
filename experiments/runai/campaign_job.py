@@ -50,6 +50,12 @@ def main(a):
         for d in old['data'].values():
             if E.file_hash(d['path'])!=d['sha256']:raise ValueError('eval data changed')
         E.write_new(out/'plan.json',old)
+        import eval_queue as Q
+        qualification=Q.preflight('/usr/bin/python3.12')
+        with Q.locked(out/'state.lock'):
+            state=Q.read_state(out,E.file_hash(out/'plan.json'),old)
+            state['qualification']=qualification
+            Q.atomic_json(out/'state.json',state)
     elif a.action in ('generate','score'):
         plan=work/('eval-'+a.name)/'plan.json'
         argv=[sys.executable,ROOT/'scripts/evaluation/eval_queue.py']
