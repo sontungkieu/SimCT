@@ -155,3 +155,9 @@ full-student Adam updates. Soft pilot checkpoints save every 20 updates and
 at completion. Record and compare common update checkpoints against baselines.
 The new GPU path needs company canary validation; local tiny-model tests do
 not establish B200 execution or efficacy.
+
+Energy GRU eval mode uses the native PyTorch RNN backend, including during
+surrogate backward: cuDNN inference-mode RNNs do not support backward. This
+keeps dropout disabled consistently in evaluation and energy learning; the
+backend flag is scoped to the GRU forward and restored immediately. A CUDA
+regression test runs when CUDA is available (otherwise explicitly skipped).

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 import hashlib
 import json
 from pathlib import Path
@@ -37,7 +38,12 @@ class MPAtomEnergy(nn.Module):
         length = min(max(int(max_span_length), 1), max(n, 1))
         if n == 0:
             return atom_features.new_empty((0, length), dtype=torch.float32)
-        encoded, _ = self.encoder(atom_features.detach().float().unsqueeze(0))
+        # cuDNN inference-mode RNN forward does not retain backward reserves.
+        # Native GRU supports eval-mode gradients while keeping dropout disabled.
+        # Use the same backend for eval scoring and eval-mode energy learning.
+        backend = nullcontext() if self.encoder.training else torch.backends.cudnn.flags(enabled=False)
+        with backend:
+            encoded, _ = self.encoder(atom_features.detach().float().unsqueeze(0))
         encoded = encoded.squeeze(0)
         prefix = torch.cat((encoded.new_zeros((1, encoded.shape[1])), encoded.cumsum(0)), dim=0)
         output = encoded.new_full((n, length), -torch.inf)
