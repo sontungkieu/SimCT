@@ -296,12 +296,22 @@ class MetaPartitionedOPD:
         if behavior is not None:
             selected = behavior[student_loss_mask]
             labels_for_parity = student_labels[student_loss_mask]
-            parity_metrics = _behavior_parity_metrics(
-                student_logits_flat,
-                labels_for_parity,
-                selected,
-                self.args.rollout.temperature,
-            )
+            try:
+                parity_metrics = _behavior_parity_metrics(
+                    student_logits_flat,
+                    labels_for_parity,
+                    selected,
+                    self.args.rollout.temperature,
+                )
+            except RuntimeError as error:
+                from ._parity_capture import capture_failure
+                try:
+                    capture_failure(self, micro_batch, student_logits_flat,
+                                    labels_for_parity, selected,
+                                    self.args.rollout.temperature, error)
+                except Exception as capture_error:
+                    print(f"PARITY_CAPTURE_FAILED: {type(capture_error).__name__}: {capture_error}", flush=True)
+                raise
         teacher_logits_flat = self.teacher_lm_head(
             teacher_hiddens.to(self.teacher_lm_head.weight)
         )

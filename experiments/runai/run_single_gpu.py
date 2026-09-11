@@ -152,6 +152,8 @@ ray.init(
     num_cpus=8,
     include_dashboard=False,
     _temp_dir=os.environ["MP_RAY_TMP"],
+    runtime_env={"env_vars": {key: os.environ[key] for key in
+        ("MP_PARITY_CAPTURE_DIR", "MP_SOURCE_COMMIT") if key in os.environ}},
 )
 
 try:
