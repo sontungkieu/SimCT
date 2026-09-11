@@ -82,7 +82,7 @@ def stop_group(process):
     except subprocess.TimeoutExpired: pass
 
 
-def score_job(python,job,deadline):
+def score_job(python,job,deadline,worker=None):
     remaining=deadline-time.time()
     if remaining<=0: raise Deadline()
     timeout=min(120.,remaining)
@@ -90,7 +90,7 @@ def score_job(python,job,deadline):
          "PYTHONDONTWRITEBYTECODE":"1","PYTHONUNBUFFERED":"1","LANG":"C.UTF-8"}
     with tempfile.TemporaryDirectory(prefix="simct-score-") as work, tempfile.TemporaryFile() as out, tempfile.TemporaryFile() as err:
         env["HOME"]=work; env["TMPDIR"]=work
-        p=subprocess.Popen([python,str(E.HERE/"internal_worker.py")],stdin=subprocess.PIPE,
+        p=subprocess.Popen([python,str(worker or E.HERE/"internal_worker.py")],stdin=subprocess.PIPE,
                            stdout=out,stderr=err,cwd=work,env=env,start_new_session=True)
         try:
             try: p.communicate(E.encoded(job),timeout=timeout)
