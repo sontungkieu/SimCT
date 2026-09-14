@@ -9,6 +9,43 @@ spec=importlib.util.spec_from_file_location('split_queue',path)
 q=importlib.util.module_from_spec(spec);spec.loader.exec_module(q)
 
 
+@pytest.mark.parametrize('status',['completed','failed','timeout','cancelled','blocked','lost'])
+def test_advisory_schedule_continues_after_terminal_qualification(tmp_path,status):
+    manager=Path('/mnt/d/dev/codex/job-manager')
+    if not manager.exists():pytest.skip('Local manager unavailable')
+    sys.path.insert(0,str(manager))
+    from job_manager.scheduler import readiness
+    jobs=q.specs(tmp_path,q.EXTRA,q.EXTRA_GPUS[:4],'advisory',1800)
+    qualify=next(j for j in jobs if j['argv'][4]=='qualify')
+    assert qualify['timeout_seconds']==1800
+    trains=[j for j in jobs if j['argv'][4]=='train']
+    assert all(readiness({'spec':j},{qualify['id']:{'status':status}},0,{})[0]=='ready' for j in trains)
+    assert all(readiness({'spec':j},{qualify['id']:{'status':'running'}},0,{})[0]=='waiting' for j in trains)
+    assert not any(q.EXTRA_GPUS[4] in j['gpus'] for j in jobs if isinstance(j['gpus'],list))
+
+
+@pytest.mark.parametrize('policy,passed,allowed', [('required',False,False),('advisory',False,True),('advisory',True,True)])
+def test_train_advisory_preserves_unqualified_evidence(tmp_path,monkeypatch,policy,passed,allowed):
+    config={'id':'test','energy_every':1}
+    monkeypatch.setattr(q.F,'checked_config',lambda case:dict(commit='current',qualification_policy=policy,runs=[config]))
+    qual=tmp_path/'qualification'
+    if passed:q.F.write(qual/'PASS.json',dict(commit='current',status='EXACT_MATCH'))
+    calls=[]
+    def run(case,config,dest,resume):
+        calls.append(resume)
+        q.F.write(dest/'checkpoint/run-summary.json',dict(status='completed',optimizer_updates=312,energy_updates=312))
+    monkeypatch.setattr(q.F,'run_command',run)
+    if not allowed:
+        with pytest.raises(ValueError,match='Qualification not passed'):q.F.train(tmp_path,'test',qual)
+        assert not calls
+    else:
+        q.F.train(tmp_path,'test',qual)
+        assert calls==[False]
+        record=q.F.read(tmp_path/'train/test.qualification.json')
+        assert record['status']==('passed' if passed else 'unverified')
+        assert (qual/'PASS.json').exists()==passed
+
+
 @pytest.mark.parametrize('host,gpus',[(q.OWNER,['GPU-owner']),(q.EXTRA,q.EXTRA_GPUS)])
 def test_plan_manager_contract_and_dependencies(tmp_path,host,gpus):
     jobs=q.specs(tmp_path,host,gpus)

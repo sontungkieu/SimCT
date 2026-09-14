@@ -142,6 +142,8 @@ for package in ("torch", "transformers", "sglang", "ray"):
         versions[package] = None
 
 manifest = {
+    "qualification_policy": os.environ.get('MP_QUALIFICATION_POLICY','required'),
+    "qualification_status": os.environ.get('MP_QUALIFICATION_STATUS','unverified'),
     "options": opts,
     "source_root": str(root),
     "source_commit": os.environ.get("MP_SOURCE_COMMIT"),

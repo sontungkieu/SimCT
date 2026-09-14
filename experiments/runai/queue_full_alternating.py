@@ -147,6 +147,10 @@ def run_command(case,config,out,limit=312,pause=0,resume=False):
         MP_PAUSE_AFTER_UPDATES=str(pause),MP_SOURCE_COMMIT=c['commit'],MP_SOURCE_DIRTY='',
         MP_RAY_TMP=f'/var/tmp/alt-ray-{os.getpid()}-{time.time_ns()}',
         MP_CHECKPOINT_STEPS=','.join(map(str,STEPS)))
+    record=out.parent/(out.name+'.qualification.json')
+    if record.exists():
+        evidence=read(record)
+        env.update(MP_QUALIFICATION_POLICY=evidence['policy'],MP_QUALIFICATION_STATUS=evidence['status'])
     out.parent.mkdir(parents=True,exist_ok=True)
     log=out.parent/(out.name+f'.attempt-{time.time_ns()}.log')
     print('RUN_LOG',log,flush=True)
@@ -236,7 +240,17 @@ def qualify(case, destination=None):
 
 def train(case,run,qualification=None):
     c=checked_config(case)
-    if read((qualification or case/'qualification')/'PASS.json')['commit']!=c['commit']:raise ValueError('Qualification not passed')
+    qdir=qualification or case/'qualification'
+    proof=read(qdir/'PASS.json') if (qdir/'PASS.json').exists() else {}
+    passed=proof.get('commit')==c['commit'] and proof.get('status')=='EXACT_MATCH'
+    policy=c.get('qualification_policy','required')
+    if policy not in ('required','advisory'):raise ValueError('Unknown qualification policy')
+    if not passed and policy!='advisory':raise ValueError('Qualification not passed')
+    write(case/'train'/(run+'.qualification.json'),dict(
+        policy=policy,status='passed' if passed else 'unverified',
+        qualification_directory=str(qdir),source_commit=c['commit'],
+        evidence_label='qualified' if passed else 'diagnostic-unqualified',
+        continuation_authorized=policy=='advisory'))
     config=next(r for r in c['runs'] if r['id']==run);dest=case/'train'/run
     summary=dest/'checkpoint/run-summary.json'
     if summary.exists():

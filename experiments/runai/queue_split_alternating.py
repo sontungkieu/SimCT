@@ -23,9 +23,10 @@ SELF=Path(__file__).resolve()
 TERMINAL={'completed','failed','blocked','cancelled','timeout','lost'}
 
 
-def specs(case,host,gpus):
+def specs(case,host,gpus,qualification_policy='required',qualification_timeout=3600):
     if host not in (OWNER,EXTRA):raise ValueError('Unknown host')
-    if len(gpus)!=(1 if host==OWNER else 5):raise ValueError('Wrong GPU pool')
+    if len(gpus) not in ((1,) if host==OWNER else (4,5)):raise ValueError('Wrong GPU pool')
+    if qualification_policy not in ('required','advisory'):raise ValueError('Invalid qualification policy')
     prefix='altsplit-'+hashlib.sha256((str(case)+host).encode()).hexdigest()[:10]
     jobs=[]
     def add(label,action,deps=(),gpu=None,run=None):
@@ -39,7 +40,8 @@ def specs(case,host,gpus):
         if run:argv+=['--run',run]
         job=dict(version=1,id=prefix+'-'+label,project='full-alternating-split',cwd=str(ROOT),
                  argv=argv,env=env,gpus=0 if gpu is None else [gpus[gpu]],cpu_slots=1,
-                 timeout_seconds=7*24*3600,dependencies=list(deps),dependency_policy='success')
+                 timeout_seconds=qualification_timeout if action=='qualify' else 7*24*3600,
+                 dependencies=list(deps),dependency_policy='terminal' if qualification_policy=='advisory' else 'success')
         jobs.append(job);return job['id']
     audit=add('audit','audit')
     qualified=add('qualify','qualify',[audit],0)
@@ -51,13 +53,13 @@ def specs(case,host,gpus):
         else:add(f'gen-{i}','generate',[train],i)
     if host==OWNER:add('gen-0','generate',[previous],0)
     else:
-        for i in (3,4):add(f'gen-{i}','generate',[audit],i)
+        for i in range(3,len(gpus)):add(f'gen-{i}','generate',[audit],i)
     for i in range(2 if host==OWNER else 4):add(f'score-{i}','score',[audit])
     add('state-export','export')
     return jobs
 
 
-def initialize_case(case):
+def initialize_case(case,qualification_policy='required',extra_gpu_count=5,qualification_timeout=3600):
     import borrowed_campaign as B
     E,D,Q=B.eval_modules()
     case.mkdir(parents=True,exist_ok=True)
@@ -69,6 +71,8 @@ def initialize_case(case):
             c=dict(source=str(ROOT),commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),
                 runs=F.configurations(),steps=list(F.STEPS),streaming_eval=True,
                 meta_policy='uniform-normalized-group-original-pair-v3',
+                qualification_policy=qualification_policy,extra_gpu_count=extra_gpu_count,
+                qualification_timeout_seconds=qualification_timeout,
                 student=str(shared/'runs/qwen-gemma-sft-paper-20260908-045828/checkpoint'),
                 teacher='/workspace/storage-shared/models/Qwen2.5-7B-Instruct',
                 dataset=str(shared/'data/qwen-author/data/prompts.parquet'),
@@ -81,6 +85,10 @@ def initialize_case(case):
             F.write(case/'eval-template.json',template);F.write(case/'campaign.json',c)
         c=F.checked_config(case)
         if not c.get('streaming_eval'):raise ValueError('Use a fresh split campaign directory')
+        if (c.get('qualification_policy','required')!=qualification_policy or
+            c.get('extra_gpu_count',5)!=extra_gpu_count or
+            c.get('qualification_timeout_seconds',3600)!=qualification_timeout):
+            raise ValueError('Immutable scheduling policy differs; use a fresh case')
 
 
 def manager_state(args,gpus):
@@ -123,12 +131,12 @@ def submit(args):
     if host not in (OWNER,EXTRA):raise ValueError('Unexpected host')
     inventory=subprocess.check_output(['nvidia-smi','--query-gpu=index,uuid,name','--format=csv,noheader'],text=True)
     cards={int(p[0]):(p[1].strip(),p[2].strip()) for line in inventory.splitlines() if (p:=line.split(','))}
-    indices=range(1 if host==OWNER else 5)
+    indices=range(1 if host==OWNER else args.extra_gpu_count)
     if any(i not in cards or cards[i][1]!='NVIDIA B200' for i in indices):raise ValueError('Unexpected GPU inventory')
     gpus=[cards[i][0] for i in indices]
-    if host==EXTRA and gpus!=EXTRA_GPUS:raise ValueError('New-host GPU UUID mismatch')
+    if host==EXTRA and gpus!=EXTRA_GPUS[:args.extra_gpu_count]:raise ValueError('New-host GPU UUID mismatch')
     if subprocess.check_output(['git','status','--porcelain','--untracked-files=no'],cwd=ROOT,text=True).strip():raise ValueError('Dirty source')
-    initialize_case(args.case)
+    initialize_case(args.case,args.qualification_policy,args.extra_gpu_count,args.qualification_timeout_seconds)
     sys.path.insert(0,str(args.manager))
     from job_manager.store import connect,rows,submit as put
     from job_manager.__main__ import snapshot
@@ -139,7 +147,8 @@ def submit(args):
         try:
             snap=snapshot(db)
             if not snap['manager']['running'] or snap['paused'] or snap['quarantined']:raise ValueError('Manager not ready')
-            jobs=specs(args.case,host,gpus);current={j['id']:j for j in rows(db)}
+            jobs=specs(args.case,host,gpus,args.qualification_policy,args.qualification_timeout_seconds)
+            current={j['id']:j for j in rows(db)}
             for j in jobs:
                 if j['id'] in current and current[j['id']]['spec']!=j:raise ValueError('Existing spec differs')
             receipt=dict(state=str(state),host=host,manager=str(args.manager),jobs=jobs)
@@ -258,7 +267,11 @@ def main():
     p.add_argument('action',choices=['submit','status','audit','qualify','train','generate','score','export','retire-unstarted','retire-disconnected-meta'])
     p.add_argument('--case',type=Path,required=True);p.add_argument('--run')
     p.add_argument('--manager',type=Path,default=F.BASE/'job-manager');p.add_argument('--state',type=Path)
+    p.add_argument('--qualification-policy',choices=['required','advisory'],default='required')
+    p.add_argument('--extra-gpu-count',type=int,choices=[4,5],default=5)
+    p.add_argument('--qualification-timeout-seconds',type=int,default=3600)
     a=p.parse_args();a.case=a.case.resolve();host=socket.gethostname()
+    if a.qualification_timeout_seconds<=0:raise ValueError('Qualification timeout must be positive')
     if a.action=='retire-unstarted':return retire_unstarted(a.case)
     if a.action=='retire-disconnected-meta':return retire_unstarted(a.case,disconnected_meta=True)
     if a.action=='submit':return submit(a)

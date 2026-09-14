@@ -1,5 +1,29 @@
 # Full alternating and on-policy pipeline resume
 
+## User-authorized unattended scheduling
+
+The split launcher supports `submit --qualification-policy advisory
+--extra-gpu-count 4 --qualification-timeout-seconds 3600` for a **fresh case**.
+Use the same flags on both hosts. This user-selected policy waits for terminal
+dependencies rather than successful ones: qualification failure/timeout does
+not block training, and a failed seed-42 run does not block the next variant.
+The qualification job itself still records its real failure; no PASS marker is
+invented. GPU admission still waits for the assigned GPU to be available.
+
+Seed 42 uses the owner GPU sequentially. Seed 43 uses extra-host GPUs 0/1/2;
+GPU 3 is the additional generation worker. GPU 4 is excluded. Generation
+workers on GPUs 0/1/2 may start after their respective training jobs terminate.
+Scorers inspect committed exports and retain missing/failed cells as errors.
+
+Each train writes `<run>.qualification.json`, and the launch manifest includes
+`qualification_policy` and `qualification_status`. Without a matching PASS,
+the run is `unverified` / `diagnostic-unqualified`, even if training completes.
+This is permission to attempt the schedule, not evidence of correct resume or
+benchmark efficacy. Runtime/data failures can still prevent training; existing
+bounded recovery remains in effect. No live jobs are changed by publishing the
+source. The default policy remains `required`; policy/GPU-count changes require
+a new immutable case rather than editing or relabeling a running campaign.
+
 ## Scope and qualification
 
 `kdflow.training_checkpoint` is shared by the on-policy trainer and student
