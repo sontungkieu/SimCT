@@ -2,14 +2,14 @@
 
 ## Company OOM recovery
 
-New full alternating queues use B64/micro1/accumulation64 and M16/meta-micro1.
+New full alternating queues use B64/micro2/accumulation32 and M16/meta-micro4.
 The queue forwards these immutable configuration fields to the launcher.
 Use a new campaign directory; do not resume an old micro4 campaign with this
 configuration. The historical synthetic micro4 result below did not establish
 capacity for real company rollouts: cd1334e failed in the second-order inner
-gradient with 168.29 GiB allocated. Micro1 is a memory mitigation, not yet a
+gradient with 168.29 GiB allocated. Micro2 is a memory mitigation, not yet a
 verified real-data capacity or throughput result. Direct launcher defaults
-remain micro4 for compatibility; long runs additionally allow the (1,1) pair.
+remain micro4 for compatibility; long runs additionally allow (1,1) and (2,4).
 
 Production defaults remain full student, B64/micro4/accumulation16 and
 M16/meta-micro4. Do not use synthetic capacity results to increase an existing

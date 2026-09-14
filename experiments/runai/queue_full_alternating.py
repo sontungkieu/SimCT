@@ -34,7 +34,7 @@ def write(path,value):
 
 def configurations():
     return [dict(id=f'ALT-{name}-s{seed}',train_seed=seed,student_updates=312,
-        B=64,M=16,micro_B=1,micro_M=1,energy_lr=lr,energy_every=every,
+        B=64,M=16,micro_B=2,micro_M=4,energy_lr=lr,energy_every=every,
         student='full',optimizer='AdamW',student_lr=1e-6,scheduler_horizon=312)
         for seed in (42,43) for name,lr,every in VARIANTS]
 

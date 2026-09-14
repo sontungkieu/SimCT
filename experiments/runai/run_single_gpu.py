@@ -95,7 +95,7 @@ if opts['micro_train_batch_size'] not in (1,2,4,8,16,32,64):
     raise ValueError('Student microbatch must be a positive divisor of B64')
 if opts.get('mp_opd_meta_microbatch_size', 4) not in (1,2,4,8,16):
     raise ValueError('Meta microbatch must be a positive divisor of M16')
-if (opts['micro_train_batch_size'],opts.get('mp_opd_meta_microbatch_size',4)) not in ((4,4),(1,1)) and not (0 < limit <= 30):
+if (opts['micro_train_batch_size'],opts.get('mp_opd_meta_microbatch_size',4)) not in ((4,4),(1,1),(2,4)) and not (0 < limit <= 30):
     raise ValueError('Microbatch overrides are restricted to short diagnostics (1-30 updates)')
 
 if opts["kd_algorithm"] not in {"mp_opd", "span_ctkd", "xtoken"}:
