@@ -30,6 +30,12 @@ Measured on B200/Torch 2.11.0+cu130 in Modal app
 These isolated kernels matched bitwise; feature-to-energy gradients also
 matched. These factors must not be reported as end-to-end speedups.
 
+Expected atom rates now vectorize across destination atoms while retaining
+each atom's original accumulation order and scalar-promotion rounding.
+B200 app `ap-2naRkcVUscLPCyDy8zacah` measured 19.67 -> 0.121 ms (400 atoms)
+and 48.91 -> 0.123 ms (1000 atoms). Forward results matched bitwise;
+mixed-precision first/second derivatives matched within rtol=1e-5, atol=1e-6.
+
 ## Short batch trials
 
 1. Try one or two updates per candidate; stop on OOM and release its process.
@@ -50,3 +56,22 @@ on non-OOM errors. `--steps 10 --batch 64 --micros 4` measures synthetic
 student/meta computation; it deliberately excludes teacher, on-policy rollout,
 MP partition DP and company SFT weights. It is NOT a matched campaign test.
 Results use a unique `--run-id` under `remote_artifacts/`.
+
+## Full-size synthetic results (2026-09-14 UTC)
+
+On lhtu05 B200, at length 1024 and meta-micro4, student micro64 exhausted
+memory, micro32 failed cuBLAS allocation, and micro16/8 exhausted memory.
+Micro4 passed. Releasing temporary gradients reduced peak allocated memory
+from 147.24 to 127.43 GiB in the two-inner-microbatch capacity test; first-step
+meta NLL, energy delta and both gradient norms matched the prior result.
+
+App `ap-nMsJ4LCAgMivZGtkiX76sk` completed ten synthetic B64/M16 updates with
+student/meta micro4: median of steps 3-10 was 20.122 seconds, range
+20.064-20.269 seconds, peak allocated 127.517 GiB, peak reserved 160.279 GiB.
+Energy gradients were nonzero on all ten steps. No efficacy inference follows
+from synthetic NLL decreasing. This does not establish capacity for longer
+actual rollouts, larger meta microbatches, or end-to-end campaign throughput.
+
+Production remains micro4. Larger microbatches are not qualified by these
+results. Company input/checkpoint and exact resume qualification remain
+necessary before adopting a newly benchmarked batch configuration.

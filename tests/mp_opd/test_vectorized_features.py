@@ -3,7 +3,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 from kdflow.algorithms.mp_opd import atom_features
-from kdflow.algorithms._mp_opd_credit import span_tables
+from kdflow.algorithms._mp_opd_credit import span_tables, expected_atom_rates
 
 
 def scalar_features(atoms, c):
@@ -45,6 +45,36 @@ def fixture(n, device='cpu', dtype=torch.float32):
     c = SimpleNamespace(base_credit=base, weight=weight, rate=base/weight,
         teacher_log_score=base-2, student_old_log_score=base-3)
     return atoms, c
+
+
+def scalar_rates(marginals, rates):
+    n, length = rates.shape
+    result = rates.new_zeros(n)
+    for start in range(n):
+        for offset in range(length):
+            end = start + offset + 1
+            if end <= n:
+                result[start:end] += marginals[start,offset] * rates[start,offset]
+    return result
+
+
+@pytest.mark.parametrize('n,length', [(0,2),(1,4),(7,2),(17,5),(400,2)])
+def test_expected_rates_bitwise(n, length):
+    torch.manual_seed(42)
+    q = torch.randn(n,length,dtype=torch.float64)
+    r = torch.randn(n,length,dtype=torch.float32)
+    assert torch.equal(expected_atom_rates(q,r), scalar_rates(q,r))
+
+
+def test_expected_rates_first_and_second_derivatives():
+    q = torch.randn(7,3,dtype=torch.float64,requires_grad=True)
+    r = torch.randn_like(q,requires_grad=True)
+    ga = torch.autograd.grad(expected_atom_rates(q,r).square().sum(),(q,r),create_graph=True)
+    ge = torch.autograd.grad(scalar_rates(q,r).square().sum(),(q,r),create_graph=True)
+    for a,b in zip(ga,ge): torch.testing.assert_close(a,b,rtol=1e-12,atol=1e-12)
+    ha = torch.autograd.grad(sum(g.square().sum() for g in ga),(q,r))
+    he = torch.autograd.grad(sum(g.square().sum() for g in ge),(q,r))
+    for a,b in zip(ha,he): torch.testing.assert_close(a,b,rtol=1e-12,atol=1e-12)
 
 
 @pytest.mark.parametrize('n', [1, 2, 17, 400])

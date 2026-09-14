@@ -101,11 +101,15 @@ def expected_atom_rates(span_marginals: torch.Tensor, span_rates: torch.Tensor) 
         raise ValueError("marginals and rates must have the same [n,L] shape")
     n, length = span_marginals.shape
     result = span_rates.new_zeros(n)
-    for start in range(n):
-        for offset in range(length):
-            end = start + offset + 1
-            if end <= n:
-                result[start:end] += span_marginals[start, offset] * span_rates[start, offset]
+    # For each output atom preserve the original order: increasing span start,
+    # then increasing span length. Parallelize across output atoms, not across
+    # their reductions. L=2 now uses three vector operations, not ~2*n slices.
+    for distance in range(min(length, n) - 1, -1, -1):
+        for offset in range(distance, min(length, n)):
+            count = n - offset
+            result[distance:count + distance] += (
+                span_marginals[:count, offset] * span_rates[:count, offset]
+            ).to(result.dtype)  # Match scalar-tensor promotion before addition.
     return result
 
 
