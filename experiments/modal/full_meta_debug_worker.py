@@ -1,10 +1,14 @@
 """Tiny GPU diagnostic of the production full-meta function under FSDP2."""
 import json
 import os
+import importlib.util
 import torch
 import torch.distributed as dist
 from torch.distributed.fsdp import fully_shard
-from kdflow.algorithms._mp_opd_full_meta import full_meta_step
+spec = importlib.util.spec_from_file_location('full_meta', '/opt/overlay/kdflow/algorithms/_mp_opd_full_meta.py')
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+full_meta_step = module.full_meta_step
 
 
 def run(sharded):

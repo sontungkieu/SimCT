@@ -4,6 +4,20 @@ import torch
 from kdflow.algorithms._mp_opd_full_meta import full_meta_step, adam_value, clipped
 
 
+def test_disconnected_inner_cannot_silently_report_energy_update():
+    p = torch.nn.Parameter(torch.ones(2))
+    other = torch.nn.Parameter(torch.ones(2))
+    e = torch.nn.Linear(2, 1, bias=False)
+    opt = torch.optim.AdamW([p], lr=.01)
+    eo = torch.optim.AdamW(e.parameters(), lr=.001)
+    old = e.weight.detach().clone()
+    with pytest.raises(RuntimeError, match='disconnected'):
+        full_meta_step([p], opt, e, eo, [lambda: e(other).square().sum()],
+                       [lambda: p.square().sum()], max_norm=1.)
+    assert torch.equal(old, e.weight)
+    assert not eo.state
+
+
 @pytest.mark.parametrize("max_norm", [0., .1, 10.])
 @pytest.mark.parametrize("history", [0, 3])
 def test_streamed_hypergradient_matches_direct_unroll(max_norm, history):

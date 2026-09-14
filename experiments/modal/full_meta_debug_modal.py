@@ -5,7 +5,7 @@ import subprocess
 from pathlib import Path
 import modal
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[2] if modal.is_local() else Path('/opt/overlay')
 IMAGE = 'docker.io/codemaivanngu/simct-b200@sha256:33b2b55874b34447a1395328987b64c63d824a05fa6b737fe5978b22d497b24f'
 app = modal.App('simct-full-meta-autograd-debug')
 image = (modal.Image.from_registry(IMAGE).entrypoint([])

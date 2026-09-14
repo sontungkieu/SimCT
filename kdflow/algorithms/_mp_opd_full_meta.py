@@ -49,6 +49,8 @@ def full_meta_step(parameters, optimizer, energy, energy_optimizer, inner_losses
     for loss_fn in inner_losses:
         loss = loss_fn()
         part = torch.autograd.grad(loss, params, allow_unused=True)
+        if all(value is None for value in part):
+            raise RuntimeError('Meta inner loss is disconnected from optimizer parameters; FSDP parameter views require an explicit autograd bridge')
         for target, value in zip(g, part):
             if value is not None: target.add_(value.detach())
     cg, norm, scale = clipped(g, max_norm)
@@ -65,6 +67,8 @@ def full_meta_step(parameters, optimizer, energy, energy_optimizer, inner_losses
             if not torch.isfinite(loss): raise FloatingPointError("Nonfinite meta NLL")
             meta_value += float(loss.detach())
             part = torch.autograd.grad(loss, params, allow_unused=True)
+            if all(value is None for value in part):
+                raise RuntimeError('Meta outer loss is disconnected from optimizer parameters')
             for target, value in zip(outer, part):
                 if value is not None: target.add_(value.detach())
     finally:
