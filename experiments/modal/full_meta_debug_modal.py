@@ -23,7 +23,7 @@ if os.environ.get('META_DEBUG_SOURCE_BUNDLE'):
 def regression():
     work = '/opt/overlay'
     if Path('/tmp/meta-source.bundle').exists():
-        subprocess.run(['git','clone','/tmp/meta-source.bundle','/tmp/meta-source'],check=True)
+        subprocess.run(['git','clone','--branch','vdt/ops/b200-portable','/tmp/meta-source.bundle','/tmp/meta-source'],check=True)
         work = '/tmp/meta-source'
     env = dict(os.environ, PYTHONPATH=work+'/experiments/modal/vendor:'+work, PYTHONDONTWRITEBYTECODE='1')
     p = subprocess.run(['/opt/venvs/simct-b200/bin/python', '-m', 'pytest',
