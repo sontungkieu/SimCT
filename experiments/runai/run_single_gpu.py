@@ -52,7 +52,7 @@ opts.update(
     train_dataset_path=os.environ.get("MP_DATASET_PATH", str(shared / "data/qwen-author/data/prompts.parquet")),
     num_epochs=2,
     train_batch_size=64,
-    micro_train_batch_size=4,
+    micro_train_batch_size=int(os.environ.get('MP_MICRO_TRAIN_BATCH_SIZE', '4')),
     attn_implementation=os.environ.get("MP_ATTN_IMPLEMENTATION", "eager"),
     rollout_num_engines=1,
     rollout_tp_size=1,
@@ -86,9 +86,17 @@ if mode == "soft":
     opts.update(mp_opd_energy_checkpoint=str(energy_path),mp_opd_partition_temperature=1.)
     if os.environ.get('MP_ALTERNATING','0')=='1':
         opts.update(mp_opd_alternating=True,mp_opd_meta_path=os.environ['MP_META_PATH'],
-            mp_opd_meta_batch_size=16,mp_opd_meta_microbatch_size=4,
+            mp_opd_meta_batch_size=16,
+            mp_opd_meta_microbatch_size=int(os.environ.get('MP_META_MICRO_BATCH_SIZE', '4')),
             mp_opd_energy_lr=float(os.environ.get('MP_ENERGY_LR','0.001')),
             mp_opd_energy_every=int(os.environ.get('MP_ENERGY_EVERY','1')))
+
+if opts['micro_train_batch_size'] not in (1,2,4,8,16,32,64):
+    raise ValueError('Student microbatch must be a positive divisor of B64')
+if opts.get('mp_opd_meta_microbatch_size', 4) not in (1,2,4,8,16):
+    raise ValueError('Meta microbatch must be a positive divisor of M16')
+if (opts['micro_train_batch_size'] != 4 or opts.get('mp_opd_meta_microbatch_size',4) != 4) and not (0 < limit <= 30):
+    raise ValueError('Microbatch overrides are restricted to short diagnostics (1-30 updates)')
 
 if opts["kd_algorithm"] not in {"mp_opd", "span_ctkd", "xtoken"}:
     raise ValueError("MP_ALGORITHM must be mp_opd, span_ctkd or xtoken")

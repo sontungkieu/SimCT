@@ -15,6 +15,7 @@ image = (modal.Image.from_registry(IMAGE).entrypoint([])
     .add_local_dir(str(ROOT/'experiments/mp_opd'), '/opt/overlay/experiments/mp_opd', ignore=['**/__pycache__/**','**/*.pyc'])
     .add_local_dir(str(ROOT/'scripts'), '/opt/overlay/scripts', ignore=['**/__pycache__/**','**/*.pyc'])
     .add_local_file(str(ROOT/'experiments/modal/vendor/xtoken_upstream_token_aligner.py'), '/opt/overlay/xtoken_upstream_token_aligner.py')
+    .add_local_file(str(ROOT/'experiments/modal/mp_preprocessing_benchmark.py'), '/opt/overlay/preprocessing.py')
     .add_local_file(str(ROOT/'experiments/modal/full_meta_debug_worker.py'), '/opt/overlay/probe.py'))
 if os.environ.get('META_DEBUG_SOURCE_BUNDLE'):
     image = image.add_local_file(os.environ['META_DEBUG_SOURCE_BUNDLE'], '/tmp/meta-source.bundle')
@@ -34,18 +35,19 @@ def regression():
     return {'returncode':p.returncode, 'stdout':p.stdout, 'stderr':p.stderr}
 
 @app.function(image=image, gpu=os.environ.get('META_DEBUG_GPU', 'B200'), cpu=2, memory=8192, timeout=180, retries=0, max_containers=1)
-def probe():
+def probe(preprocessing: bool = False):
     import os
     env = dict(os.environ, PYTHONPATH='/opt/overlay', PYTHONUNBUFFERED='1')
-    p = subprocess.run(['/opt/venvs/simct-b200/bin/python','/opt/overlay/probe.py'],
+    p = subprocess.run(['/opt/venvs/simct-b200/bin/python',
+        '/opt/overlay/preprocessing.py' if preprocessing else '/opt/overlay/probe.py'],
         env=env, capture_output=True, text=True, timeout=150)
     print(p.stdout, flush=True)
     print(p.stderr, flush=True)
     return {'returncode': p.returncode, 'stdout': p.stdout, 'stderr': p.stderr}
 
 @app.local_entrypoint()
-def main(run_id: str, regression_only: bool = False):
-    result = regression.remote() if regression_only else probe.remote()
+def main(run_id: str, regression_only: bool = False, preprocessing: bool = False):
+    result = regression.remote() if regression_only else probe.remote(preprocessing)
     dest = ROOT/'remote_artifacts'/run_id
     dest.mkdir(parents=True, exist_ok=True)
     (dest/'result.json').write_text(json.dumps(result, indent=2))

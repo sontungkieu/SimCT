@@ -64,13 +64,15 @@ def span_tables(base: torch.Tensor, weight: torch.Tensor, max_span_length: int):
     valid = torch.zeros((n, length), dtype=torch.bool, device=base.device)
     pb = torch.cat((base.new_zeros(1), base.cumsum(0)))
     pw = torch.cat((weight.new_zeros(1), weight.cumsum(0)))
-    for start in range(n):
-        for offset in range(length):
-            end = start + offset + 1
-            if end <= n:
-                b_span[start, offset] = pb[end] - pb[start]
-                w_span[start, offset] = pw[end] - pw[start]
-                valid[start, offset] = True
+    # Keep exactly the same prefix subtraction, but launch per span length
+    # rather than per atom/length pair (thousands of tiny CUDA operations).
+    for offset in range(length):
+        width = offset + 1
+        count = n - offset
+        if count > 0:
+            b_span[:count, offset] = pb[width:] - pb[:count]
+            w_span[:count, offset] = pw[width:] - pw[:count]
+            valid[:count, offset] = True
     rate = torch.where(valid, b_span / w_span.clamp_min(1), torch.zeros_like(b_span)).detach()
     return b_span.detach(), w_span.detach(), rate, valid
 

@@ -114,6 +114,8 @@ def full_meta_step(parameters, optimizer, energy, energy_optimizer, inner_losses
             raise RuntimeError('Meta inner loss is disconnected from optimizer parameters; FSDP parameter views require an explicit autograd bridge')
         for target, value in zip(g, part):
             if value is not None: target.add_(value.detach())
+        # Do not retain a full gradient tuple across the next model forward.
+        del part, loss, value, target
     cg, norm, scale = clipped(g, max_norm)
     refresh_parameters()
     originals = [p.detach().cpu().clone() for p in params]
@@ -132,6 +134,7 @@ def full_meta_step(parameters, optimizer, energy, energy_optimizer, inner_losses
                 raise RuntimeError('Meta outer loss is disconnected from optimizer parameters')
             for target, value in zip(outer, part):
                 if value is not None: target.add_(value.detach())
+            del part, loss, value, target
     finally:
         refresh_parameters()
         with torch.no_grad():
@@ -143,8 +146,8 @@ def full_meta_step(parameters, optimizer, energy, energy_optimizer, inner_losses
     for p, grad, vector in zip(params, cg, outer):
         group=groups[id(p)]; state=optimizer.state.get(p,{})
         b1,b2=group['betas']; step=float(state.get('step',0))+1
-        m1=b1*state.get('exp_avg',torch.zeros_like(p))+(1-b1)*grad
-        v1=b2*state.get('exp_avg_sq',torch.zeros_like(p))+(1-b2)*grad.square()
+        m1=b1*(state['exp_avg'] if 'exp_avg' in state else torch.zeros_like(p))+(1-b1)*grad
+        v1=b2*(state['exp_avg_sq'] if 'exp_avg_sq' in state else torch.zeros_like(p))+(1-b2)*grad.square()
         root=(v1/(1-b2**step)).sqrt(); denom=root+group['eps']
         # At v=g=0, the composite Adam map g/(|g|+eps) has derivative
         # 1/eps; naïve autograd through sqrt produces 0*inf -> NaN.
@@ -154,6 +157,7 @@ def full_meta_step(parameters, optimizer, energy, energy_optimizer, inner_losses
         if not torch.isfinite(tangent).all():
             raise FloatingPointError("Nonfinite AdamW VJP; inspect zero-variance/numerical edge")
         u.append(tangent)
+        del m1, v1, root, denom, root_safe, correction, tangent
     del cg, outer
     # VJP through GLOBAL gradient clipping, including its cross-parameter term.
     if max_norm > 0 and float(scale) < 1:
@@ -172,6 +176,8 @@ def full_meta_step(parameters, optimizer, energy, energy_optimizer, inner_losses
                                      grad_outputs=tuple(v for _,v in active), allow_unused=True)
             for target, value in zip(hyper,hg):
                 if value is not None: target.add_(value.detach())
+            del hg, target, value
+        del active, part, loss
     if not all(torch.isfinite(x).all() for x in hyper):
         raise FloatingPointError("Nonfinite full energy hypergradient")
     energy_optimizer.zero_grad(set_to_none=True)

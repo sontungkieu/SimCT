@@ -52,26 +52,30 @@ def random_partition(n: int, max_length: int, seed: int) -> tuple[tuple[int, int
 
 
 def atom_features(atoms, credits) -> torch.Tensor:
-    rows = []
-    for index, atom in enumerate(atoms):
-        w = credits.weight[index]
-        rows.append(
-            torch.stack(
-                (
-                    credits.rate[index],
-                    credits.base_credit[index],
-                    w,
-                    w.new_tensor(float(atom.teacher_token_count)),
-                    w.new_tensor(float(atom.byte_end - atom.byte_start)),
-                    credits.teacher_log_score[index] / float(atom.teacher_token_count),
-                    credits.student_old_log_score[index] / w,
-                    w.new_tensor(float(atom.boundary_type == "one_to_one")),
-                    w.new_tensor(float(atom.boundary_type == "multi_token")),
-                    w.new_tensor(1.0),
-                )
-            )
-        )
-    return torch.stack(rows).detach()
+    # Transfer static metadata once, instead of allocating CUDA scalars per
+    # atom. Features deliberately stay detached from the student graph.
+    with torch.no_grad():
+        static = credits.weight.new_tensor([
+            (float(a.teacher_token_count), float(a.byte_end - a.byte_start),
+             float(a.boundary_type == "one_to_one"),
+             float(a.boundary_type == "multi_token"), 1.0)
+            for a in atoms
+        ])
+        # CUDA scalar division can use a different rounding path from tensor
+        # division. Group equal counts to retain the original scalar divisor.
+        normalized_teacher = torch.empty_like(credits.teacher_log_score)
+        groups = {}
+        for i, a in enumerate(atoms):
+            groups.setdefault(a.teacher_token_count, []).append(i)
+        for count, indices in groups.items():
+            index = torch.tensor(indices, device=static.device)
+            normalized_teacher[index] = credits.teacher_log_score[index] / float(count)
+        return torch.stack((
+            credits.rate, credits.base_credit, credits.weight, static[:, 0],
+            static[:, 1], normalized_teacher,
+            credits.student_old_log_score / credits.weight,
+            static[:, 2], static[:, 3], static[:, 4],
+        ), dim=1).detach()
 
 
 def _finite_stats(prefix: str, values: torch.Tensor) -> dict[str, torch.Tensor]:
@@ -495,7 +499,11 @@ class MetaPartitionedOPD:
             ce_loss = compute_cross_entropy(student_logits_flat, ce_labels, reduction="sum") / avg_token_num
             metrics["ce_loss"] = ce_loss
             metrics["loss"] = (1 - self.args.kd.kd_ratio) * ce_loss + self.args.kd.kd_ratio * kd_loss
-        for key, value in metrics.items():
-            if not torch.isfinite(value).all():
-                raise FloatingPointError(f"non-finite MP-OPD metric: {key}")
+        # One device/host synchronization on the healthy path. Preserve the
+        # offending metric name on failure without synchronizing every scalar.
+        finite = torch.stack([torch.isfinite(v.detach()).all() for v in metrics.values()])
+        if not finite.all():
+            for key, ok in zip(metrics, finite.cpu().tolist()):
+                if not ok:
+                    raise FloatingPointError(f"non-finite MP-OPD metric: {key}")
         return metrics
