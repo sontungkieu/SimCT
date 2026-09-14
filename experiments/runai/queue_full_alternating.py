@@ -244,13 +244,14 @@ def train(case,run,qualification=None):
     proof=read(qdir/'PASS.json') if (qdir/'PASS.json').exists() else {}
     passed=proof.get('commit')==c['commit'] and proof.get('status')=='EXACT_MATCH'
     policy=c.get('qualification_policy','required')
-    if policy not in ('required','advisory'):raise ValueError('Unknown qualification policy')
-    if not passed and policy!='advisory':raise ValueError('Qualification not passed')
+    if policy not in ('required','advisory','skip'):raise ValueError('Unknown qualification policy')
+    if policy=='skip':passed=False
+    if not passed and policy=='required':raise ValueError('Qualification not passed')
     write(case/'train'/(run+'.qualification.json'),dict(
-        policy=policy,status='passed' if passed else 'unverified',
+        policy=policy,status='skipped' if policy=='skip' else 'passed' if passed else 'unverified',
         qualification_directory=str(qdir),source_commit=c['commit'],
         evidence_label='qualified' if passed else 'diagnostic-unqualified',
-        continuation_authorized=policy=='advisory'))
+        continuation_authorized=policy in ('advisory','skip')))
     config=next(r for r in c['runs'] if r['id']==run);dest=case/'train'/run
     summary=dest/'checkpoint/run-summary.json'
     if summary.exists():

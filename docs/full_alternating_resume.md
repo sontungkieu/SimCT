@@ -2,6 +2,13 @@
 
 ## User-authorized unattended scheduling
 
+For the subsequently requested direct launch, use `--qualification-policy skip`
+instead of `advisory`. There is no qualification job: after the CPU data audit
+terminates, training is eligible immediately. Runs record status `skipped` and
+remain diagnostic-unqualified. Dependency failures do not cascade; actual
+training/runtime/export validity checks still apply. Use a fresh immutable
+case with `--extra-gpu-count 4` on both hosts.
+
 The split launcher supports `submit --qualification-policy advisory
 --extra-gpu-count 4 --qualification-timeout-seconds 3600` for a **fresh case**.
 Use the same flags on both hosts. This user-selected policy waits for terminal

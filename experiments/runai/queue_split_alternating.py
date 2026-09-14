@@ -26,7 +26,7 @@ TERMINAL={'completed','failed','blocked','cancelled','timeout','lost'}
 def specs(case,host,gpus,qualification_policy='required',qualification_timeout=3600):
     if host not in (OWNER,EXTRA):raise ValueError('Unknown host')
     if len(gpus) not in ((1,) if host==OWNER else (4,5)):raise ValueError('Wrong GPU pool')
-    if qualification_policy not in ('required','advisory'):raise ValueError('Invalid qualification policy')
+    if qualification_policy not in ('required','advisory','skip'):raise ValueError('Invalid qualification policy')
     prefix='altsplit-'+hashlib.sha256((str(case)+host).encode()).hexdigest()[:10]
     jobs=[]
     def add(label,action,deps=(),gpu=None,run=None):
@@ -41,10 +41,10 @@ def specs(case,host,gpus,qualification_policy='required',qualification_timeout=3
         job=dict(version=1,id=prefix+'-'+label,project='full-alternating-split',cwd=str(ROOT),
                  argv=argv,env=env,gpus=0 if gpu is None else [gpus[gpu]],cpu_slots=1,
                  timeout_seconds=qualification_timeout if action=='qualify' else 7*24*3600,
-                 dependencies=list(deps),dependency_policy='terminal' if qualification_policy=='advisory' else 'success')
+                 dependencies=list(deps),dependency_policy='terminal' if qualification_policy in ('advisory','skip') else 'success')
         jobs.append(job);return job['id']
     audit=add('audit','audit')
-    qualified=add('qualify','qualify',[audit],0)
+    qualified=audit if qualification_policy=='skip' else add('qualify','qualify',[audit],0)
     previous=qualified
     for i,(name,_,_) in enumerate(F.VARIANTS):
         run=f'ALT-{name}-s{42 if host==OWNER else 43}'
@@ -267,7 +267,7 @@ def main():
     p.add_argument('action',choices=['submit','status','audit','qualify','train','generate','score','export','retire-unstarted','retire-disconnected-meta'])
     p.add_argument('--case',type=Path,required=True);p.add_argument('--run')
     p.add_argument('--manager',type=Path,default=F.BASE/'job-manager');p.add_argument('--state',type=Path)
-    p.add_argument('--qualification-policy',choices=['required','advisory'],default='required')
+    p.add_argument('--qualification-policy',choices=['required','advisory','skip'],default='required')
     p.add_argument('--extra-gpu-count',type=int,choices=[4,5],default=5)
     p.add_argument('--qualification-timeout-seconds',type=int,default=3600)
     a=p.parse_args();a.case=a.case.resolve();host=socket.gethostname()

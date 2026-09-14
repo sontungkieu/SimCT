@@ -9,6 +9,18 @@ spec=importlib.util.spec_from_file_location('split_queue',path)
 q=importlib.util.module_from_spec(spec);spec.loader.exec_module(q)
 
 
+@pytest.mark.parametrize('host,gpus',[(q.OWNER,['GPU-owner']),(q.EXTRA,q.EXTRA_GPUS[:4])])
+def test_skip_has_no_qualification_job(tmp_path,host,gpus):
+    jobs=q.specs(tmp_path,host,gpus,'skip')
+    assert not any(j['argv'][4]=='qualify' for j in jobs)
+    audit=next(j for j in jobs if j['argv'][4]=='audit')
+    trains=[j for j in jobs if j['argv'][4]=='train']
+    assert len(trains)==3 and trains[0]['dependencies']==[audit['id']]
+    assert all(j['dependency_policy']=='terminal' for j in trains)
+    if host==q.EXTRA:assert all(j['dependencies']==[audit['id']] for j in trains)
+    else:assert trains[1]['dependencies']==[trains[0]['id']]
+
+
 @pytest.mark.parametrize('status',['completed','failed','timeout','cancelled','blocked','lost'])
 def test_advisory_schedule_continues_after_terminal_qualification(tmp_path,status):
     manager=Path('/mnt/d/dev/codex/job-manager')
@@ -24,7 +36,7 @@ def test_advisory_schedule_continues_after_terminal_qualification(tmp_path,statu
     assert not any(q.EXTRA_GPUS[4] in j['gpus'] for j in jobs if isinstance(j['gpus'],list))
 
 
-@pytest.mark.parametrize('policy,passed,allowed', [('required',False,False),('advisory',False,True),('advisory',True,True)])
+@pytest.mark.parametrize('policy,passed,allowed', [('required',False,False),('advisory',False,True),('advisory',True,True),('skip',False,True),('skip',True,True)])
 def test_train_advisory_preserves_unqualified_evidence(tmp_path,monkeypatch,policy,passed,allowed):
     config={'id':'test','energy_every':1}
     monkeypatch.setattr(q.F,'checked_config',lambda case:dict(commit='current',qualification_policy=policy,runs=[config]))
@@ -42,7 +54,7 @@ def test_train_advisory_preserves_unqualified_evidence(tmp_path,monkeypatch,poli
         q.F.train(tmp_path,'test',qual)
         assert calls==[False]
         record=q.F.read(tmp_path/'train/test.qualification.json')
-        assert record['status']==('passed' if passed else 'unverified')
+        assert record['status']==('skipped' if policy=='skip' else 'passed' if passed else 'unverified')
         assert (qual/'PASS.json').exists()==passed
 
 
