@@ -10,11 +10,32 @@ gradient norm of 0.649764657. FSDP2 parameters returned all `None` from
 `autograd.grad(..., allow_unused=True)` and a reported virtual gradient norm
 of zero, while ordinary backward populated gradients in both cases.
 
-The production helper now rejects an entirely disconnected inner/outer
-gradient. This is a fail-closed guard, not a working FSDP2 hypergradient fix.
-An explicit, verified connection between optimizer shards and unsharded
-forward parameters is still required before full alternating training.
+The helper rejects an entirely disconnected inner/outer gradient. The new
+single-rank forward-parameter bridge captures the actual tensors after FSDP
+unsharding and converts gradients back to optimizer DTensor layout. During
+meta computation, it retains unsharded storage through higher derivatives,
+then restores the original reshard policies and removes its hooks. It uses
+Torch 2.11 private policy fields only to restore values without guessing.
+
+Modal app `ap-gLrX51mr75afCiwv4QuS57` passed three-update comparisons on L4:
+linear, nested nonlinear layers, BF16, and a tiny random Gemma2 with eager
+attention and nonreentrant activation checkpointing. The FP32 cases matched
+within 1e-5 relative tolerance; BF16 Gemma used 2 percent relative tolerance
+and 1e-7 absolute tolerance. Its plain reference explicitly casts embedding
+and norm parameters to match FSDP, since autocast alone does not. Virtual
+student rollback is checked exactly each update. This is mechanics evidence,
+not full-company-model/B64/M16/B200 qualification or downstream efficacy.
+
+The production full-meta caller uses the bridge. Energy/virtual gradients,
+energy deltas and optimizer LR now use scientific notation in text logs.
 Exact resume alone cannot establish that the energy gradient is correct.
+
+`queue_split_alternating.py retire-disconnected-meta --case OLD_CASE` cancels
+only jobs in that host's verified receipt, and only for source commit
+`f5d5114e1d7a3c3a29a1901f167968acb5e8b747`. It preserves outputs and marks
+them unsuitable for alternating efficacy or fresh-source resume. Submit a
+new case after workers stop; do not modify existing checkpoints or bypass
+qualification. Other campaign jobs are untouched.
 
 Reproduce with the existing Modal SDK, using an authorized profile:
 

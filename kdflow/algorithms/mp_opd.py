@@ -211,7 +211,7 @@ class MetaPartitionedOPD:
         self.student_updates += count
 
     def update_energy_full(self, batches, meta_rows, optimizer):
-        from ._mp_opd_full_meta import full_meta_step
+        from ._mp_opd_full_meta import full_meta_step, ForwardParameterBridge
         args=self.args.kd
         if (self.student_updates+1) % args.mp_opd_energy_every:
             return {"mp_opd_energy_updates_total":float(self.energy_updates)}
@@ -253,11 +253,14 @@ class MetaPartitionedOPD:
             from torch.distributed.fsdp import FSDPModule
             for module in self.student.modules():
                 if isinstance(module,FSDPModule): module.reshard()
+        refresh_parameters()
+        bridge = ForwardParameterBridge(self.student)
         try:
             result=full_meta_step(tuple(p for p in self.student.parameters() if p.requires_grad),
                 optimizer,self.energy,self.energy_optimizer,inner,outer,max_norm=self.args.train.max_norm,
-                refresh_parameters=refresh_parameters)
+                refresh_parameters=refresh_parameters, parameter_grad=bridge.grad)
         finally:
+            bridge.close()
             self._meta_gradient=False
         self.energy_updates+=1
         result['mp_opd_energy_updates_total']=float(self.energy_updates)

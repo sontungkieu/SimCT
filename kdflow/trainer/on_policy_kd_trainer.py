@@ -855,8 +855,9 @@ class OnPolicyKDTrainer:
                 active_log_state[k] = value
             log_info = []
             for k, value in active_log_state.items():
-                if k == "lr":
-                    log_info.append(f"lr: {value:.6e}")
+                if k in {"lr", "optimizer_lr_used", "mp_opd_energy_parameter_delta",
+                         "mp_opd_energy_gradient_norm", "mp_opd_virtual_gradient_norm"}:
+                    log_info.append(f"{k}: {value:.9e}")
                 else:
                     log_info.append(f"{k}: {value:.6f}")
             # Append average phase times

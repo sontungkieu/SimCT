@@ -175,12 +175,16 @@ def producers_done(case):
     return True
 
 
-def retire_unstarted(case):
+def retire_unstarted(case, disconnected_meta=False):
     """Retire only this host's pre-training failed campaign, preserving evidence."""
     host=socket.gethostname()
     if host not in (OWNER,EXTRA):raise ValueError('Unexpected host')
     receipt=F.read(case/'nodes'/host/'receipt.json')
     if receipt['host']!=host:raise ValueError('Host mismatch')
+    if disconnected_meta:
+        c=F.read(case/'campaign.json')
+        if c['commit']!='f5d5114e1d7a3c3a29a1901f167968acb5e8b747':
+            raise ValueError('Recovery only applies to the verified disconnected-meta source')
     sys.path.insert(0,receipt['manager'])
     from job_manager.store import connect,rows,cancel
     db=connect(Path(receipt['state']))
@@ -189,9 +193,9 @@ def retire_unstarted(case):
         for spec in receipt['jobs']:
             old=current[spec['id']]
             if old['spec']!=spec:raise ValueError('Existing spec changed')
-            if spec['argv'][4]=='train' and old['started'] is not None:
+            if not disconnected_meta and spec['argv'][4]=='train' and old['started'] is not None:
                 raise ValueError('Training already started: do not retire this campaign')
-            if spec['argv'][4]=='qualify' and old['status'] not in ('failed','blocked','cancelled'):
+            if not disconnected_meta and spec['argv'][4]=='qualify' and old['status'] not in ('failed','blocked','cancelled'):
                 raise ValueError('Qualification is not failed/blocked; inspect first')
         for spec in receipt['jobs']:cancel(db,spec['id'])
         wanted={j['id'] for j in receipt['jobs']}
@@ -200,7 +204,10 @@ def retire_unstarted(case):
             if not active:break
             time.sleep(1)
         else:raise ValueError('Old workers have not stopped; new campaign not submitted: '+str(active))
-        F.write(case/'nodes'/host/'retired-before-training.json',dict(host=host,time=time.time(),jobs=sorted(wanted)))
+        record='retired-disconnected-meta.json' if disconnected_meta else 'retired-before-training.json'
+        F.write(case/'nodes'/host/record,dict(host=host,time=time.time(),jobs=sorted(wanted),
+            invalid_for_alternating_efficacy=disconnected_meta,
+            reason='Disconnected FSDP meta gradients; preserve outputs, do not resume them' if disconnected_meta else 'Retired before training'))
         print('OLD_CAMPAIGN_RETIRED',host,flush=True)
     finally:db.close()
 
@@ -248,11 +255,12 @@ def worker(case,phase):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('action',choices=['submit','status','audit','qualify','train','generate','score','export','retire-unstarted'])
+    p.add_argument('action',choices=['submit','status','audit','qualify','train','generate','score','export','retire-unstarted','retire-disconnected-meta'])
     p.add_argument('--case',type=Path,required=True);p.add_argument('--run')
     p.add_argument('--manager',type=Path,default=F.BASE/'job-manager');p.add_argument('--state',type=Path)
     a=p.parse_args();a.case=a.case.resolve();host=socket.gethostname()
     if a.action=='retire-unstarted':return retire_unstarted(a.case)
+    if a.action=='retire-disconnected-meta':return retire_unstarted(a.case,disconnected_meta=True)
     if a.action=='submit':return submit(a)
     if a.action=='status':
         export_state(a.case,once=True)

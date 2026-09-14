@@ -92,7 +92,8 @@ def test_producers_require_both_host_status_and_all_trains_terminal(tmp_path):
 
 
 @pytest.mark.parametrize('started',[False,True])
-def test_retirement_refuses_started_train_and_preserves_other_jobs(tmp_path,monkeypatch,started):
+@pytest.mark.parametrize('disconnected',[False,True])
+def test_retirement_refuses_started_train_and_preserves_other_jobs(tmp_path,monkeypatch,started,disconnected):
     manager=Path('/mnt/d/dev/codex/job-manager')
     if not manager.exists():pytest.skip('Local manager unavailable')
     sys.path.insert(0,str(manager))
@@ -107,13 +108,16 @@ def test_retirement_refuses_started_train_and_preserves_other_jobs(tmp_path,monk
     if started:db.execute('UPDATE jobs SET started=1 WHERE id=?',(train['id'],))
     node=tmp_path/'nodes'/q.OWNER;node.mkdir(parents=True)
     (node/'receipt.json').write_text(json.dumps(dict(host=q.OWNER,state=str(state),manager=str(manager),jobs=jobs)))
+    (tmp_path/'campaign.json').write_text(json.dumps({'commit':'f5d5114e1d7a3c3a29a1901f167968acb5e8b747'}))
     monkeypatch.setattr(q.socket,'gethostname',lambda:q.OWNER)
     try:
-        if started:
+        if started and not disconnected:
             with pytest.raises(ValueError,match='Training already started'):q.retire_unstarted(tmp_path)
-        else:q.retire_unstarted(tmp_path)
+        else:q.retire_unstarted(tmp_path,disconnected_meta=disconnected)
         current={j['id']:j for j in rows(db)}
         assert current['unrelated']['status']=='queued'
-        assert current[train['id']]['status']==('queued' if started else 'cancelled')
+        assert current[train['id']]['status']==('queued' if started and not disconnected else 'cancelled')
         assert current[qualify['id']]['status']=='failed'
+        if disconnected:
+            assert json.loads((node/'retired-disconnected-meta.json').read_text())['invalid_for_alternating_efficacy']
     finally:db.close()

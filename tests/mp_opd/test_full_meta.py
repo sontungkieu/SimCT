@@ -2,6 +2,22 @@ import copy
 import pytest
 import torch
 from kdflow.algorithms._mp_opd_full_meta import full_meta_step, adam_value, clipped
+from kdflow.algorithms._mp_opd_full_meta import ForwardParameterBridge
+
+
+def test_forward_bridge_preserves_plain_parameter_gradients():
+    model = torch.nn.Sequential(torch.nn.Linear(3, 4), torch.nn.Tanh(), torch.nn.Linear(4, 2)).double()
+    bridge = ForwardParameterBridge(model)
+    try:
+        loss = model(torch.ones(2, 3, dtype=torch.double)).square().sum()
+        params = tuple(model.parameters())
+        expected = torch.autograd.grad(loss, params, retain_graph=True)
+        actual = bridge.grad(loss, params)
+        for a, b in zip(expected, actual):
+            assert torch.equal(a, b)
+    finally:
+        bridge.close()
+    assert not any(m._forward_pre_hooks for m in model.modules())
 
 
 def test_disconnected_inner_cannot_silently_report_energy_update():

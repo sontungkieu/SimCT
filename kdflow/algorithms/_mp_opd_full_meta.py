@@ -8,6 +8,67 @@ import torch
 from kdflow.training_checkpoint import capture_rng, restore_rng
 
 
+class ForwardParameterBridge:
+    """Capture the actual forward tensors for a single-rank FSDP2 model.
+
+    Hooks run after FSDP unshards each module. Optimizer DTensors stay the
+    authoritative state; gradients are returned in their original layout.
+    """
+    def __init__(self, model):
+        from torch.distributed.tensor import DTensor
+        from torch.distributed.fsdp import FSDPModule
+        self.entries = [(n, p) for n, p in model.named_parameters() if p.requires_grad]
+        if any(isinstance(p, DTensor) and p.device_mesh.size() != 1 for _, p in self.entries):
+            raise ValueError('Full meta bridge supports exactly one rank')
+        self.captured = {}
+        self.handles = []
+        self.policies = []
+        for mod in model.modules():
+            if isinstance(mod, FSDPModule):
+                state = mod._get_fsdp_state()
+                group = state._fsdp_param_group
+                if group is not None:
+                    # Torch 2.11 has public setters but no getters. Preserve the
+                    # exact policy objects instead of guessing the root default.
+                    self.policies.append((mod, state, group,
+                        state._auto_reshard_after_forward,
+                        group.post_forward_mesh_info, group.reshard_after_backward))
+                    mod.set_reshard_after_forward(False, recurse=False)
+                    mod.set_reshard_after_backward(False, recurse=False)
+        for prefix, mod in model.named_modules():
+            def capture(module, inputs, prefix=prefix):
+                for name, p in module.named_parameters(recurse=False):
+                    if p.requires_grad:
+                        self.captured[prefix + '.' + name if prefix else name] = p
+            self.handles.append(mod.register_forward_pre_hook(capture))
+
+    def close(self):
+        for handle in self.handles: handle.remove()
+        self.captured.clear()
+        for mod, state, group, auto, mesh, backward in self.policies:
+            mod.reshard()
+            state._auto_reshard_after_forward = auto
+            group.post_forward_mesh_info = mesh
+            group.reshard_after_backward = backward
+
+    def grad(self, loss, params, **kwargs):
+        from torch.distributed.tensor import DTensor
+        if [id(p) for p in params] != [id(p) for _, p in self.entries]:
+            raise ValueError('Meta bridge optimizer ordering changed')
+        missing = [n for n, _ in self.entries if n not in self.captured]
+        if missing: raise RuntimeError('Missing forward parameters: ' + ','.join(missing[:5]))
+        targets = tuple(self.captured[n] for n, _ in self.entries)
+        values = torch.autograd.grad(loss, targets, **kwargs)
+        result = []
+        for (_, p), value in zip(self.entries, values):
+            if value is not None:
+                value = value.to(p.dtype)
+            if value is not None and isinstance(p, DTensor) and not isinstance(value, DTensor):
+                value = DTensor.from_local(value, p.device_mesh, p.placements, run_check=False)
+            result.append(value)
+        return tuple(result)
+
+
 def adam_value(p, g, state, group):
     if group.get("amsgrad") or group.get("maximize"):
         raise ValueError("Full meta supports standard, non-AMSGrad AdamW only")
@@ -29,7 +90,7 @@ def clipped(grads, max_norm):
     return [g*scale.to(g.dtype) for g in grads], norm, scale
 
 
-def full_meta_step(parameters, optimizer, energy, energy_optimizer, inner_losses, meta_losses, *, max_norm, refresh_parameters=lambda:None):
+def full_meta_step(parameters, optimizer, energy, energy_optimizer, inner_losses, meta_losses, *, max_norm, refresh_parameters=lambda:None, parameter_grad=torch.autograd.grad):
     """Each callback returns its already normalized contribution to ONE batch.
 
     Inner callbacks keep credits/features detached, but expose energy marginals
@@ -48,7 +109,7 @@ def full_meta_step(parameters, optimizer, energy, energy_optimizer, inner_losses
     # Detached accumulation avoids retaining B=64 activation graphs.
     for loss_fn in inner_losses:
         loss = loss_fn()
-        part = torch.autograd.grad(loss, params, allow_unused=True)
+        part = parameter_grad(loss, params, allow_unused=True)
         if all(value is None for value in part):
             raise RuntimeError('Meta inner loss is disconnected from optimizer parameters; FSDP parameter views require an explicit autograd bridge')
         for target, value in zip(g, part):
@@ -66,7 +127,7 @@ def full_meta_step(parameters, optimizer, energy, energy_optimizer, inner_losses
             loss = loss_fn()
             if not torch.isfinite(loss): raise FloatingPointError("Nonfinite meta NLL")
             meta_value += float(loss.detach())
-            part = torch.autograd.grad(loss, params, allow_unused=True)
+            part = parameter_grad(loss, params, allow_unused=True)
             if all(value is None for value in part):
                 raise RuntimeError('Meta outer loss is disconnected from optimizer parameters')
             for target, value in zip(outer, part):
@@ -104,7 +165,7 @@ def full_meta_step(parameters, optimizer, energy, energy_optimizer, inner_losses
     hyper = [torch.zeros_like(p) for p in phi]
     for loss_fn in inner_losses:
         loss = loss_fn()
-        part = torch.autograd.grad(loss, params, create_graph=True, allow_unused=True)
+        part = parameter_grad(loss, params, create_graph=True, allow_unused=True)
         active = [(grad, vector) for grad, vector in zip(part,u) if grad is not None and grad.requires_grad]
         if active:
             hg = torch.autograd.grad(tuple(x for x,_ in active), phi,
