@@ -217,6 +217,13 @@ def run(args):
     groups = data["groups"]
     audit = validate_groups(groups)
     counts = select_counts(groups,getattr(args,"select_counts",None))
+    alternating = getattr(args, 'alternating_student', False)
+    if getattr(args, 'freeze_energy', False) and not alternating:
+        raise ValueError('freeze-energy requires alternating-student')
+    if alternating and (len(counts) != 1 or not args.learn_partition or not args.energy_checkpoint):
+        raise ValueError('alternating pilot requires one select count, learn-partition and audited energy checkpoint')
+    if alternating and digest(args.energy_checkpoint) != args.energy_sha256:
+        raise ValueError('energy checkpoint SHA256 mismatch')
     torch.manual_seed(args.seed)
     args.output.mkdir(parents=True, exist_ok=False)
     device = torch.device(args.device)
@@ -267,6 +274,12 @@ def run(args):
             template = MPAtomEnergy(10, hidden_dim=32, layers=2).to(device).eval()
         energies = {n: copy.deepcopy(template) for n in counts}
         energy_optimizers = {n: torch.optim.AdamW(energies[n].parameters(), lr=args.energy_lr, weight_decay=0.) for n in counts}
+    if alternating:
+        from kdflow.algorithms._mp_opd_energy import load_energy_checkpoint
+        load_energy_checkpoint(args.energy_checkpoint, energies[counts[0]], energy_optimizers[counts[0]],
+                               expected_extra_config={'max_span_length':args.max_span})
+        # Fresh experiment: retain learned weights, reset Adam moments and use requested LR.
+        energy_optimizers[counts[0]] = torch.optim.AdamW(energies[counts[0]].parameters(), lr=args.energy_lr, weight_decay=0.)
     atomizer = SimCTAtomizer(tokenizer, teacher_tokenizer)
 
     def prompt(tok, messages):
@@ -308,6 +321,15 @@ def run(args):
                 "sampling": {"temperature": args.temperature, "top_p": args.top_p, "top_k": 0, "num_beams": 1, "repetition_penalty": 1.0},
                 "weighting_protocol": "prequential: evaluate before learning current select; never train on eval",
                 "benchmark_exclusion": "caller must supply non-benchmark references; source content not automatically classified"}
+    if alternating:
+        manifest.update(schema='mp-alternating-pilot-v1',
+                        scope='persistent adapter-B SGD; exact one-step energy hypergradient; HF on-policy rollout',
+                        energy_protocol='frozen-control' if args.freeze_energy else 'energy then real student each valid group',
+                        energy_checkpoint_sha256=args.energy_sha256,
+                        weighting_protocol='unused; only partition energy and persistent student adapter train',
+                        loss_normalization='sum of atom NLL times pooled rates, no extra token-count factor',
+                        optimizer_protocol='fresh energy AdamW; real and virtual student SGD; no clipping; no FSDP',
+                        group='soft-frozen-adapter-pilot' if args.freeze_energy else 'soft-alternating-adapter-pilot')
     (args.output / "manifest.json").write_text(json.dumps(manifest, indent=2))
     results, invalid = [], 0
     for index, group in enumerate(groups):
@@ -351,6 +373,31 @@ def run(args):
                 ts = torch.stack([tea[a.teacher_start:a.teacher_end].sum() for a in atoms])
                 ss = torch.stack([old[a.student_start:a.student_end].sum() for a in atoms])
                 features = atom_features(atoms, AtomCreditTensors(ts,ss,base,weight,base/weight,-ss))
+            if alternating:
+                from kdflow.algorithms._mp_opd_alternating import alternating_step
+                count=counts[0]
+                result=alternating_step(energies[count],energy_optimizers[count],params,atom_nll,
+                    reference_mean(select_callbacks[:count]),features,base,weight,
+                    rollout_ids=[identity(group['rollout']['messages'])],
+                    meta_ids=[identity(r['messages']) for r in reference_rows(group['select'])[:count]],
+                    lr=args.virtual_lr,max_span=args.max_span,temperature=args.energy_temperature,
+                    update_energy=not args.freeze_energy)
+                with torch.no_grad():
+                    result['heldout_post_update_nll']=float(eval_loss(params))
+                result.update(index=index,invalid=False,step=index+1-invalid,seconds=time.perf_counter()-started)
+                trace.update(base_credit=base.tolist(),atom_weights=weight.tolist())
+                checkpoint={'schema':'mp-alternating-adapter-v1','step':result['step'],
+                    'adapter_module':args.adapter_module,'rank':args.rank,'a':adapter.a.detach().cpu(),
+                    'b':adapter.b.detach().cpu(),'energy':energies[count].state_dict(),
+                    'energy_optimizer':energy_optimizers[count].state_dict(),'manifest':manifest,
+                    'torch_rng':torch.get_rng_state(),
+                    'cuda_rng':torch.cuda.get_rng_state_all() if device.type=='cuda' else []}
+                temp=args.output/'latest.pt.tmp';torch.save(checkpoint,temp);temp.replace(args.output/'latest.pt')
+                for filename,value in (('results.jsonl',result),('trajectories.jsonl',trace)):
+                    with (args.output/filename).open('a') as f:f.write(json.dumps(value,allow_nan=False)+'\n')
+                results.append(result)
+                print(json.dumps(result,allow_nan=False),flush=True)
+                continue
             sweep={}
             payloads={}
             for count in counts:
@@ -402,6 +449,15 @@ def run(args):
     valid_results = [x for x in results if not x["invalid"]]
     if not valid_results:
         raise RuntimeError("no valid groups; oracle gate unavailable")
+    if alternating:
+        summary={'schema':'mp-alternating-pilot-v1','status':'completed','student_updates':len(valid_results),
+                 'energy_updates':sum(r['energy_updates'] for r in valid_results),
+                 'invalid_groups':invalid,'scope':manifest['scope'],
+                 'evidence':'adapter training pilot; no benchmark efficacy claim',
+                 'checkpoint':str(args.output/'latest.pt')}
+        (args.output/'summary.json').write_text(json.dumps(summary,indent=2))
+        print(json.dumps(summary),flush=True)
+        return
     if len(counts)>1:
         paired={str(n):[{"group":x["index"],"atomic_minus_oracle_eval_nll":x["select_count_sweep"][str(n)]["controls"]["atomic"]["eval_nll"]-x["select_count_sweep"][str(n)]["controls"]["oracle"]["eval_nll"]} for x in valid_results] for n in counts}
         (args.output/"paired-select-counts.json").write_text(json.dumps({"counts":counts,"independent_groups":len(valid_results),"paired":paired,"unit":"groups; counts are repeated measurements, not independent samples"},indent=2))
@@ -463,6 +519,10 @@ def main():
     p.add_argument("--weighting-steps", type=int, default=1)
     p.add_argument("--norm-controls", action="store_true")
     p.add_argument("--learn-partition", action="store_true")
+    p.add_argument("--alternating-student", action="store_true", help="Persistent adapter-SGD pilot, separate from frozen diagnostic")
+    p.add_argument("--freeze-energy", action="store_true", help="Frozen-energy control for alternating-student pilot")
+    p.add_argument("--energy-checkpoint", type=Path)
+    p.add_argument("--energy-sha256")
     p.add_argument("--energy-steps", type=int, default=4)
     p.add_argument("--energy-lr", type=float, default=1e-3)
     p.add_argument("--energy-temperature", type=float, default=1.)

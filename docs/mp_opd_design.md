@@ -235,3 +235,54 @@ probe, actual functional virtual updates, matched-length/LR/norm/skip/SFT contro
 and prequential learned atom weighting. It does not wire the production KDFlow
 soft optimizer or validate full-parameter Adam. The existing toy harness remains
 a mathematical fixture. No GPU result is implied by the new runner's existence.
+
+## Alternating adapter pilot (2026-09-14)
+
+The standalone real-data runner now supports `--alternating-student`. This is a
+persistent adapter-B training loop, not an integration into the Ray/FSDP actor.
+It uses exactly one virtual SGD step with a differentiable reference NLL to
+update energy (exact hypergradient), recomputes marginals with updated energy,
+detaches pooled rates, and applies exactly one real SGD step. The next HF
+rollout uses this updated student. The existing diagnostic remains the default.
+
+Use prepared disjoint rollout/select/eval groups from `real_oracle.py prepare`.
+Prompt identity as well as record IDs is checked across all roles/groups.
+Reference eval is measured after the real update and never used for gradients.
+The caller must exclude benchmark test prompts during data preparation; the
+loader cannot infer benchmark membership from arbitrary text.
+
+Example, on an authorized remote GPU with existing local models/runtime:
+
+```bash
+python experiments/mp_opd/real_oracle.py run \
+  --student /path/to/student --teacher /path/to/teacher \
+  --data /path/to/disjoint-groups.json --output /path/to/new-pilot \
+  --adapter-module model.layers.25.mlp.down_proj --rank 4 \
+  --learn-partition --alternating-student --select-counts 4 \
+  --energy-checkpoint /path/to/energy-select-4.pt \
+  --energy-sha256 VERIFIED_SHA256 --max-span 2 \
+  --virtual-lr 0.001 --energy-lr 0.001 --seed 42
+```
+
+The adapter module is model-specific: verify it on the target model before use.
+The example LR is a pilot choice, not tuned or qualified for Gemma. Virtual and
+real SGD use the same LR and unnormalized summed atom loss. Energy starts from
+verified checkpoint weights with fresh AdamW moments at the requested LR. One
+energy update occurs per valid group; diagnostic `--energy-steps` does not set
+this schedule. Add `--freeze-energy` for the matched persistent-student frozen
+control. Both use deterministic energy forwards with dropout disabled; this
+does not disable the energy gradient. They are separate adapter-pilot groups,
+not the full-parameter company campaign groups.
+
+`latest.pt` is atomically replaced after each successful update and contains
+adapter A/B, energy, energy optimizer, RNG and source/data/model provenance.
+It is an adapter evidence checkpoint, not an HF model directory. Automatic
+resume and direct ingestion by the existing full-model evaluation queue are
+not implemented. It must not be passed as a model path to that queue. Results
+and sampled trajectories are JSONL; terminal summary states the actual valid
+student/energy update counts. There is no automatic W&B upload or GPU launch.
+
+CPU tests cover the exact hypergradient against finite differences, no virtual
+student mutation, energy-before-student ordering, one persistent student step,
+frozen control, ID overlap rejection, and a two-iteration runner with a tiny
+mock model. A real-model B200 canary and Ray/FSDP integration remain unverified.
