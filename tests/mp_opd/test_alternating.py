@@ -94,6 +94,8 @@ def test_runner_persists_student_across_fresh_rollouts(tmp_path, monkeypatch, fr
         temperature=.6,top_p=.95,max_new_tokens=5)
     run(args)
     summary=json.loads((args.output/'summary.json').read_text())
+    assert summary['schema']=='mp-alternating-resume-v2'
+    assert summary['status']=='completed' and summary['next_group']==3
     assert summary['student_updates']==2 and summary['energy_updates']==(0 if frozen else 2)
     assert len(seen)==3 and not torch.equal(seen[0],seen[1])
     saved=torch.load(args.output/'latest.pt',weights_only=False)
@@ -111,6 +113,9 @@ def test_runner_persists_student_across_fresh_rollouts(tmp_path, monkeypatch, fr
     (args.output/'trajectories.jsonl').unlink()
     args.resume=True;args.stop_after_groups=None
     run(args)
+    assert json.loads((args.output/'summary.json').read_text())['next_group']==3
+    resumed_summary=json.loads((args.output/'summary.json').read_text())
+    assert {k:v for k,v in resumed_summary.items() if k!='checkpoint'}=={k:v for k,v in summary.items() if k!='checkpoint'}
     resumed=torch.load(args.output/'latest.pt',weights_only=False)
     def same(a,b):
         import numpy as np

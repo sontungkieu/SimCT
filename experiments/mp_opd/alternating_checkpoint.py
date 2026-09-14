@@ -78,6 +78,7 @@ def materialize(directory, payload):
     summary={'schema':SCHEMA,'status':status,'next_group':payload['cursor'],
              'student_updates':payload['step'],'energy_updates':payload['energy_updates'],
              'invalid_groups':payload['invalid'], 'scope':payload['manifest']['scope'],
+             'evidence':'adapter training pilot; no benchmark efficacy claim',
              'checkpoint':str(Path(directory)/'latest.pt')}
     content=json.dumps(summary,indent=2).encode()
     atomic_write(Path(directory)/'summary.json',lambda f:f.write(content))

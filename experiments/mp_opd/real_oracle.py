@@ -489,12 +489,8 @@ def _run(args):
     if not valid_results:
         raise RuntimeError("no valid groups; oracle gate unavailable")
     if alternating:
-        summary={'schema':'mp-alternating-pilot-v1','status':'completed','student_updates':len(valid_results),
-                 'energy_updates':sum(r['energy_updates'] for r in valid_results),
-                 'invalid_groups':invalid,'scope':manifest['scope'],
-                 'evidence':'adapter training pilot; no benchmark efficacy claim',
-                 'checkpoint':str(args.output/'latest.pt')}
-        (args.output/'summary.json').write_text(json.dumps(summary,indent=2))
+        # The checkpoint projection is canonical for pause, completion and resume.
+        summary=json.loads((args.output/'summary.json').read_text())
         print(json.dumps(summary),flush=True)
         return
     if len(counts)>1:
