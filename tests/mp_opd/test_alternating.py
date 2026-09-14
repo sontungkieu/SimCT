@@ -52,14 +52,15 @@ def test_frozen_control_and_id_overlap():
     assert torch.equal(before,t)
     r=alternating_step(e,opt,(t,),atom,meta,rollout_ids=['b'],meta_ids=['m'],update_energy=False,**args)
     assert r['energy_parameter_delta']==0 and not torch.equal(before,t)
-def test_runner_persists_student_across_fresh_rollouts(tmp_path, monkeypatch):
+@pytest.mark.parametrize("frozen", [False, True])
+def test_runner_persists_student_across_fresh_rollouts(tmp_path, monkeypatch, frozen):
     import json, sys
     from types import SimpleNamespace
     from experiments.mp_opd.real_oracle import run, digest
     from kdflow.algorithms._mp_opd_energy import save_energy_checkpoint
     class Tokenizer:
         eos_token_id=3
-        def apply_chat_template(self,*a,**kw):return [0]
+        def apply_chat_template(self,messages,**kw):return [int(messages[0]["content"][0])]
         def encode(self,text,**kw):return [1,2]
         def decode(self,ids,**kw):return ''.join({0:'p',1:'a',2:'b',3:'!'}[int(i)] for i in ids)
         def get_added_vocab(self):return {}
@@ -71,12 +72,15 @@ def test_runner_persists_student_across_fresh_rollouts(tmp_path, monkeypatch):
             return SimpleNamespace(logits=self.block.proj(torch.nn.functional.one_hot(input_ids,4).float()))
         def generate(self,input_ids,**kw):
             seen.append(self.block.proj.b.detach().clone())
-            return torch.cat([input_ids,torch.tensor([[1,2,3]])],dim=1)
+            import random, numpy as np
+            torch.rand(2); random.random(); np.random.rand()
+            response=[3] if int(input_ids[0,0])==1 else [1,2,3]
+            return torch.cat([input_ids,torch.tensor([response])],dim=1)
     monkeypatch.setitem(sys.modules,'transformers',SimpleNamespace(
         AutoModelForCausalLM=SimpleNamespace(from_pretrained=lambda *a,**k:Model()),
         AutoTokenizer=SimpleNamespace(from_pretrained=lambda *a,**k:Tokenizer())))
     groups=[]
-    for i in range(2):
+    for i in range(3):
         groups.append({role:{'id':f'{i}-{role}','messages':[{'role':'user','content':f'{i}-{role}'}],
                             'reference':'ab'} for role in ('rollout','select','eval')})
     data=tmp_path/'data.json';data.write_text(json.dumps({'schema':'mp-oracle-data-v1','groups':groups}))
@@ -86,12 +90,78 @@ def test_runner_persists_student_across_fresh_rollouts(tmp_path, monkeypatch):
     args=SimpleNamespace(data=data,select_counts=[1],alternating_student=True,learn_partition=True,
         energy_checkpoint=ck,energy_sha256=digest(ck),seed=42,output=tmp_path/'out',device='cpu',model_dtype='float32',
         student=model,teacher=model,max_prompt_tokens=16,max_reference_tokens=16,adapter_module='block.proj',rank=2,
-        weighting_lr=.01,energy_lr=.01,max_span=2,energy_temperature=1.,virtual_lr=.1,freeze_energy=False,
+        weighting_lr=.01,energy_lr=.01,max_span=2,energy_temperature=1.,virtual_lr=.1,freeze_energy=frozen,
         temperature=.6,top_p=.95,max_new_tokens=5)
     run(args)
     summary=json.loads((args.output/'summary.json').read_text())
-    assert summary['student_updates']==2 and summary['energy_updates']==2
-    assert len(seen)==2 and not torch.equal(seen[0],seen[1])
+    assert summary['student_updates']==2 and summary['energy_updates']==(0 if frozen else 2)
+    assert len(seen)==3 and not torch.equal(seen[0],seen[1])
     saved=torch.load(args.output/'latest.pt',weights_only=False)
     assert saved['step']==2 and not torch.equal(saved['b'],seen[-1])
-    assert len((args.output/'results.jsonl').read_text().splitlines())==2
+    assert len((args.output/'results.jsonl').read_text().splitlines())==3
+    assert saved['cursor']==3 and saved['invalid']==1
+    baseline_results=json.loads(json.dumps(saved['results']))
+    baseline_traces=saved['traces']
+    args.output=tmp_path/'paused';args.stop_after_groups=2
+    run(args)
+    paused=torch.load(args.output/'latest.pt',weights_only=False)
+    assert paused['cursor']==2 and paused['step']==1 and paused['invalid']==1
+    # Simulate a crash/torn projection after the checkpoint was committed.
+    (args.output/'results.jsonl').write_text('corrupt tail')
+    (args.output/'trajectories.jsonl').unlink()
+    args.resume=True;args.stop_after_groups=None
+    run(args)
+    resumed=torch.load(args.output/'latest.pt',weights_only=False)
+    def same(a,b):
+        import numpy as np
+        if isinstance(a,torch.Tensor):assert torch.equal(a,b)
+        elif isinstance(a,np.ndarray):assert np.array_equal(a,b)
+        elif isinstance(a,dict):
+            assert a.keys()==b.keys()
+            for k in a:same(a[k],b[k])
+        elif isinstance(a,(list,tuple)):
+            assert len(a)==len(b)
+            for x,y in zip(a,b):same(x,y)
+        else:assert a==b
+    for k in ('a','b','energy','energy_optimizer','rng','cursor','step','invalid','energy_updates'):
+        same(saved[k],resumed[k])
+    for rows in (baseline_results,resumed['results']):
+        for row in rows:row.pop('seconds',None)
+    same(baseline_results,resumed['results']);same(baseline_traces,resumed['traces'])
+    assert len((args.output/'results.jsonl').read_text().splitlines())==3
+    # Resume of a complete run must not take another update.
+    run(args)
+    complete=torch.load(args.output/'latest.pt',weights_only=False)
+    same(complete['b'],saved['b'])
+    from experiments.mp_opd import alternating_checkpoint as cio
+    original_save=cio.save
+    for phase in ('before_commit','after_commit'):
+        args.output=tmp_path/phase;args.resume=False
+        def interrupted(*a,**kw):
+            if len(a[5])==1:
+                if phase=='after_commit':original_save(*a,**kw)
+                raise RuntimeError('simulated process death')
+            return original_save(*a,**kw)
+        monkeypatch.setattr(cio,'save',interrupted)
+        with pytest.raises(RuntimeError,match='simulated process death'):run(args)
+        monkeypatch.setattr(cio,'save',original_save)
+        args.resume=True
+        run(args)
+        recovered=torch.load(args.output/'latest.pt',weights_only=False)
+        for k in ('a','b','energy','energy_optimizer','rng','cursor','step','invalid','energy_updates'):
+            same(saved[k],recovered[k])
+        same(saved['traces'],recovered['traces'])
+    args.virtual_lr=.2
+    with pytest.raises(ValueError,match='configuration mismatch'):run(args)
+
+
+def test_exclusive_output_and_resume_requires_checkpoint(tmp_path):
+    from experiments.mp_opd.alternating_checkpoint import output_lock
+    output=tmp_path/'run'
+    with output_lock(output,False):
+        (output/'latest.pt').write_bytes(b'placeholder')
+        with pytest.raises(RuntimeError,match='another pilot'):
+            with output_lock(output,True):pass
+    with output_lock(output,True):pass
+    with pytest.raises(ValueError,match='existing latest'):
+        with output_lock(tmp_path/'absent',True):pass

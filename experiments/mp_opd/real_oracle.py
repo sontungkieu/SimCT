@@ -203,6 +203,17 @@ def preflight_lengths(groups, tokenizer, teacher_tokenizer, prompt_cap, referenc
 
 
 def run(args):
+    if getattr(args, 'resume', False) and not getattr(args, 'alternating_student', False):
+        raise ValueError('resume is supported only for alternating-student pilot')
+    if getattr(args, 'stop_after_groups', None) is not None:
+        if not getattr(args, 'alternating_student', False) or args.stop_after_groups <= 0:
+            raise ValueError('stop-after-groups requires alternating pilot and positive cursor')
+    from experiments.mp_opd.alternating_checkpoint import output_lock
+    with output_lock(args.output, getattr(args, 'resume', False)):
+        return _run(args)
+
+
+def _run(args):
     # The run subcommand is the explicit GPU boundary. Imports below are lazy.
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -225,7 +236,10 @@ def run(args):
     if alternating and digest(args.energy_checkpoint) != args.energy_sha256:
         raise ValueError('energy checkpoint SHA256 mismatch')
     torch.manual_seed(args.seed)
-    args.output.mkdir(parents=True, exist_ok=False)
+    random.seed(args.seed)
+    import numpy as np
+    np.random.seed(args.seed)
+    # Output directory is exclusively locked by run().
     device = torch.device(args.device)
     dtype_name = getattr(args,"model_dtype","auto")
     dtype = torch.float32 if dtype_name == "float32" or device.type != "cuda" else torch.bfloat16
@@ -330,9 +344,38 @@ def run(args):
                         loss_normalization='sum of atom NLL times pooled rates, no extra token-count factor',
                         optimizer_protocol='fresh energy AdamW; real and virtual student SGD; no clipping; no FSDP',
                         group='soft-frozen-adapter-pilot' if args.freeze_energy else 'soft-alternating-adapter-pilot')
-    (args.output / "manifest.json").write_text(json.dumps(manifest, indent=2))
-    results, invalid = [], 0
+    results, traces, invalid, cursor = [], [], 0, 0
+    if alternating:
+        from experiments.mp_opd import alternating_checkpoint as checkpoint_io
+        import platform
+        manifest['resume_runtime']={'python':platform.python_version(), 'numpy':np.__version__,
+            'cuda':torch.version.cuda, 'device':str(device),
+            'cudnn':torch.backends.cudnn.version(),
+            'deterministic_algorithms':torch.are_deterministic_algorithms_enabled(),
+            'cudnn_benchmark':torch.backends.cudnn.benchmark,
+            'cudnn_deterministic':torch.backends.cudnn.deterministic,
+            'matmul_tf32':torch.backends.cuda.matmul.allow_tf32,
+            'gpu_names':[torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())]}
+        import transformers
+        manifest['resume_runtime']['transformers']=getattr(transformers,'__version__','test-double')
+        manifest['resume_source_files']={name:digest(Path(__file__).resolve().parents[2]/name) for name in (
+            'experiments/mp_opd/real_oracle.py','experiments/mp_opd/alternating_checkpoint.py',
+            'kdflow/algorithms/_mp_opd_alternating.py','kdflow/algorithms/_mp_opd_energy.py',
+            'kdflow/algorithms/_mp_opd_semimarkov.py','kdflow/algorithms/_mp_opd_credit.py',
+            'kdflow/algorithms/_mp_opd_atoms.py','kdflow/algorithms/mp_opd.py')}
+        if getattr(args,'resume',False):
+            recovered=checkpoint_io.load(args.output,adapter,energies[counts[0]],energy_optimizers[counts[0]],manifest,len(groups))
+            results,traces,invalid,cursor=recovered['results'],recovered['traces'],recovered['invalid'],recovered['cursor']
+            print('RESUMED',cursor,'student_updates',recovered['step'],flush=True)
+        else:
+            checkpoint_io.save(args.output,adapter,energies[counts[0]],energy_optimizers[counts[0]],manifest,results,traces,len(groups))
+    if not getattr(args,'resume',False):
+        (args.output / "manifest.json").write_text(json.dumps(manifest, indent=2))
     for index, group in enumerate(groups):
+        if index < cursor:continue
+        if alternating and getattr(args,'stop_after_groups',None) is not None and index >= args.stop_after_groups:
+            print('PAUSED_AT_GROUP',index,flush=True)
+            return
         started = time.perf_counter()
         prefix = prompt(tokenizer, group["rollout"]["messages"])
         with torch.no_grad():
@@ -386,16 +429,8 @@ def run(args):
                     result['heldout_post_update_nll']=float(eval_loss(params))
                 result.update(index=index,invalid=False,step=index+1-invalid,seconds=time.perf_counter()-started)
                 trace.update(base_credit=base.tolist(),atom_weights=weight.tolist())
-                checkpoint={'schema':'mp-alternating-adapter-v1','step':result['step'],
-                    'adapter_module':args.adapter_module,'rank':args.rank,'a':adapter.a.detach().cpu(),
-                    'b':adapter.b.detach().cpu(),'energy':energies[count].state_dict(),
-                    'energy_optimizer':energy_optimizers[count].state_dict(),'manifest':manifest,
-                    'torch_rng':torch.get_rng_state(),
-                    'cuda_rng':torch.cuda.get_rng_state_all() if device.type=='cuda' else []}
-                temp=args.output/'latest.pt.tmp';torch.save(checkpoint,temp);temp.replace(args.output/'latest.pt')
-                for filename,value in (('results.jsonl',result),('trajectories.jsonl',trace)):
-                    with (args.output/filename).open('a') as f:f.write(json.dumps(value,allow_nan=False)+'\n')
-                results.append(result)
+                results.append(result);traces.append(trace)
+                checkpoint_io.save(args.output,adapter,energies[count],energy_optimizers[count],manifest,results,traces,len(groups))
                 print(json.dumps(result,allow_nan=False),flush=True)
                 continue
             sweep={}
@@ -442,6 +477,10 @@ def run(args):
                         step=(index+1-invalid)*args.energy_steps,extra_config={'max_span_length':args.max_span})
                 result['energy_updates']=energy_updates
         results.append(result)
+        if alternating:  # Invalid rollouts consume data and RNG but do not update models.
+            traces.append(trace)
+            checkpoint_io.save(args.output,adapter,energies[counts[0]],energy_optimizers[counts[0]],manifest,results,traces,len(groups))
+            continue
         for name, value in (("results.jsonl", result), ("trajectories.jsonl", trace)):
             with (args.output/name).open("a") as f:
                 f.write(json.dumps(value, allow_nan=False)+"\n")
@@ -520,6 +559,8 @@ def main():
     p.add_argument("--norm-controls", action="store_true")
     p.add_argument("--learn-partition", action="store_true")
     p.add_argument("--alternating-student", action="store_true", help="Persistent adapter-SGD pilot, separate from frozen diagnostic")
+    p.add_argument("--resume", action="store_true", help="Restore latest.pt in the same output directory")
+    p.add_argument("--stop-after-groups", type=int, help="Controlled pause at absolute processed-group cursor")
     p.add_argument("--freeze-energy", action="store_true", help="Frozen-energy control for alternating-student pilot")
     p.add_argument("--energy-checkpoint", type=Path)
     p.add_argument("--energy-sha256")

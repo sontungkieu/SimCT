@@ -274,13 +274,47 @@ control. Both use deterministic energy forwards with dropout disabled; this
 does not disable the energy gradient. They are separate adapter-pilot groups,
 not the full-parameter company campaign groups.
 
-`latest.pt` is atomically replaced after each successful update and contains
-adapter A/B, energy, energy optimizer, RNG and source/data/model provenance.
-It is an adapter evidence checkpoint, not an HF model directory. Automatic
-resume and direct ingestion by the existing full-model evaluation queue are
-not implemented. It must not be passed as a model path to that queue. Results
-and sampled trajectories are JSONL; terminal summary states the actual valid
-student/energy update counts. There is no automatic W&B upload or GPU launch.
+`latest.pt` now uses `mp-alternating-resume-v2`. It contains adapter A/B,
+energy, energy AdamW moments/step, Python/NumPy/Torch CPU/all-CUDA RNG states,
+the next group cursor, valid/invalid and energy update counters, committed
+results/trajectories, and source/data/model/runtime provenance. The real
+student is plain fixed-LR SGD without momentum, scheduler or GradScaler;
+there is no additional optimizer state to reconstruct for that update.
+
+Resume uses the same command and output directory, with `--resume` added.
+All training/data/model/energy parameters must stay the same. `--stop-after-groups K`
+pauses before absolute group K (including invalid groups); omit it when
+resuming to the end. This is a controlled checkpoint-boundary pause, not a
+change to the dataset or training budget. A finished run resumes without
+another update. The initial state is checkpointed before the first rollout.
+Invalid groups also checkpoint cursor and RNG. No automatic queue restart or
+W&B upload is performed.
+
+```bash
+# Repeat the original full pilot command, changing only these operational flags:
+# First segment: add --stop-after-groups 10
+# Continuation: remove --stop-after-groups, add --resume; keep --output unchanged.
+```
+
+A checkpoint is the authoritative commit record. Write + fsync + atomic rename
+precedes projection of its journals. Resume reconstructs missing/torn/excess
+journal tails from the checkpoint, so a death before checkpoint commit replays
+that group from previous RNG/state; a death after commit does not repeat it.
+Only this pilot's results/trajectories/summary are reconstructed. An exclusive
+POSIX flock prevents concurrent writers; the deployment filesystem must support
+flock and atomic rename. An interrupted `.tmp` is never treated as committed.
+State/provenance mismatch or legacy v1 checkpoint is rejected rather than
+silently starting again. Load only trusted checkpoints (PyTorch pickle payload).
+
+Runtime, implementation file hashes, model/data hashes and configuration are
+checked before state restoration. Resume restores RNG after construction/load.
+CPU tests establish bitwise agreement; CUDA kernel nondeterminism means a real
+B200 canary is still required before claiming bitwise GPU reproducibility.
+Strict provenance checks intentionally reject implementation changes mid-run.
+
+The checkpoint remains adapter evidence, not an HF model directory. Direct
+full-model evaluation queue ingestion and production Ray/FSDP resume are not
+implemented; do not pass latest.pt as the model path to that queue.
 
 CPU tests cover the exact hypergradient against finite differences, no virtual
 student mutation, energy-before-student ordering, one persistent student step,
