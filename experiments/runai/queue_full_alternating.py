@@ -34,7 +34,7 @@ def write(path,value):
 
 def configurations():
     return [dict(id=f'ALT-{name}-s{seed}',train_seed=seed,student_updates=312,
-        B=64,M=16,micro_B=4,micro_M=4,energy_lr=lr,energy_every=every,
+        B=64,M=16,micro_B=1,micro_M=1,energy_lr=lr,energy_every=every,
         student='full',optimizer='AdamW',student_lr=1e-6,scheduler_horizon=312)
         for seed in (42,43) for name,lr,every in VARIANTS]
 
@@ -141,6 +141,7 @@ def run_command(case,config,out,limit=312,pause=0,resume=False):
     # An old shell's MP_* flags must not silently alter this immutable campaign.
     env={k:v for k,v in os.environ.items() if not k.startswith('MP_')}
     env.update(MP_STUDENT_PATH=c['student'],MP_TEACHER_PATH=c['teacher'],MP_DATASET_PATH=c['dataset'],
+        MP_MICRO_TRAIN_BATCH_SIZE=str(config['micro_B']),MP_META_MICRO_BATCH_SIZE=str(config['micro_M']),
         MP_ENERGY_CHECKPOINT=c['energy'],MP_SEED=str(config['train_seed']),MP_PARTITION_SEED='43',
         MP_ALTERNATING='1',MP_META_PATH=c['meta'],MP_ENERGY_LR=str(config['energy_lr']),
         MP_ENERGY_EVERY=str(config['energy_every']),MP_RESUME=str(int(resume)),

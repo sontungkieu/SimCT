@@ -9,10 +9,29 @@ q=importlib.util.module_from_spec(spec);spec.loader.exec_module(q)
 
 def test_six_runs_exact_order_and_budget():
     configs=q.configurations()
+    assert all(x['micro_B']==1 and x['micro_M']==1 for x in configs)
     assert [x['id'] for x in configs]==['ALT-main-s42','ALT-lowLR-s42','ALT-every4-s42',
         'ALT-main-s43','ALT-lowLR-s43','ALT-every4-s43']
     assert all(x['student_updates']==312 and x['B']==64 and x['M']==16 and x['student']=='full' for x in configs)
     assert [(x['energy_lr'],x['energy_every']) for x in configs[:3]]==[(.001,1),(.0001,1),(.001,4)]
+
+
+def test_run_command_forwards_pinned_microbatch_not_shell(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setenv('MP_MICRO_TRAIN_BATCH_SIZE','32')
+    monkeypatch.setenv('MP_META_MICRO_BATCH_SIZE','16')
+    monkeypatch.setattr(q,'checked_config',lambda _:dict(student='s',teacher='t',
+        dataset='d',energy='e',meta='m',commit='test'))
+    captured={}
+    def run(argv,**kwargs):
+        captured.update(kwargs['env'])
+        assert argv[-2]=='312'
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(q.subprocess,'run',run)
+    monkeypatch.setattr(q,'write',lambda *args:None)
+    q.run_command(tmp_path,q.configurations()[0],tmp_path/'run')
+    assert captured['MP_MICRO_TRAIN_BATCH_SIZE']=='1'
+    assert captured['MP_META_MICRO_BATCH_SIZE']=='1'
 
 
 def test_dag_qualification_gate_and_48_eval_checkpoints(tmp_path):
