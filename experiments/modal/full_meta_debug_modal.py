@@ -1,5 +1,6 @@
 """Bounded B200 autograd diagnostic; no model downloads or company data."""
 import json
+import os
 import subprocess
 from pathlib import Path
 import modal
@@ -11,7 +12,7 @@ image = (modal.Image.from_registry(IMAGE).entrypoint([])
     .add_local_dir(str(ROOT/'kdflow'), '/opt/overlay/kdflow', ignore=['**/__pycache__/**','**/*.pyc'])
     .add_local_file(str(ROOT/'experiments/modal/full_meta_debug_worker.py'), '/opt/overlay/probe.py'))
 
-@app.function(image=image, gpu='B200', cpu=2, memory=8192, timeout=180, retries=0, max_containers=1)
+@app.function(image=image, gpu=os.environ.get('META_DEBUG_GPU', 'B200'), cpu=2, memory=8192, timeout=180, retries=0, max_containers=1)
 def probe():
     import os
     env = dict(os.environ, PYTHONPATH='/opt/overlay', PYTHONUNBUFFERED='1')
