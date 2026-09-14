@@ -15,7 +15,8 @@ python3 collect_campaign.py --out /workspace/storage-shared/nlp/tungks/borrow8-8
 
 The archive includes logs, JSON control/evaluation metadata, score journals and
 (with --responses) responses. It excludes source trees, caches, environments,
-W&B directories, credentials by filename, symlinks and model weights. Weight
+W&B directories, credentials by filename, symlinks, tokenizer.json, vocab.json
+and model weights. Small tokenizer configuration files remain included. Weight
 filenames and sizes are inventoried, not validated. Nothing is restarted,
 marked completed, retried or assigned a zero score.
 

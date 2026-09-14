@@ -13,6 +13,8 @@ def test_export_preserves_partial_and_excludes_weights_and_secrets(tmp_path):
     ckpt = run/'checkpoint'/'step40'
     ckpt.mkdir(parents=True)
     (ckpt/'model.safetensors').write_bytes(b'weights')
+    (ckpt/'tokenizer.json').write_text('{"model": {}}')
+    (ckpt/'vocab.json').write_text('{}')
     (run/'train.log').write_text('step [41/312]')
     (run/'secret.json').write_text('private')
     (run/'responses.jsonl').write_text('{}\n')

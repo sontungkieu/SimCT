@@ -23,6 +23,8 @@ WEIGHTS = {'.safetensors', '.bin', '.pt', '.pth', '.ckpt'}
 
 def selected(p, responses):
     name = p.name.lower()
+    if name in {'tokenizer.json', 'vocab.json'}:
+        return False
     if any(x in name for x in ('secret', 'credential', '.env', 'netrc')):
         return False
     if name == 'responses.jsonl':
