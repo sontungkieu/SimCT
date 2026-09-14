@@ -75,7 +75,11 @@ def materialize(directory, payload):
         content=''.join(json.dumps(row,allow_nan=False)+'\n' for row in payload[key]).encode()
         atomic_write(Path(directory)/name, lambda f, content=content:f.write(content))
     status=('completed' if payload['step'] else 'no_valid_updates') if payload['cursor']==payload['total_groups'] else 'in_progress'
+    budget=payload['manifest']['args'].get('max_student_updates')
+    if budget is not None:
+        status='completed' if payload['step']>=budget else ('budget_unmet' if payload['cursor']==payload['total_groups'] else 'in_progress')
     summary={'schema':SCHEMA,'status':status,'next_group':payload['cursor'],
+             'target_student_updates':budget,'total_groups':payload['total_groups'],
              'student_updates':payload['step'],'energy_updates':payload['energy_updates'],
              'invalid_groups':payload['invalid'], 'scope':payload['manifest']['scope'],
              'evidence':'adapter training pilot; no benchmark efficacy claim',

@@ -156,6 +156,23 @@ def test_runner_persists_student_across_fresh_rollouts(tmp_path, monkeypatch, fr
         for k in ('a','b','energy','energy_optimizer','rng','cursor','step','invalid','energy_updates'):
             same(saved[k],recovered[k])
         same(saved['traces'],recovered['traces'])
+    args.output=tmp_path/'budget';args.resume=False;args.max_student_updates=1
+    run(args)
+    budgeted=torch.load(args.output/'latest.pt',weights_only=False)
+    assert budgeted['cursor']==budgeted['step']==1
+    assert json.loads((args.output/'summary.json').read_text())['status']=='completed'
+    args.resume=True
+    run(args)
+    same(budgeted['b'],torch.load(args.output/'latest.pt',weights_only=False)['b'])
+    args.output=tmp_path/'budget-unmet';args.resume=False;args.max_student_updates=3
+    with pytest.raises(RuntimeError,match='data exhausted'):run(args)
+    unmet=json.loads((args.output/'summary.json').read_text())
+    assert unmet['status']=='budget_unmet' and unmet['student_updates']==2
+    args.output=tmp_path/'budget-skip';args.max_student_updates=2
+    run(args)
+    skipped=torch.load(args.output/'latest.pt',weights_only=False)
+    assert skipped['step']==2 and skipped['cursor']==3 and skipped['invalid']==1
+    args.resume=True
     args.virtual_lr=.2
     with pytest.raises(ValueError,match='configuration mismatch'):run(args)
 

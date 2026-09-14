@@ -208,6 +208,9 @@ def run(args):
     if getattr(args, 'stop_after_groups', None) is not None:
         if not getattr(args, 'alternating_student', False) or args.stop_after_groups <= 0:
             raise ValueError('stop-after-groups requires alternating pilot and positive cursor')
+    if getattr(args, 'max_student_updates', None) is not None:
+        if not getattr(args, 'alternating_student', False) or args.max_student_updates <= 0:
+            raise ValueError('max-student-updates requires alternating pilot and positive budget')
     from experiments.mp_opd.alternating_checkpoint import output_lock
     with output_lock(args.output, getattr(args, 'resume', False)):
         return _run(args)
@@ -373,6 +376,8 @@ def _run(args):
         (args.output / "manifest.json").write_text(json.dumps(manifest, indent=2))
     for index, group in enumerate(groups):
         if index < cursor:continue
+        if alternating and getattr(args,'max_student_updates',None) is not None and len(results)-invalid >= args.max_student_updates:
+            break
         if alternating and getattr(args,'stop_after_groups',None) is not None and index >= args.stop_after_groups:
             print('PAUSED_AT_GROUP',index,flush=True)
             return
@@ -489,6 +494,8 @@ def _run(args):
     if not valid_results:
         raise RuntimeError("no valid groups; oracle gate unavailable")
     if alternating:
+        if getattr(args,'max_student_updates',None) is not None and len(valid_results)<args.max_student_updates:
+            raise RuntimeError('data exhausted before requested student update budget; checkpoint retained')
         # The checkpoint projection is canonical for pause, completion and resume.
         summary=json.loads((args.output/'summary.json').read_text())
         print(json.dumps(summary),flush=True)
@@ -555,6 +562,7 @@ def main():
     p.add_argument("--norm-controls", action="store_true")
     p.add_argument("--learn-partition", action="store_true")
     p.add_argument("--alternating-student", action="store_true", help="Persistent adapter-SGD pilot, separate from frozen diagnostic")
+    p.add_argument("--max-student-updates", type=int, help="Alternating pilot valid-update budget; invalid groups do not count")
     p.add_argument("--resume", action="store_true", help="Restore latest.pt in the same output directory")
     p.add_argument("--stop-after-groups", type=int, help="Controlled pause at absolute processed-group cursor")
     p.add_argument("--freeze-energy", action="store_true", help="Frozen-energy control for alternating-student pilot")

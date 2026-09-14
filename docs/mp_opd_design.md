@@ -320,3 +320,10 @@ CPU tests cover the exact hypergradient against finite differences, no virtual
 student mutation, energy-before-student ordering, one persistent student step,
 frozen control, ID overlap rejection, and a two-iteration runner with a tiny
 mock model. A real-model B200 canary and Ray/FSDP integration remain unverified.
+
+For a bounded alternating pilot, `--max-student-updates 50` stops after 50 valid
+student updates; invalid groups only advance the data cursor. Prepare additional
+disjoint groups as reserves. Exhausting data below the budget exits with an error
+and `budget_unmet` summary, preserving the checkpoint. The budget is part of the
+resume contract and cannot change mid-run. Budget completion resumes without
+additional updates even when unprocessed reserve groups remain.
