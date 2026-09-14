@@ -78,13 +78,14 @@ the current B prompts at each step; roles can change across steps. M selection
 is identical across variants for the same train seed and step. References
 over the sequence limit are excluded from M with a logged count. These are
 teacher references, potentially already used during SFT, not heldout labels.
-The `uniform-prompt-one-reference-v2` policy groups identical rendered prompts
-and deduplicates identical reference strings. Each step samples 16 distinct
-eligible prompt groups uniformly, then samples one reference per group with a
-separate stateless seed/step/prompt RNG. Thus repeated source rows do not give
-a prompt extra weight; input row order does not affect sampling. Differing
-reference strings are not assumed to be contradictory or semantically correct.
-Distinct rendered prompts sharing a normalized key still fail closed. The
+The `uniform-normalized-group-original-pair-v3` policy groups by normalized
+prompt key and deduplicates exact (rendered prompt, reference) pairs. Each step
+samples 16 distinct eligible groups uniformly, then one original pair per group
+with a separate stateless seed/step/group RNG. Repeated source rows do not give
+a group extra weight; input row order does not affect sampling. Normalization
+is only a conservative sampling/exclusion key, not a semantic-equivalence
+claim: the selected original prompt always retains its own original reference.
+Differing references are not assumed contradictory or semantically correct. The
 policy and group digest are logged; older source checkpoints cannot silently
 resume under this new policy. All six variants use the same policy.
 The CPU audit checks nonempty references, membership, expected B cardinality

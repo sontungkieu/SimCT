@@ -16,11 +16,27 @@ def test_disjoint_replay_and_shared_schedule_without_global_rng():
     assert before==random.getstate()
 
 
-def test_reference_membership_and_conflict():
+def test_reference_membership():
     with pytest.raises(ValueError,match='outside'):
         MetaSampler([dict(prompt='test',reference='answer')],['train'],42,1)
-    with pytest.raises(ValueError,match='Ambiguous normalized'):
-        MetaSampler([dict(prompt='train',reference='a'),dict(prompt=' TRAIN ',reference='b')],['train'],42,1)
+
+
+@pytest.mark.parametrize('left,right',[
+    ('train',' TRAIN '),('evaluate X','evaluate x'),('a\n  b','a b'),
+])
+def test_normalization_collision_preserves_original_pair_and_excludes_group(left,right):
+    rows=[dict(prompt=left,reference='answer a'),dict(prompt=right,reference='answer b')]
+    sampler=MetaSampler(rows,[left,right],42,1)
+    replay=MetaSampler(rows[::-1]+rows,[right,left],42,1)
+    assert sampler.audit['multiple_prompt_form_groups']==1
+    observed=set()
+    for step in range(30):
+        batch=sampler.batch(step,[])
+        assert batch==replay.batch(step,[])
+        observed.add((batch[0]['prompt'],batch[0]['reference']))
+    assert observed=={(left,'answer a'),(right,'answer b')}
+    for excluded in (left,right):
+        with pytest.raises(ValueError,match='disjoint'):sampler.batch(1,[excluded])
 
 
 def test_multi_reference_is_order_and_duplicate_invariant():

@@ -68,7 +68,7 @@ def initialize_case(case):
             shared=F.BASE.parent/'SimCT'
             c=dict(source=str(ROOT),commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),
                 runs=F.configurations(),steps=list(F.STEPS),streaming_eval=True,
-                meta_policy='uniform-prompt-one-reference-v2',
+                meta_policy='uniform-normalized-group-original-pair-v3',
                 student=str(shared/'runs/qwen-gemma-sft-paper-20260908-045828/checkpoint'),
                 teacher='/workspace/storage-shared/models/Qwen2.5-7B-Instruct',
                 dataset=str(shared/'data/qwen-author/data/prompts.parquet'),

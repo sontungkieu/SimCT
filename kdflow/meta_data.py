@@ -4,7 +4,7 @@ import random
 import re
 import unicodedata
 
-POLICY = 'uniform-prompt-one-reference-v2'
+POLICY = 'uniform-normalized-group-original-pair-v3'
 
 
 def prompt_id(text):
@@ -24,16 +24,18 @@ class MetaSampler:
                 raise ValueError('Empty/nontext meta reference: '+key)
             count+=1
             if key not in unique:
-                unique[key]=dict(prompt=row['prompt'],id=key,references=set())
-            if unique[key]['prompt']!=row['prompt']:
-                raise ValueError('Ambiguous normalized meta prompts: '+key)
-            unique[key]['references'].add(row['reference'])
+                unique[key]=dict(id=key,pairs=set())
+            # Normalization is only a conservative sampling/exclusion key.
+            # Preserve the exact original prompt/reference association even
+            # when normalization folds case-sensitive or whitespace content.
+            unique[key]['pairs'].add((row['prompt'],row['reference']))
         self.rows=sorted(unique.values(),key=lambda r:r['id'])
-        for row in self.rows:row['references']=tuple(sorted(row['references']))
+        for row in self.rows:row['pairs']=tuple(sorted(row['pairs']))
         self.audit=dict(policy=POLICY,input_rows=count,unique_prompts=len(self.rows),
-            unique_references=sum(len(r['references']) for r in self.rows),
-            multi_reference_prompts=sum(len(r['references'])>1 for r in self.rows),
-            groups_sha256=hashlib.sha256(repr([(r['id'],r['references']) for r in self.rows]).encode()).hexdigest())
+            unique_pairs=sum(len(r['pairs']) for r in self.rows),
+            multi_reference_prompts=sum(len({ref for _,ref in r['pairs']})>1 for r in self.rows),
+            multiple_prompt_form_groups=sum(len({p for p,_ in r['pairs']})>1 for r in self.rows),
+            groups_sha256=hashlib.sha256(repr([(r['id'],r['pairs']) for r in self.rows]).encode()).hexdigest())
         self.seed=seed;self.batch_size=batch_size
         if len(self.rows)<batch_size:
             raise ValueError('Insufficient distinct meta references')
@@ -48,9 +50,12 @@ class MetaSampler:
         selected=rng.sample(candidates,self.batch_size)
         # Per-prompt reference RNG: duplicate rows and other prompts' reference
         # counts never alter the selected prompt set or another prompt's draw.
-        return [dict(id=r['id'],prompt=r['prompt'],reference=random.Random(
-            f'kdflow-reference-v2:{self.seed}:{step}:{r["id"]}').choice(r['references']))
-            for r in selected]
+        result=[]
+        for row in selected:
+            prompt,reference=random.Random(
+                f'kdflow-reference-v3:{self.seed}:{step}:{row["id"]}').choice(row['pairs'])
+            result.append(dict(id=row['id'],prompt=prompt,reference=reference))
+        return result
 
 
 def prepare_meta(rows, render, tokenizer, max_len):
