@@ -78,6 +78,15 @@ the current B prompts at each step; roles can change across steps. M selection
 is identical across variants for the same train seed and step. References
 over the sequence limit are excluded from M with a logged count. These are
 teacher references, potentially already used during SFT, not heldout labels.
+The `uniform-prompt-one-reference-v2` policy groups identical rendered prompts
+and deduplicates identical reference strings. Each step samples 16 distinct
+eligible prompt groups uniformly, then samples one reference per group with a
+separate stateless seed/step/prompt RNG. Thus repeated source rows do not give
+a prompt extra weight; input row order does not affect sampling. Differing
+reference strings are not assumed to be contradictory or semantically correct.
+Distinct rendered prompts sharing a normalized key still fail closed. The
+policy and group digest are logged; older source checkpoints cannot silently
+resume under this new policy. All six variants use the same policy.
 The CPU audit checks nonempty references, membership, expected B cardinality
 and normalized exact/containment overlaps with pinned evaluation prompts.
 It reports and blocks detected overlaps without silently changing B; this is
@@ -123,6 +132,15 @@ Remote state may be stale after pod loss; shared storage does not restart pods.
 
 Additional supervision controls (frozen energy + SFT(M)) and random energy
 initialization are proposals, not part of this submitted six-run plan.
+
+The current CPU audit also runs the production meta renderer, length filter
+and sampler using the local tokenizer before GPU qualification; at least 80
+eligible prompt groups are required to leave M16 after excluding B64.
+After the pre-training multi-reference failure, use the new source's
+`retire-unstarted --case OLD_CASE` on each host, then submit a fresh shared CASE.
+Retirement verifies receipt specs, refuses any started training or active
+qualification, cancels only that host's old campaign jobs, and waits for them
+to stop. It leaves the manager, source, datasets and failure evidence intact.
 
 ### Earlier single-host plan
 

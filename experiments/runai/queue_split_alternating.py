@@ -68,6 +68,7 @@ def initialize_case(case):
             shared=F.BASE.parent/'SimCT'
             c=dict(source=str(ROOT),commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),
                 runs=F.configurations(),steps=list(F.STEPS),streaming_eval=True,
+                meta_policy='uniform-prompt-one-reference-v2',
                 student=str(shared/'runs/qwen-gemma-sft-paper-20260908-045828/checkpoint'),
                 teacher='/workspace/storage-shared/models/Qwen2.5-7B-Instruct',
                 dataset=str(shared/'data/qwen-author/data/prompts.parquet'),
@@ -174,6 +175,36 @@ def producers_done(case):
     return True
 
 
+def retire_unstarted(case):
+    """Retire only this host's pre-training failed campaign, preserving evidence."""
+    host=socket.gethostname()
+    if host not in (OWNER,EXTRA):raise ValueError('Unexpected host')
+    receipt=F.read(case/'nodes'/host/'receipt.json')
+    if receipt['host']!=host:raise ValueError('Host mismatch')
+    sys.path.insert(0,receipt['manager'])
+    from job_manager.store import connect,rows,cancel
+    db=connect(Path(receipt['state']))
+    try:
+        current={j['id']:j for j in rows(db)}
+        for spec in receipt['jobs']:
+            old=current[spec['id']]
+            if old['spec']!=spec:raise ValueError('Existing spec changed')
+            if spec['argv'][4]=='train' and old['started'] is not None:
+                raise ValueError('Training already started: do not retire this campaign')
+            if spec['argv'][4]=='qualify' and old['status'] not in ('failed','blocked','cancelled'):
+                raise ValueError('Qualification is not failed/blocked; inspect first')
+        for spec in receipt['jobs']:cancel(db,spec['id'])
+        wanted={j['id'] for j in receipt['jobs']}
+        for _ in range(60):
+            active=[j['id'] for j in rows(db) if j['id'] in wanted and j['status'] in ('running','starting','queued')]
+            if not active:break
+            time.sleep(1)
+        else:raise ValueError('Old workers have not stopped; new campaign not submitted: '+str(active))
+        F.write(case/'nodes'/host/'retired-before-training.json',dict(host=host,time=time.time(),jobs=sorted(wanted)))
+        print('OLD_CAMPAIGN_RETIRED',host,flush=True)
+    finally:db.close()
+
+
 def worker(case,phase):
     import fcntl
     from kdflow.export_ready import marker
@@ -217,10 +248,11 @@ def worker(case,phase):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument('action',choices=['submit','status','audit','qualify','train','generate','score','export'])
+    p.add_argument('action',choices=['submit','status','audit','qualify','train','generate','score','export','retire-unstarted'])
     p.add_argument('--case',type=Path,required=True);p.add_argument('--run')
     p.add_argument('--manager',type=Path,default=F.BASE/'job-manager');p.add_argument('--state',type=Path)
     a=p.parse_args();a.case=a.case.resolve();host=socket.gethostname()
+    if a.action=='retire-unstarted':return retire_unstarted(a.case)
     if a.action=='submit':return submit(a)
     if a.action=='status':
         export_state(a.case,once=True)

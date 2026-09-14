@@ -118,6 +118,22 @@ def audit(case):
     report['pass']=len(train)==10000 and not(missing or outside or overlaps)
     write(case/'data-audit.json',report)
     if not report['pass']:raise ValueError('Data audit failed; see data-audit.json; B was not changed')
+    if c.get('meta_policy'):
+        # Use the production renderer/filter/sampler before admitting any GPU.
+        from transformers import AutoTokenizer
+        from kdflow.datasets.prompts_dataset import PromptDataset
+        from kdflow.meta_data import MetaSampler,prepare_meta,POLICY
+        if c['meta_policy']!=POLICY:raise ValueError('Meta policy drift')
+        tokenizer=AutoTokenizer.from_pretrained(c['student'],local_files_only=True,trust_remote_code=False)
+        renderer=PromptDataset.__new__(PromptDataset)
+        renderer.apply_chat_template=True;renderer.image_key=None;renderer.enable_thinking=False
+        render=lambda row:renderer._build_prompt(row,tokenizer,'messages')
+        report['pass']=False;write(case/'data-audit.json',report)
+        prepared,excluded=prepare_meta(meta,render,tokenizer,4096)
+        sampler=MetaSampler(prepared,[render(r) for r in train],42,16)
+        if len(sampler.rows)<80:raise ValueError('M pool cannot guarantee 16 distinct prompts after excluding B64')
+        report.update(meta_sampling=sampler.audit,meta_excluded_length=excluded)
+        report['pass']=True;write(case/'data-audit.json',report)
 
 
 def run_command(case,config,out,limit=312,pause=0,resume=False):

@@ -89,3 +89,31 @@ def test_producers_require_both_host_status_and_all_trains_terminal(tmp_path):
     job=next(j for j in jobs if j['argv'][4]=='train');state['jobs'][job['id']]='running'
     (dest/'status.json').write_text(json.dumps(state))
     assert not q.producers_done(tmp_path)
+
+
+@pytest.mark.parametrize('started',[False,True])
+def test_retirement_refuses_started_train_and_preserves_other_jobs(tmp_path,monkeypatch,started):
+    manager=Path('/mnt/d/dev/codex/job-manager')
+    if not manager.exists():pytest.skip('Local manager unavailable')
+    sys.path.insert(0,str(manager))
+    from job_manager.store import initialize,connect,submit,rows
+    state=tmp_path/'state';initialize(state,dict(gpus=['GPU-owner'],cpu_slots=16,deadline=None))
+    jobs=q.specs(tmp_path,q.OWNER,['GPU-owner'])
+    extra=dict(jobs[0],id='unrelated',dependencies=[])
+    db=connect(state);submit(db,jobs+[extra])
+    qualify=next(j for j in jobs if j['argv'][4]=='qualify')
+    train=next(j for j in jobs if j['argv'][4]=='train')
+    db.execute("UPDATE jobs SET status='failed' WHERE id=?",(qualify['id'],))
+    if started:db.execute('UPDATE jobs SET started=1 WHERE id=?',(train['id'],))
+    node=tmp_path/'nodes'/q.OWNER;node.mkdir(parents=True)
+    (node/'receipt.json').write_text(json.dumps(dict(host=q.OWNER,state=str(state),manager=str(manager),jobs=jobs)))
+    monkeypatch.setattr(q.socket,'gethostname',lambda:q.OWNER)
+    try:
+        if started:
+            with pytest.raises(ValueError,match='Training already started'):q.retire_unstarted(tmp_path)
+        else:q.retire_unstarted(tmp_path)
+        current={j['id']:j for j in rows(db)}
+        assert current['unrelated']['status']=='queued'
+        assert current[train['id']]['status']==('queued' if started else 'cancelled')
+        assert current[qualify['id']]['status']=='failed'
+    finally:db.close()

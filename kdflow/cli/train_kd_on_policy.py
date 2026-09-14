@@ -126,22 +126,16 @@ def train(args):
 
     meta_sampler=None
     if args.kd.mp_opd_alternating:
-        from kdflow.meta_data import MetaSampler
+        from kdflow.meta_data import MetaSampler, prepare_meta
         meta_data=blending_datasets(args.kd.mp_opd_meta_path,None,strategy,args.train.seed,
                                    max_count=args.data.max_samples,dataset_split=args.data.train_split)
-        rows=[]; excluded_length=0
-        for row in meta_data:
-            prompt=train_dataset._build_prompt(row,student_tokenizer,args.data.input_key)
-            reference=row.get('label')
-            if not isinstance(reference,str) or not reference.strip():
-                raise ValueError('Meta selected.parquet must contain nonempty teacher references in label')
-            length=len(student_tokenizer.encode(prompt,add_special_tokens=False))+len(student_tokenizer.encode(reference,add_special_tokens=False))+1
-            if length>args.data.max_len:
-                excluded_length+=1;continue
-            rows.append(dict(prompt=prompt,reference=reference))
+        rows,excluded_length=prepare_meta(meta_data,
+            lambda row:train_dataset._build_prompt(row,student_tokenizer,args.data.input_key),
+            student_tokenizer,args.data.max_len)
         meta_sampler=MetaSampler(rows,[r['stu_prompt'] for r in train_dataset],
                                  args.train.seed,args.kd.mp_opd_meta_batch_size)
         strategy.log(f'META_DATA qualified_rows={len(meta_sampler.rows)} excluded_length={excluded_length}; teacher references, not heldout evaluation')
+        strategy.log(f'META_SAMPLING {meta_sampler.audit}')
     
     # Load and prepare evaluation dataset (optional)
     eval_dataloader = None
