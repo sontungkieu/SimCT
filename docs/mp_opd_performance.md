@@ -2,6 +2,15 @@
 
 ## Company OOM recovery
 
+Alternating updates now resolve Ray/CPU inputs and transfer them per inner
+callback, instead of staging the entire B64 (including teacher hidden states)
+on GPU. Callbacks are replayed for the first- and second-order passes with the
+same normalization and ordering. FULL_META_MEMORY JSON lines report padded
+input/teacher-hidden shapes, allocation, reservation and cumulative peak at
+forward/backward boundaries. They do not reset the step peak or synchronize
+the GPU. This removes eager input staging; it does not establish that the
+remaining higher-order attention graph fits a B200. GPU validation is pending.
+
 New full alternating queues use B64/micro2/accumulation32 and M16/meta-micro4.
 The queue forwards these immutable configuration fields to the launcher.
 Use a new campaign directory; do not resume an old micro4 campaign with this

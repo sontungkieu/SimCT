@@ -5,6 +5,32 @@ from kdflow.algorithms._mp_opd_full_meta import full_meta_step, adam_value, clip
 from kdflow.algorithms._mp_opd_full_meta import ForwardParameterBridge
 
 
+def test_streamed_callbacks_load_lazily_release_and_replay():
+    import weakref
+    from kdflow.algorithms._mp_opd_full_meta import streamed_inner_losses
+    loaded, refs = [], []
+    weight = torch.tensor(2., requires_grad=True)
+    def loader(index):
+        loaded.append(index)
+        tensor = torch.tensor([[float(index + 1)]])
+        refs.append(weakref.ref(tensor))
+        return {'stu_input_ids':tensor}
+    def step(batch):
+        return {'loss':(weight*batch['stu_input_ids']).square().sum()}
+    callbacks = streamed_inner_losses([0,1],loader,step,'cpu')
+    assert loaded == []
+    gradients=[]
+    for callback in callbacks+callbacks:
+        loss = callback()
+        grad, = torch.autograd.grad(loss,weight,create_graph=True)
+        second, = torch.autograd.grad(grad,weight)
+        gradients.append((grad.item(),second.item()))
+        del loss,grad,second
+        assert all(ref() is None for ref in refs)
+    assert loaded == [0,1,0,1]
+    assert gradients == [(2.,1.),(8.,4.),(2.,1.),(8.,4.)]
+
+
 def test_forward_bridge_preserves_plain_parameter_gradients():
     model = torch.nn.Sequential(torch.nn.Linear(3, 4), torch.nn.Tanh(), torch.nn.Linear(4, 2)).double()
     bridge = ForwardParameterBridge(model)

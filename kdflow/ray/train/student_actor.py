@@ -257,14 +257,21 @@ class StudentRayActor:
                 raise ValueError('Full alternating currently requires one GPU, soft mode and independent meta rows')
             if len(train_data) != self.strategy.accumulated_gradient:
                 raise ValueError('Virtual/real accumulation mismatch')
-            prepared=[{
-                k: torch.from_numpy(ray.get(v) if isinstance(v,ray.ObjectRef) else v).to(device)
-                    if isinstance(v,(np.ndarray,ray.ObjectRef)) else v.to(device) if torch.is_tensor(v) else v
-                for k,v in b.items()} for b in train_data]
-            meta_metrics=self.kd_algorithm.update_energy_full(prepared,meta_rows,self.optim)
+            def load_meta_batch(batch):
+                result = {}
+                for key, value in batch.items():
+                    if isinstance(value, ray.ObjectRef):
+                        value = ray.get(value)
+                    if isinstance(value, np.ndarray):
+                        # Ray arrays may be read-only. Keep the writable staging
+                        # copy on CPU and transfer only the current microbatch.
+                        value = torch.from_numpy(value.copy())
+                    result[key] = value.to(device) if torch.is_tensor(value) else value
+                return result
+            meta_metrics=self.kd_algorithm.update_energy_full(
+                train_data,meta_rows,self.optim,batch_loader=load_meta_batch)
             for key,value in meta_metrics.items(): status[key].append(value)
             self.optim.zero_grad(set_to_none=True)
-            del prepared
 
         for batch in train_data:
             micro_batch = {

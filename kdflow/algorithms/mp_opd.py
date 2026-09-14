@@ -214,8 +214,8 @@ class MetaPartitionedOPD:
     def note_optimizer_updates(self, count):
         self.student_updates += count
 
-    def update_energy_full(self, batches, meta_rows, optimizer):
-        from ._mp_opd_full_meta import full_meta_step, ForwardParameterBridge
+    def update_energy_full(self, batches, meta_rows, optimizer, *, batch_loader=lambda batch:batch):
+        from ._mp_opd_full_meta import full_meta_step, ForwardParameterBridge, memory_event, streamed_inner_losses
         args=self.args.kd
         if (self.student_updates+1) % args.mp_opd_energy_every:
             return {"mp_opd_energy_updates_total":float(self.energy_updates)}
@@ -232,6 +232,7 @@ class MetaPartitionedOPD:
             encoded.append((prefix,answer))
         def meta_loss(rows):
             size=max(len(p)+len(a) for p,a in rows)
+            memory_event('meta_forward',device,shape=[len(rows),size])
             pad=tok.pad_token_id if tok.pad_token_id is not None else tok.eos_token_id
             ids=torch.full((len(rows),size),pad,dtype=torch.long,device=device)
             mask=torch.zeros_like(ids); response=torch.zeros_like(ids,dtype=torch.bool)
@@ -247,7 +248,7 @@ class MetaPartitionedOPD:
             for _,a in rows:
                 total=total+losses[cursor:cursor+len(a)].mean()/len(encoded);cursor+=len(a)
             return total
-        inner=[lambda b=b:self.training_step(b)['loss']/len(batches) for b in batches]
+        inner=streamed_inner_losses(batches,batch_loader,self.training_step,device)
         outer=[lambda rows=encoded[i:i+args.mp_opd_meta_microbatch_size]:meta_loss(rows)
                for i in range(0,len(encoded),args.mp_opd_meta_microbatch_size)]
         self._meta_gradient=True

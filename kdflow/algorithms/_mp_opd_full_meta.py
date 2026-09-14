@@ -5,7 +5,30 @@ student is installed temporarily, always rolled back, and never checkpointed.
 Only one rollout microbatch's higher-order graph is retained at a time.
 """
 import torch
+import json
 from kdflow.training_checkpoint import capture_rng, restore_rng
+
+
+def memory_event(phase, device, **details):
+    if torch.device(device).type != 'cuda':
+        return
+    print('FULL_META_MEMORY '+json.dumps(dict(phase=phase,
+        allocated_bytes=torch.cuda.memory_allocated(device),
+        reserved_bytes=torch.cuda.memory_reserved(device),
+        peak_allocated_bytes=torch.cuda.max_memory_allocated(device),
+        **details)),flush=True)
+
+
+def streamed_inner_losses(batches, loader, training_step, device):
+    """Callbacks retain source handles only; autograd owns current inputs until backward."""
+    def loss_at(index):
+        batch = loader(batches[index])
+        memory_event('inner_forward',device,index=index,
+            shape=list(batch['stu_input_ids'].shape),
+            teacher_hidden_shape=list(batch['teacher_hiddens'].shape)
+                if torch.is_tensor(batch.get('teacher_hiddens')) else None)
+        return training_step(batch)['loss']/len(batches)
+    return [lambda index=index:loss_at(index) for index in range(len(batches))]
 
 
 class ForwardParameterBridge:
@@ -107,8 +130,9 @@ def full_meta_step(parameters, optimizer, energy, energy_optimizer, inner_losses
     initial_rng = capture_rng()
     g = [torch.zeros_like(p) for p in params]
     # Detached accumulation avoids retaining B=64 activation graphs.
-    for loss_fn in inner_losses:
+    for index,loss_fn in enumerate(inner_losses):
         loss = loss_fn()
+        memory_event('inner_first_backward',params[0].device,index=index)
         part = parameter_grad(loss, params, allow_unused=True)
         if all(value is None for value in part):
             raise RuntimeError('Meta inner loss is disconnected from optimizer parameters; FSDP parameter views require an explicit autograd bridge')
@@ -167,8 +191,9 @@ def full_meta_step(parameters, optimizer, energy, energy_optimizer, inner_losses
     del g
     restore_rng(initial_rng)
     hyper = [torch.zeros_like(p) for p in phi]
-    for loss_fn in inner_losses:
+    for index,loss_fn in enumerate(inner_losses):
         loss = loss_fn()
+        memory_event('inner_second_backward',params[0].device,index=index)
         part = parameter_grad(loss, params, create_graph=True, allow_unused=True)
         active = [(grad, vector) for grad, vector in zip(part,u) if grad is not None and grad.requires_grad]
         if active:
@@ -178,6 +203,7 @@ def full_meta_step(parameters, optimizer, energy, energy_optimizer, inner_losses
                 if value is not None: target.add_(value.detach())
             del hg, target, value
         del active, part, loss
+        memory_event('inner_second_released',params[0].device,index=index)
     if not all(torch.isfinite(x).all() for x in hyper):
         raise FloatingPointError("Nonfinite full energy hypergradient")
     energy_optimizer.zero_grad(set_to_none=True)
