@@ -327,3 +327,20 @@ disjoint groups as reserves. Exhausting data below the budget exits with an erro
 and `budget_unmet` summary, preserving the checkpoint. The budget is part of the
 resume contract and cannot change mid-run. Budget completion resumes without
 additional updates even when unprocessed reserve groups remain.
+
+### Queued matched adapter follow-up
+
+`experiments/runai/queue_alternating_followup.py submit --case CASE --manager MANAGER_SOURCE --state EXISTING_STATE --gpu-uuid GPU_UUID`
+submits a success-dependent frozen50 -> paired-reference-evaluation -> report DAG
+using job-manager on GPU0. An explicit state must already be running. Without
+--state, it discovers the active local manager, rejects ambiguous multiple
+managers, or creates a host-specific state when none is running. It does not
+reconfigure an existing manager or cancel other jobs. Repeated submission checks exact specs and does
+not duplicate jobs. The frozen payload reuses the original runner and command,
+changing only output and freeze-energy; an existing valid checkpoint resumes.
+The evaluator uses the same base model and adapter formula for initial,
+alternating and frozen models, verifies matching training provenance, and only
+uses eval references beyond both consumed cursors (including invalid groups).
+If no unused groups remain it fails instead of evaluating on training groups.
+Reports are in CASE/followup/report.json; NLL is mean per-reference token NLL
+including EOS, not benchmark accuracy. No automatic long training promotion.
