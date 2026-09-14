@@ -85,6 +85,47 @@ not a semantic contamination audit.
 
 ## Queue and evaluation
 
+### Two-host plan (current allocation)
+
+Use `experiments/runai/queue_split_alternating.py submit --case CASE --manager MANAGER`
+on each confirmed host, with the **same new shared CASE and source checkout**.
+The previous single-host queue was not submitted; do not submit both plans.
+
+* `hieplh8-beyond-leakage-1-0-0` GPU0: main42 → lowLR42 → every4-42 → eval.
+* `nlp-core-team-0-0` GPU0/1/2: main43 / lowLR43 / every4-43 in parallel,
+  each switching to eval after its training succeeds.
+* New host GPU3/4: eval workers admitted only after external workloads release
+  the GPUs. No process is killed to obtain capacity.
+
+Each host has an audit and its own full resume qualification on GPU0 before
+training. Ports and Ray directories are isolated for parallel training.
+The manager has no allocation deadline, uses local `/var/tmp` SQLite and
+host-local shared GPU leases. An incompatible existing manager is rejected,
+not silently reconfigured. Submit is idempotent. Two/four CPU score workers
+run on the owner/new host respectively.
+
+HF exports receive an `export-ready/stepN.json` marker **after** the training
+state transaction commits. Epoch-end saving never rewrites a published export.
+Eval workers on either host claim committed checkpoints using filesystem locks;
+generation and scoring overlap training. They share the historical 8 steps ×
+4 benchmarks × 3 eval seeds protocol, 48 checkpoints and 576 cells total.
+Training seeds remain a separate field from eval seeds.
+
+Each operation preserves a `.done.json` or `.error.json` in `CASE/dispatch`.
+Scorer retries remain bounded; an unresolved checkpoint operation is recorded
+and skipped so other checkpoints proceed. Errors are not automatically cleared
+or reported as zero. Once all producers terminate and work is drained, workers
+exit; `report.json` is written only when all 48 scoring operations succeeded.
+Missing checkpoints from failed training stay missing, not completed.
+`queue_split_alternating.py status --case CASE` refreshes the current host and
+shows the other host's timestamped exported state, completed evals and errors.
+Remote state may be stale after pod loss; shared storage does not restart pods.
+
+Additional supervision controls (frozen energy + SFT(M)) and random energy
+initialization are proposals, not part of this submitted six-run plan.
+
+### Earlier single-host plan
+
 `experiments/runai/queue_full_alternating.py submit --case CASE --manager MANAGER`
 is restricted to the confirmed single-B200 pod. It reuses the existing local
 manager when unambiguous, otherwise requires `--state`; a new manager uses

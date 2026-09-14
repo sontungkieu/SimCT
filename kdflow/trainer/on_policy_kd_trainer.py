@@ -438,6 +438,9 @@ class OnPolicyKDTrainer:
                     if self.args.train.enable_sleep:
                         self.student.wakeup()
                     self._save_training_checkpoint(epoch, epoch_consumed)
+                    if checkpoint_due:
+                        from kdflow.export_ready import publish as publish_export
+                        publish_export(self.args.train.save_path, self.completed_optimizer_updates)
                     if self.args.train.enable_sleep:
                         self.student.sleep()
                 if pause_due:
@@ -451,9 +454,16 @@ class OnPolicyKDTrainer:
             save_path = os.path.join(self.args.train.save_path, f"step{self.completed_optimizer_updates}")
             if self.args.train.enable_sleep:
                 self.student.wakeup()
-            ray.get(self.student.async_save_model(save_path))
+            from kdflow.export_ready import marker, publish as publish_export
+            # A published export may already be read by another host. Never
+            # rewrite it at the epoch boundary (notably step156 and step312).
+            already_exported = marker(self.args.train.save_path, self.completed_optimizer_updates).exists()
+            if not already_exported:
+                ray.get(self.student.async_save_model(save_path))
             if not self._collapse_stop:
                 self._save_training_checkpoint(epoch, epoch_consumed)
+                if not already_exported:
+                    publish_export(self.args.train.save_path, self.completed_optimizer_updates)
             if self.args.train.enable_sleep:
                 self.student.sleep()
             if self.stop_reason or self.completed_optimizer_updates >= expected_updates:

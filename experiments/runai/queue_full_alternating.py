@@ -186,10 +186,10 @@ def compare_checkpoint(a,b):
         equal(trajectory(p),trajectory(other),'rollout/'+p.name)
 
 
-def qualify(case):
+def qualify(case, destination=None):
     c=checked_config(case)
     if not read(case/'data-audit.json')['pass']:raise ValueError('Data audit missing/failed')
-    dest=case/'qualification';dest.mkdir(exist_ok=True)
+    dest=destination or case/'qualification';dest.mkdir(parents=True,exist_ok=True)
     if (dest/'PASS.json').exists():
         if read(dest/'PASS.json')['commit']!=c['commit']:raise ValueError('Qualification source changed')
         return
@@ -218,9 +218,9 @@ def qualify(case):
         scope='full B64/M16; main and every4; continuous4 vs pause3+resume1; same source/runtime/GPU'))
 
 
-def train(case,run):
+def train(case,run,qualification=None):
     c=checked_config(case)
-    if read(case/'qualification/PASS.json')['commit']!=c['commit']:raise ValueError('Qualification not passed')
+    if read((qualification or case/'qualification')/'PASS.json')['commit']!=c['commit']:raise ValueError('Qualification not passed')
     config=next(r for r in c['runs'] if r['id']==run);dest=case/'train'/run
     summary=dest/'checkpoint/run-summary.json'
     if summary.exists():
@@ -253,8 +253,12 @@ def eval_plan(case,run,step):
         identity=B.checkpoint_stable(Path(plan['jobs'][0]['checkpoint']['path']))
         if identity!=plan['jobs'][0]['checkpoint']:raise ValueError('Eval checkpoint drift')
         return path,plan
-    s=read(case/'train'/run/'checkpoint/run-summary.json')
-    if s['status']!='completed' or s['optimizer_updates']!=312:raise ValueError('Training not complete')
+    if read(case/'campaign.json').get('streaming_eval'):
+        from kdflow.export_ready import validate
+        validate(case/'train'/run/'checkpoint',step)
+    else:
+        s=read(case/'train'/run/'checkpoint/run-summary.json')
+        if s['status']!='completed' or s['optimizer_updates']!=312:raise ValueError('Training not complete')
     plan=read(case/'eval-template.json');identity=B.checkpoint_stable(case/'train'/run/'checkpoint'/f'step{step}')
     plan.update(jobs=[dict(id=f'{run}-step{step}',mode='soft-alternating',step=step,tier=0,checkpoint=identity)],
                 source=D.script_hashes(),hours=168,admit_hours=168)
@@ -270,9 +274,11 @@ def evaluate(case,run,step,phase):
     deadline=time.time()+7*24*3600
     if phase=='generate':
         Q.GENERATION_ONLY=True
-        actual=subprocess.check_output(['nvidia-smi','-i','0','--query-gpu=uuid','--format=csv,noheader'],text=True).strip()
-        if os.environ.get('CUDA_VISIBLE_DEVICES')!=actual:raise ValueError('GPU lease/index mismatch')
-        args=argparse.Namespace(plan=path,gpu=0,phase='generate',concurrency=256,score_workers=1,
+        visible=os.environ.get('CUDA_VISIBLE_DEVICES')
+        inventory=subprocess.check_output(['nvidia-smi','--query-gpu=index,uuid','--format=csv,noheader'],text=True)
+        matches=[int(line.split(',')[0]) for line in inventory.splitlines() if line.split(',')[1].strip()==visible]
+        if len(matches)!=1:raise ValueError('GPU lease/index mismatch')
+        args=argparse.Namespace(plan=path,gpu=matches[0],phase='generate',concurrency=256,score_workers=1,
             score_buffer=256,score_python='/usr/bin/python3.12',min_free_gib=20)
         Q.run_checkpoint(path.parent,plan,ph,job,args,deadline)
     else:

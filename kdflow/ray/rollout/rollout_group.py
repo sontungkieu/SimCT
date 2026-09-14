@@ -96,7 +96,7 @@ class RolloutActorGroup:
             self._reordered_gpu_ids = None
 
         self.router_ip = self._get_node_ip()
-        self.router_port = self._find_available_port(random.randint(3000, 4000))
+        self.router_port = self._find_available_port(configured_port("KDFLOW_ROUTER_PORT_BASE", random.randint(3000, 4000)))
         self.router_process = self._start_sglang_router(self.router_ip, self.router_port)
         self.router_url = f"http://{self._format_host(self.router_ip)}:{self.router_port}"
 
