@@ -17,6 +17,15 @@ from kdflow.utils.utils import get_tokenizer
 
 
 def train(args):
+    if args.kd.mp_opd_alternating:
+        if (args.kd.kd_algorithm!='mp_opd' or args.kd.mp_opd_mode!='soft'
+            or args.train.num_nodes*args.train.num_gpus_per_node!=1
+            or args.model.lora_rank>0 or args.model.ring_attn_size!=1
+            or args.kd.mp_opd_energy_every<1 or args.kd.mp_opd_meta_batch_size<1
+            or args.kd.mp_opd_meta_microbatch_size<1 or not args.kd.mp_opd_meta_path):
+            raise ValueError('Invalid full alternating configuration')
+        if args.train.gradient_checkpointing_use_reentrant:
+            raise ValueError('Full alternating requires non-reentrant checkpointing for higher-order autograd')
     # Initialize Ray if not already initialized
     if not ray.is_initialized():
         ray.init(
@@ -114,6 +123,25 @@ def train(args):
         collate_fn=train_dataset.collate_fn,
         sampler=sampler,
     )
+
+    meta_sampler=None
+    if args.kd.mp_opd_alternating:
+        from kdflow.meta_data import MetaSampler
+        meta_data=blending_datasets(args.kd.mp_opd_meta_path,None,strategy,args.train.seed,
+                                   max_count=args.data.max_samples,dataset_split=args.data.train_split)
+        rows=[]; excluded_length=0
+        for row in meta_data:
+            prompt=train_dataset._build_prompt(row,student_tokenizer,args.data.input_key)
+            reference=row.get('label')
+            if not isinstance(reference,str) or not reference.strip():
+                raise ValueError('Meta selected.parquet must contain nonempty teacher references in label')
+            length=len(student_tokenizer.encode(prompt,add_special_tokens=False))+len(student_tokenizer.encode(reference,add_special_tokens=False))+1
+            if length>args.data.max_len:
+                excluded_length+=1;continue
+            rows.append(dict(prompt=prompt,reference=reference))
+        meta_sampler=MetaSampler(rows,[r['stu_prompt'] for r in train_dataset],
+                                 args.train.seed,args.kd.mp_opd_meta_batch_size)
+        strategy.log(f'META_DATA qualified_rows={len(meta_sampler.rows)} excluded_length={excluded_length}; teacher references, not heldout evaluation')
     
     # Load and prepare evaluation dataset (optional)
     eval_dataloader = None
@@ -184,6 +212,7 @@ def train(args):
         max_rollout_iters=max_rollout_iters,
         num_rollout_iters_per_epoch=num_rollout_iters_per_epoch,
         generate_kwargs=generate_kwargs,
+        meta_sampler=meta_sampler,
     )
     
     try:

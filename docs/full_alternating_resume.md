@@ -1,0 +1,115 @@
+# Full alternating and on-policy pipeline resume
+
+## Scope and qualification
+
+`kdflow.training_checkpoint` is shared by the on-policy trainer and student
+actors, independent of the six-run campaign and the earlier adapter pilot.
+HF exports in `checkpoint/stepN` are for evaluation; they are **not** complete
+training checkpoints. New recovery transactions are in `checkpoints/`.
+Legacy weight-only checkpoints cannot be used for exact continuation.
+
+The production student path still uses full-parameter FSDP2, the original
+teacher-forward and SGLang rollout path, and the original real AdamW update.
+The new energy update streams the one-step full-parameter AdamW hypergradient
+through the same B loss, including prior moments and global clipping. It holds
+optimizer moments fixed for this one-step derivative, restores the virtual
+student, updates energy, then recomputes detached rates for the real student.
+It is not a full-training-trajectory hypergradient or an adapter approximation.
+
+CPU tests compare the streamed derivative with a direct differentiable AdamW
+unroll and compare interrupted/resumed training with uninterrupted training.
+**Full B64/M16 FSDP2 higher-order autograd, CUDA memory use and SGLang replay
+remain target-runtime qualification requirements.** The queue first runs two
+full-pipeline canaries: main and every4, each continuous four updates versus
+pause after three and resume to four. Weights, optimizer/scheduler/energy/RNG,
+data cursor, sampled token IDs and behavior logprobs must match exactly.
+Serving request IDs and timing telemetry are excluded. A failure blocks all
+six long runs; there is no silent low-rank or approximate fallback.
+
+## Recovery contract
+
+At a completed real optimizer boundary, save student parameters, algorithm
+modules (including projectors and energy), all their optimizers, scheduler,
+algorithm counters, rank-local Python/NumPy/Torch/CUDA RNG, and driver epoch,
+consumed samples, global/update counters and collapse-gate state. Incomplete
+gradient accumulation or a virtual meta step is never a committed boundary.
+An algorithm with extra mutable Python state must implement
+`training_state_dict` and `load_training_state_dict`; module and optimizer
+state are discovered independently. Lagged self-distillation teacher resume
+is explicitly unsupported until that teacher snapshot is included.
+
+Each rank writes a unique transaction. The driver verifies file checksums,
+writes its state and manifest, then atomically publishes `latest.json`.
+Two complete recovery snapshots are retained; partial transactions and HF
+exports are preserved. Resume verifies checksums, configuration, input hashes,
+KDFlow source hashes, runtime versions and topology. It restores the sampler
+cursor and explicitly sends restored student weights to new serving engines
+before generation. Rollout requests have deterministic seeds indexed by train
+seed, rollout step and request index; M selection is similarly stateless.
+There is no promise of bitwise equivalence after changing runtime or hardware.
+Timing logs remain attempt-local, and interruption may repeat work since the
+last committed checkpoint; these are not new independent optimizer updates.
+
+For `run_single_gpu.py`, `MP_RESUME=1` means restore the same output directory
+and its latest complete training checkpoint. Missing/corrupt state or source,
+data or optimization-config drift fails closed. `MP_PAUSE_AFTER_UPDATES=N`
+cooperatively saves and stops without changing the target budget/scheduler.
+The default launcher saves every 20 steps plus the explicit evaluation steps.
+
+## Six-run manifest
+
+| Variant | Train seeds, in order | Energy LR | Energy cadence | Student updates |
+| --- | --- | --- | --- | --- |
+| ALT-main | 42, then 43 in second round | 1e-3 | Every step | 312 |
+| ALT-lowLR | 42, then 43 in second round | 1e-4 | Every step | 312 |
+| ALT-every4 | 42, then 43 in second round | 1e-3 | 4,8,...,312 | 312 |
+
+Execution order is main42, lowLR42, every4-42, main43, lowLR43, every4-43.
+All start from the historical SFT initializer and the same trained energy
+weights with fresh energy AdamW moments. Existing frozen runs are reused.
+B=64, microbatch=4, accumulation=16; M=16, microbatch=4. Student AdamW uses
+LR1e-6, betas(.9,.98), weight decay0, clip1, cosine-with-min-LR scheduler with
+312-step horizon and .05 warmup fraction. Max span2, temperature1.
+Remaining launch options come from the same pinned historical launcher recipe.
+
+B is `qwen-author/data/prompts.parquet`; M uses teacher references in
+`qwen-author/data/selected.parquet`. M must belong to the B corpus and excludes
+the current B prompts at each step; roles can change across steps. M selection
+is identical across variants for the same train seed and step. References
+over the sequence limit are excluded from M with a logged count. These are
+teacher references, potentially already used during SFT, not heldout labels.
+The CPU audit checks nonempty references, membership, expected B cardinality
+and normalized exact/containment overlaps with pinned evaluation prompts.
+It reports and blocks detected overlaps without silently changing B; this is
+not a semantic contamination audit.
+
+## Queue and evaluation
+
+`experiments/runai/queue_full_alternating.py submit --case CASE --manager MANAGER`
+is restricted to the confirmed single-B200 pod. It reuses the existing local
+manager when unambiguous, otherwise requires `--state`; a new manager uses
+local `/var/tmp` SQLite, shared GPU leases and no allocation cutoff. Artifacts
+are under shared CASE. Repeating submit is idempotent, not a failed-job reset.
+
+The plan has 105 jobs: audit, GPU qualification, six sequential training jobs,
+48 GPU generation jobs, 48 CPU scoring jobs, final report. All six training
+runs finish before evaluation starts. Checkpoint steps are
+40,80,120,156,200,240,280,312, each with eval seeds42/43/44 and historical
+GSM8K, MATH500, MBPP, LCBv6 contracts. CPU scoring overlaps later generation.
+LCBfix reuses generations and preserves its separate extraction contract.
+`report.json` contains 576 original score cells and separate `train_seed`,
+`eval_seed`, variant group and checkpoint-step fields. LCBfix results remain
+in each checkpoint's `lcbfix/summary.json`; no failures become zero scores.
+
+Generation and scoring journals are restartable. Scorer signal retries are
+bounded and persisted by the existing resilient scorer, falling back to one
+CPU worker on retry. Training retries at most twice for direct SIGKILL/SIGTERM
+child exits and only with a complete checkpoint. Python/Ray errors, OOM,
+failed qualification and exhausted retries stop that dependency chain and
+retain evidence. Pod destruction still requires starting the manager on the
+replacement pod; shared checkpoints alone do not restart a destroyed process.
+
+Use `queue_full_alternating.py status --case CASE` to read the actual manager.
+`queue-receipt.json` identifies its state and job IDs; use the manager's logs
+command for the qualification or failed job. Submission is not GPU
+qualification, completed training, scientific efficacy, or a W&B upload.

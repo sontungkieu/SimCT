@@ -156,13 +156,8 @@ class StudentRayActor:
 
         # load checkpoint
         self.checkpoint_states = {}
-        ckpt_path = self.args.train.ckpt_path
-        if os.path.exists(ckpt_path):
-            strategy.print(f"Loading the checkpoint: {ckpt_path}")
-            _, states = strategy.load_ckpt(self.student.model, ckpt_path)
-            self.checkpoint_states["global_step"] = states["global_step"]
-            self.checkpoint_states["epoch"] = states["epoch"]
-            self.checkpoint_states["data_loader_state_dict"] = states["data_loader_state_dict"]
+        # Restore is coordinated by the driver, after validating the complete
+        # transaction and the dataset/runtime contract, before the first rollout.
 
         # initial offload
         if self.args.train.enable_sleep:
@@ -240,7 +235,7 @@ class StudentRayActor:
         logger.info(f"Loaded lm_head ({weight_key}), shape: {lm_head.weight.shape}")
         return lm_head
         
-    def fit(self, train_data):
+    def fit(self, train_data, meta_rows=None):
         """
         Train student model with the given data.
         
@@ -256,6 +251,20 @@ class StudentRayActor:
         optimizer_updates = 0
         train_started = time.perf_counter()
         torch.cuda.reset_peak_memory_stats(device)
+
+        if getattr(self.args.kd,"mp_opd_alternating",False):
+            if self._world_size != 1 or not meta_rows or self.args.kd.mp_opd_mode != 'soft':
+                raise ValueError('Full alternating currently requires one GPU, soft mode and independent meta rows')
+            if len(train_data) != self.strategy.accumulated_gradient:
+                raise ValueError('Virtual/real accumulation mismatch')
+            prepared=[{
+                k: torch.from_numpy(ray.get(v) if isinstance(v,ray.ObjectRef) else v).to(device)
+                    if isinstance(v,(np.ndarray,ray.ObjectRef)) else v.to(device) if torch.is_tensor(v) else v
+                for k,v in b.items()} for b in train_data]
+            meta_metrics=self.kd_algorithm.update_energy_full(prepared,meta_rows,self.optim)
+            for key,value in meta_metrics.items(): status[key].append(value)
+            self.optim.zero_grad(set_to_none=True)
+            del prepared
 
         for batch in train_data:
             micro_batch = {
@@ -301,6 +310,8 @@ class StudentRayActor:
             del micro_batch
 
         torch.cuda.synchronize(device)
+        if hasattr(self.kd_algorithm,'note_optimizer_updates'):
+            self.kd_algorithm.note_optimizer_updates(optimizer_updates)
         train_wall_time = time.perf_counter() - train_started
         processed_valid_student_tokens = sum(status.get("valid_student_tokens", []))
         processed_valid_teacher_tokens = sum(status.get("valid_teacher_tokens", []))
@@ -341,6 +352,27 @@ class StudentRayActor:
 
     def get_checkpoint_states(self):
         return self.checkpoint_states
+
+    def save_training_state(self, directory):
+        from kdflow.training_checkpoint import snapshot_training, write_payload
+        from pathlib import Path
+        payload = snapshot_training(self.student, self.kd_algorithm, self.optim,
+                                    self.scheduler, accumulation_step=self.strategy.step)
+        payload["rank"] = self._rank
+        return write_payload(Path(directory) / f"rank{self._rank}.pt", payload)
+
+    def restore_training_state(self, directory):
+        from kdflow.training_checkpoint import restore_training
+        from pathlib import Path
+        directory = Path(directory)
+        payload = torch.load(directory / "rank0.pt", map_location="cpu", weights_only=False)
+        if self._rank:
+            own = torch.load(directory / f"rank{self._rank}.pt", map_location="cpu", weights_only=False)
+            for key in ("rng", "algorithm"):
+                payload[key] = own[key]
+        restore_training(payload, self.student, self.kd_algorithm, self.optim, self.scheduler)
+        self.strategy.step = 0
+        return True
 
     def wakeup(self):
         """Reload optimizer states from CPU to GPU."""

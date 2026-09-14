@@ -1,0 +1,78 @@
+import importlib.util
+from pathlib import Path
+import pytest
+
+path=Path(__file__).parents[2]/'experiments/runai/queue_full_alternating.py'
+spec=importlib.util.spec_from_file_location('full_queue',path)
+q=importlib.util.module_from_spec(spec);spec.loader.exec_module(q)
+
+
+def test_six_runs_exact_order_and_budget():
+    configs=q.configurations()
+    assert [x['id'] for x in configs]==['ALT-main-s42','ALT-lowLR-s42','ALT-every4-s42',
+        'ALT-main-s43','ALT-lowLR-s43','ALT-every4-s43']
+    assert all(x['student_updates']==312 and x['B']==64 and x['M']==16 and x['student']=='full' for x in configs)
+    assert [(x['energy_lr'],x['energy_every']) for x in configs[:3]]==[(.001,1),(.0001,1),(.001,4)]
+
+
+def test_dag_qualification_gate_and_48_eval_checkpoints(tmp_path):
+    jobs=q.specs(tmp_path,'GPU-test')
+    assert jobs==q.specs(tmp_path,'GPU-test')
+    assert len(jobs)==105 and len({j['id'] for j in jobs})==105
+    seen=set()
+    for job in jobs:
+        assert set(job['dependencies'])<=seen
+        assert job['dependency_policy']=='success'
+        seen.add(job['id'])
+    assert jobs[0]['gpus']==0 and jobs[1]['dependencies']==[jobs[0]['id']]
+    assert jobs[2]['dependencies']==[jobs[1]['id']]
+    trains=[j for j in jobs if 'train' in j['argv']]
+    gens=[j for j in jobs if 'generate' in j['argv']]
+    scores=[j for j in jobs if 'score' in j['argv']]
+    assert len(trains)==6 and len(gens)==len(scores)==48
+    assert gens[0]['dependencies']==[trains[-1]['id']]
+    assert set(jobs[-1]['dependencies'])=={j['id'] for j in scores}
+    assert all(j['gpus']==['GPU-test'] for j in trains+gens)
+    assert all(j['gpus']==0 for j in scores)
+    steps=[int(j['argv'][j['argv'].index('--step')+1]) for j in gens[:8]]
+    assert steps==[40,80,120,156,200,240,280,312]
+
+
+def test_real_manager_accepts_and_orders_specs(tmp_path):
+    import sys
+    manager=Path('/mnt/d/dev/codex/job-manager')
+    if not manager.exists():
+        import pytest;pytest.skip('Existing local manager checkout unavailable')
+    sys.path.insert(0,str(manager))
+    from job_manager.store import initialize,connect,submit,rows
+    state=tmp_path/'state'
+    initialize(state,dict(gpus=['GPU-test'],cpu_slots=4,deadline=None))
+    db=connect(state)
+    try:
+        jobs=q.specs(tmp_path/'case','GPU-test')
+        submit(db,jobs)
+        assert [r['id'] for r in rows(db)]==[j['id'] for j in jobs]
+    finally:db.close()
+
+
+@pytest.mark.parametrize('overlap',[False,True])
+def test_audit_reads_company_queue_schema_and_blocks_overlap(tmp_path,monkeypatch,overlap):
+    import sys,json,hashlib,types
+    import borrowed_campaign as B
+    item={'id':'test1','prompt':'train question' if overlap else 'unrelated evaluation'}
+    data=tmp_path/'eval.json'
+    data.write_text(json.dumps({'profile':'company-internal-v1','benchmark':'math500','items':[item]}))
+    digest=lambda p:hashlib.sha256(Path(p).read_bytes()).hexdigest()
+    (tmp_path/'eval-template.json').write_text(json.dumps({'data':{'math500':{'path':str(data),'sha256':digest(data),'count':1}}}))
+    rows=[{'messages':[{'role':'user','content':'train question'}],'label':'teacher reference'}]
+    pq=types.ModuleType('pyarrow.parquet')
+    pq.read_table=lambda p:types.SimpleNamespace(to_pylist=lambda:rows*10000 if p=='train' else rows)
+    pa=types.ModuleType('pyarrow');pa.parquet=pq
+    monkeypatch.setitem(sys.modules,'pyarrow',pa);monkeypatch.setitem(sys.modules,'pyarrow.parquet',pq)
+    E=types.SimpleNamespace(read_json=lambda p:json.loads(Path(p).read_text()),file_hash=digest)
+    monkeypatch.setattr(B,'eval_modules',lambda:(E,types.SimpleNamespace(PROFILE='company-internal-v1'),None))
+    monkeypatch.setattr(q,'checked_config',lambda case:{'dataset':'train','meta':'meta'})
+    if overlap:
+        with pytest.raises(ValueError,match='audit failed'):q.audit(tmp_path)
+    else:q.audit(tmp_path)
+    assert json.loads((tmp_path/'data-audit.json').read_text())['pass']==(not overlap)

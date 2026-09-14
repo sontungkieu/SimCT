@@ -4,6 +4,12 @@ This repository contains the code for reproducing the experiments in our paper *
 
 ## MP-OPD trajectory diagnostic
 
+The experimental full-student alternating campaign and shared on-policy
+training-state resume contract are documented in
+[Full alternating and pipeline resume](docs/full_alternating_resume.md).
+Its six long runs are gated by a target-GPU pause/resume qualification;
+CPU tests alone do not establish FSDP2 higher-order or B200 memory support.
+
 For the bounded r7-collapse follow-up, see
 [the corrected-trajectory diagnostic](docs/mp_opd_path_diagnostic.md).
 

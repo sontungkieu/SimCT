@@ -173,6 +173,9 @@ class MetaPartitionedOPD:
         self.random_seed = int(self.args.kd.mp_opd_random_seed)
         self.energy = None
         self.energy_optimizer = None
+        self.student_updates = 0
+        self.energy_updates = 0
+        self._meta_gradient = False
         if self.mode == "soft":
             checkpoint = self.args.kd.mp_opd_energy_checkpoint
             if not checkpoint:
@@ -192,6 +195,73 @@ class MetaPartitionedOPD:
                 expected_extra_config={"max_span_length": self.max_span_length},
             )
             self.energy.eval()
+            if getattr(self.args.kd, "mp_opd_alternating", False):
+                # Same initial energy weights as frozen, fresh meta optimizer.
+                self.energy_optimizer = torch.optim.AdamW(self.energy.parameters(),
+                    lr=self.args.kd.mp_opd_energy_lr, weight_decay=0.)
+
+    def training_state_dict(self):
+        return {"student_updates":self.student_updates,"energy_updates":self.energy_updates}
+
+    def load_training_state_dict(self, state):
+        self.student_updates=state["student_updates"]
+        self.energy_updates=state["energy_updates"]
+
+    def note_optimizer_updates(self, count):
+        self.student_updates += count
+
+    def update_energy_full(self, batches, meta_rows, optimizer):
+        from ._mp_opd_full_meta import full_meta_step
+        args=self.args.kd
+        if (self.student_updates+1) % args.mp_opd_energy_every:
+            return {"mp_opd_energy_updates_total":float(self.energy_updates)}
+        device=next(self.student.parameters()).device
+        tok=self.student_tokenizer
+        encoded=[]
+        for row in meta_rows:
+            prefix=tok.encode(row['prompt'],add_special_tokens=False)
+            answer=tok.encode(row['reference'],add_special_tokens=False)
+            if tok.eos_token_id is not None and (not answer or answer[-1]!=tok.eos_token_id):
+                answer.append(tok.eos_token_id)
+            if not prefix or not answer or len(prefix)+len(answer)>self.args.data.max_len:
+                raise ValueError('Meta reference exceeds sequence contract; no silent truncation')
+            encoded.append((prefix,answer))
+        def meta_loss(rows):
+            size=max(len(p)+len(a) for p,a in rows)
+            pad=tok.pad_token_id if tok.pad_token_id is not None else tok.eos_token_id
+            ids=torch.full((len(rows),size),pad,dtype=torch.long,device=device)
+            mask=torch.zeros_like(ids); response=torch.zeros_like(ids,dtype=torch.bool)
+            for i,(p,a) in enumerate(rows):
+                ids[i,:len(p)+len(a)]=torch.tensor(p+a,device=device)
+                mask[i,:len(p)+len(a)]=1
+                response[i,len(p)-1:len(p)+len(a)-1]=True
+            logits=self.student(ids,attention_mask=mask,allgather_logits=True,
+                ring_attn_group=self.strategy.ring_attn_group)['logits']
+            losses=torch.nn.functional.cross_entropy(logits[response].float(),
+                ids.roll(-1,1)[response],reduction='none')
+            cursor=0; total=losses.new_zeros(())
+            for _,a in rows:
+                total=total+losses[cursor:cursor+len(a)].mean()/len(encoded);cursor+=len(a)
+            return total
+        inner=[lambda b=b:self.training_step(b)['loss']/len(batches) for b in batches]
+        outer=[lambda rows=encoded[i:i+args.mp_opd_meta_microbatch_size]:meta_loss(rows)
+               for i in range(0,len(encoded),args.mp_opd_meta_microbatch_size)]
+        self._meta_gradient=True
+        def refresh_parameters():
+            # FSDP2.reshard is nonrecursive: discard every cached unsharded
+            # parameter view before installing or rolling back virtual weights.
+            from torch.distributed.fsdp import FSDPModule
+            for module in self.student.modules():
+                if isinstance(module,FSDPModule): module.reshard()
+        try:
+            result=full_meta_step(tuple(p for p in self.student.parameters() if p.requires_grad),
+                optimizer,self.energy,self.energy_optimizer,inner,outer,max_norm=self.args.train.max_norm,
+                refresh_parameters=refresh_parameters)
+        finally:
+            self._meta_gradient=False
+        self.energy_updates+=1
+        result['mp_opd_energy_updates_total']=float(self.energy_updates)
+        return result
 
     def get_energy_params(self):
         """Explicitly separate from ``get_projector_params``/student optimizer."""
@@ -265,6 +335,8 @@ class MetaPartitionedOPD:
                 }
             )
             # Student path treats q_phi as fixed; phi has its own optimizer.
+            if self._meta_gradient:
+                return (credits.current_nll*rates_per_atom).sum(), metrics
             return soft_partition_loss(credits.current_nll, rates_per_atom.detach()), metrics
         raise AssertionError(f"unhandled MP-OPD mode {self.mode}")
 

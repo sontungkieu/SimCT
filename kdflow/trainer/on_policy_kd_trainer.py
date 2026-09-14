@@ -9,6 +9,7 @@ from datetime import timedelta
 from dataclasses import asdict
 from typing import Dict, List, Optional, Callable, Any
 from collections import defaultdict
+from pathlib import Path
 
 import ray
 import torch
@@ -41,6 +42,7 @@ class OnPolicyKDTrainer:
         max_rollout_iters: int = None,
         num_rollout_iters_per_epoch: int = None,
         generate_kwargs: Dict[str, float] = None,
+        meta_sampler=None,
     ) -> None:
         """
         Initialize the trainer.
@@ -67,6 +69,7 @@ class OnPolicyKDTrainer:
         self.max_rollout_iters = max_rollout_iters
         self.num_rollout_iters_per_epoch = num_rollout_iters_per_epoch
         self.generate_kwargs = generate_kwargs
+        self.meta_sampler = meta_sampler
         self.epochs = self.args.train.num_epochs
         
         self.image_key = getattr(self.args.data, "image_key", None)
@@ -93,6 +96,19 @@ class OnPolicyKDTrainer:
         self._resource_stop = threading.Event()
         self._resource_thread = None
         self._resource_sample_index = 0
+        from kdflow.training_checkpoint import pipeline_contract, inspect
+        self._checkpoint_contract = pipeline_contract(self.args, len(train_dataloader.dataset))
+        self._resume_directory = None
+        checkpoint_root = Path(self.args.train.ckpt_path)
+        if self.args.train.load_checkpoint:
+            if self.args.model.student_name_or_path == self.args.model.teacher_name_or_path:
+                raise ValueError("Self-distillation resume requires the lagged teacher snapshot; unsupported")
+            self._resume_directory, _ = inspect(checkpoint_root, self._checkpoint_contract, self.world_size)
+        elif (checkpoint_root / "latest.json").exists():
+            raise ValueError("Training checkpoint exists; explicitly enable load_checkpoint to resume")
+        self._extra_checkpoint_steps = {int(x) for x in self.args.train.resume_checkpoint_steps.split(",") if x.strip()}
+        if any(x <= 0 for x in self._extra_checkpoint_steps) or self.args.train.pause_after_updates < 0:
+            raise ValueError("Checkpoint/pause steps must be positive")
         self._init_loggers()
     
     def _init_loggers(self) -> None:
@@ -118,7 +134,7 @@ class OnPolicyKDTrainer:
                 group=self.args.log.wandb_group,
                 name=self.args.log.wandb_run_name,
                 id=self.args.log.wandb_run_id,
-                resume="never",
+                resume="allow" if self.args.train.load_checkpoint else "never",
                 job_type=self.args.log.wandb_job_type,
                 tags=[tag.strip() for tag in self.args.log.wandb_tags.split(",") if tag.strip()],
                 config=asdict(self.args),
@@ -212,7 +228,30 @@ class OnPolicyKDTrainer:
         logger.info(f"  KD Algorithm:          {self.args.kd.kd_algorithm}")
         logger.info(f"  KD Loss Function:      {self.args.kd.kd_loss_fn}")
     
+    def _save_training_checkpoint(self, epoch, consumed_samples):
+        from kdflow.training_checkpoint import begin, publish, capture_rng, prune_complete
+        boundary = (self.completed_optimizer_updates, epoch, consumed_samples)
+        if getattr(self, "_last_saved_boundary", None) == boundary:
+            return
+        directory = begin(self.args.train.ckpt_path, self.completed_optimizer_updates)
+        ranks = ray.get([a.save_training_state.remote(str(directory)) for a in self.student._actor_handlers])
+        client = {"epoch": epoch, "consumed_samples": consumed_samples,
+                  "global_step": self.global_step, "optimizer_updates": self.completed_optimizer_updates,
+                  "energy_updates": self.completed_energy_updates,
+                  "collapse_baseline": self._collapse_baseline, "collapse_streak": self._collapse_streak,
+                  "resource_sample_index": self._resource_sample_index, "rng": capture_rng()}
+        publish(self.args.train.ckpt_path, directory, step=self.completed_optimizer_updates,
+                world_size=self.world_size, contract=self._checkpoint_contract, client=client, rank_files=ranks)
+        self._last_saved_boundary = boundary
+        prune_complete(self.args.train.ckpt_path)
+        return directory
+
     def fit(self, global_step=0, start_epoch=0):
+        import random
+        import numpy as np
+        random.seed(self.args.train.seed)
+        np.random.seed(self.args.train.seed)
+        torch.manual_seed(self.args.train.seed)
         self.global_step = global_step
         diagnostic_limit = getattr(self.args.rollout, "diagnostic_max_updates", 0)
         if diagnostic_limit < 0:
@@ -223,6 +262,23 @@ class OnPolicyKDTrainer:
         self._collapse_stop = False
         self.stop_reason = None
         previous_step_seconds = 0.0
+        consumed_samples = 0
+        self.completed_energy_updates = None
+        restored_rng = None
+        if self._resume_directory:
+            client = torch.load(self._resume_directory / "driver.pt", map_location="cpu", weights_only=False)
+            self.global_step = client["global_step"]
+            self.completed_optimizer_updates = client["optimizer_updates"]
+            self.completed_energy_updates = client["energy_updates"]
+            start_epoch = client["epoch"]
+            consumed_samples = client["consumed_samples"]
+            self._collapse_baseline = client["collapse_baseline"]
+            self._collapse_streak = client["collapse_streak"]
+            self._resource_sample_index = client["resource_sample_index"]
+            restored_rng = client["rng"]
+            if self.args.train.enable_sleep:
+                self.student.wakeup()
+            ray.get([a.restore_training_state.remote(str(self._resume_directory)) for a in self.student._actor_handlers])
         
         # Print training configuration and initialize loggers
         self._print_training_config()
@@ -233,6 +289,20 @@ class OnPolicyKDTrainer:
         if self.args.model.student_name_or_path == self.args.model.teacher_name_or_path:   # for self-distillation
             num_gpus_per_teacher_actor = self.args.kd.teacher_tp_size * self.args.kd.teacher_pp_size
             self.student.connect_teacher_actors(self.teacher.teacher_engines, num_gpus_per_teacher_actor)
+        if self._resume_directory:
+            # Fresh serving processes initially contain the SFT weights. Restore
+            # their student snapshot before admitting any new generation.
+            if self.args.train.enable_sleep:
+                self.rollout_group.wakeup(tags=["weights"])
+            self.student.update_rollout_weights()
+            if self.args.train.enable_sleep:
+                self.rollout_group.sleep(tags=["weights"])
+                self.student.sleep()
+            if self.args.model.student_name_or_path == self.args.model.teacher_name_or_path:
+                raise ValueError("Self-distillation resume needs a saved lagged teacher snapshot; unsupported")
+        if restored_rng:
+            from kdflow.training_checkpoint import restore_rng
+            restore_rng(restored_rng)
         
         self.start_time = time.time()
         self._start_resource_logger()
@@ -240,7 +310,11 @@ class OnPolicyKDTrainer:
         
         for epoch in range(start_epoch, self.epochs):
             self.current_epoch = epoch
-            self.train_dataloader.sampler.set_epoch(epoch)
+            epoch_consumed = consumed_samples if epoch == start_epoch else 0
+            self.train_dataloader.sampler.set_epoch(epoch, consumed_samples=epoch_consumed)
+            # DataLoader iterator creation must not advance the driver RNG after
+            # a restart. PromptDataset is deterministic; order comes from sampler.
+            self.train_dataloader.generator = torch.Generator().manual_seed(self.args.train.seed + epoch)
             
             for prompt_batch in self.train_dataloader:
                 if self.completed_optimizer_updates >= expected_updates:
@@ -249,6 +323,8 @@ class OnPolicyKDTrainer:
                     self.stop_reason = "deadline_checkpoint_reserve"
                     break
                 self.global_step += 1
+                meta_rows=(self.meta_sampler.batch(self.global_step,[x['stu_prompt'] for x in prompt_batch])
+                           if self.meta_sampler else None)
                 step_started = time.time()
                 
                 rollout_start = time.time()
@@ -287,7 +363,7 @@ class OnPolicyKDTrainer:
                     self.student.wakeup()
                 
                 for global_batch in all_global_batches:
-                    status_list = ray.get(self.student.async_run_distill(global_batch))
+                    status_list = ray.get(self.student.async_run_distill(global_batch,meta_rows))
                     for k in status_list[0].keys():
                         self.log_state[k].append(sum(s[k] for s in status_list) / len(status_list))
                     optimizer_updates = [int(round(s["optimizer_updates"])) for s in status_list]
@@ -296,6 +372,8 @@ class OnPolicyKDTrainer:
                             f"expected exactly one optimizer update per rollout iteration, got {optimizer_updates}"
                         )
                     self.completed_optimizer_updates += optimizer_updates[0]
+                    if 'mp_opd_energy_updates_total' in status_list[0]:
+                        self.completed_energy_updates = int(round(status_list[0]['mp_opd_energy_updates_total']))
                         
                 self.log_state["student_train_time"].append(time.time() - student_start)
                 
@@ -323,7 +401,9 @@ class OnPolicyKDTrainer:
                     
                 # Save checkpoint BEFORE sleep so FSDP2 model is still on GPU
                 # (avoids DTensor issues after CPU offload/reload)
-                if self.global_step % self.args.train.save_steps == 0:
+                checkpoint_due = ((self.args.train.save_steps > 0 and self.global_step % self.args.train.save_steps == 0)
+                    or self.completed_optimizer_updates in self._extra_checkpoint_steps)
+                if checkpoint_due:
                     self.strategy.log(f"Saving model at global step {self.global_step}")
                     save_path = os.path.join(self.args.train.save_path, f"step{self.global_step}")
                     ray.get(self.student.async_save_model(save_path))
@@ -351,6 +431,18 @@ class OnPolicyKDTrainer:
                         self.log_state[key].append(value)
                     
                 self.logging()
+                epoch_consumed += len(prompt_batch)
+                pause_due = (self.args.train.pause_after_updates > 0
+                             and self.completed_optimizer_updates >= self.args.train.pause_after_updates)
+                if checkpoint_due or pause_due:
+                    if self.args.train.enable_sleep:
+                        self.student.wakeup()
+                    self._save_training_checkpoint(epoch, epoch_consumed)
+                    if self.args.train.enable_sleep:
+                        self.student.sleep()
+                if pause_due:
+                    self.stop_reason = "checkpoint_pause"
+                    break
         
             # Save model after each epoch
             # Note: student is already in sleep state after the last step's sleep() call,
@@ -360,6 +452,8 @@ class OnPolicyKDTrainer:
             if self.args.train.enable_sleep:
                 self.student.wakeup()
             ray.get(self.student.async_save_model(save_path))
+            if not self._collapse_stop:
+                self._save_training_checkpoint(epoch, epoch_consumed)
             if self.args.train.enable_sleep:
                 self.student.sleep()
             if self.stop_reason or self.completed_optimizer_updates >= expected_updates:
@@ -382,6 +476,7 @@ class OnPolicyKDTrainer:
                     "stop_reason": self.stop_reason,
                     "rollout_iterations": self.global_step,
                     "optimizer_updates": self.completed_optimizer_updates,
+                    "energy_updates": self.completed_energy_updates,
                     "total_time_seconds": total_time,
                     "kd_algorithm": self.args.kd.kd_algorithm,
                     "student": self.args.model.student_name_or_path,
@@ -456,6 +551,9 @@ class OnPolicyKDTrainer:
             if prompt_ids is None:raise ValueError("Sequence cap requires exact token trajectory")
             from kdflow.trajectory import bounded_sampling_params
             sampling_params = bounded_sampling_params(prompt_ids, sampling_params, self.args.data.max_len)
+        from kdflow.training_checkpoint import seeded_sampling
+        sampling_params = seeded_sampling(sampling_params, seed=self.args.train.seed,
+                                          step=self.global_step, count=len(all_stu_prompts))
         all_outputs = self.rollout_group.generate(all_stu_prompts, sampling_params, image_data=all_images, input_ids=prompt_ids)
 
         rollout_dir = os.path.join(self.args.train.save_path, "rollout_data")

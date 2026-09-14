@@ -1,0 +1,53 @@
+import copy
+import pytest
+import torch
+from kdflow.algorithms._mp_opd_full_meta import full_meta_step, adam_value, clipped
+
+
+@pytest.mark.parametrize("max_norm", [0., .1, 10.])
+@pytest.mark.parametrize("history", [0, 3])
+def test_streamed_hypergradient_matches_direct_unroll(max_norm, history):
+    torch.manual_seed(4)
+    p=torch.nn.Parameter(torch.tensor([.4,-.8],dtype=torch.double))
+    e=torch.nn.Linear(2,1,bias=False).double()
+    opt=torch.optim.AdamW([p],lr=.003,betas=(.9,.98),weight_decay=.01)
+    eo=torch.optim.SGD(e.parameters(),lr=.01)
+    for _ in range(history):
+        p.grad=torch.tensor([.2,-.4],dtype=torch.double);opt.step();opt.zero_grad(set_to_none=True)
+    x=[torch.tensor([1.,2.],dtype=torch.double),torch.tensor([-.5,1.],dtype=torch.double)]
+    inner=[lambda x=x: (e(x).squeeze()*((p*x).sum()).square())/2 for x in x]
+    meta=[lambda: (p-torch.tensor([.1,.2],dtype=torch.double)).square().mean()]
+    g=torch.autograd.grad(sum(fn() for fn in inner),p,create_graph=True)[0]
+    if max_norm>0:
+        # Independent differentiable clipping reference.
+        g=g*(max_norm/(torch.linalg.vector_norm(g)+1e-6)).clamp(max=1.)
+    virtual=adam_value(p,g,opt.state.get(p,{}),opt.param_groups[0])
+    objective=(virtual-torch.tensor([.1,.2],dtype=torch.double)).square().mean()
+    expected=torch.autograd.grad(objective,tuple(e.parameters()))[0]
+    before=p.detach().clone(); original_energy=e.weight.detach().clone(); state=copy.deepcopy(opt.state_dict())
+    result=full_meta_step([p],opt,e,eo,inner,meta,max_norm=max_norm)
+    assert torch.equal(p,before) and p.grad is None
+    assert torch.allclose(e.weight,original_energy-.01*expected,rtol=1e-9,atol=1e-11)
+    assert result['mp_opd_meta_nll']==pytest.approx(float(objective.detach()),abs=1e-12)
+    for key,value in state['state'].items():
+        for name,t in value.items():assert torch.equal(t,opt.state_dict()['state'][key][name])
+
+
+def test_virtual_adam_matches_real_adam_and_preserves_state():
+    p=torch.nn.Parameter(torch.tensor([.4,-.8],dtype=torch.double))
+    opt=torch.optim.AdamW([p],lr=.002,betas=(.9,.98),weight_decay=.03)
+    for step in range(5):
+        g=torch.tensor([.3+step,.1-step],dtype=torch.double)
+        virtual=adam_value(p,g,opt.state.get(p,{}),opt.param_groups[0])
+        p.grad=g;opt.step();opt.zero_grad(set_to_none=True)
+        assert torch.allclose(virtual,p,rtol=1e-14,atol=1e-14)
+
+
+def test_virtual_failure_rolls_back_student():
+    p=torch.nn.Parameter(torch.ones(2,dtype=torch.double)); e=torch.nn.Linear(2,1,bias=False).double()
+    opt=torch.optim.AdamW([p],lr=.01);eo=torch.optim.AdamW(e.parameters(),lr=.001)
+    before=p.detach().clone()
+    def bad():raise RuntimeError('meta forward failed')
+    with pytest.raises(RuntimeError,match='meta forward'):
+        full_meta_step([p],opt,e,eo,[lambda:e(p).square().sum()],[bad],max_norm=1.)
+    assert torch.equal(p,before) and not opt.state

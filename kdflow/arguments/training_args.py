@@ -99,6 +99,14 @@ class TrainingArguments:
     load_checkpoint: bool = field(
         default=False
     )
+    resume_checkpoint_steps: str = field(
+        default="",
+        metadata={"help": "Additional optimizer steps for complete training/HF checkpoints, comma separated."}
+    )
+    pause_after_updates: int = field(
+        default=0,
+        metadata={"help": "Cooperative checkpoint pause for resume qualification; does not change LR horizon/budget."}
+    )
     ckpt_path: str = field(
         default="./ckpt/checkpoints_distill"
     )

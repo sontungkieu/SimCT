@@ -204,6 +204,11 @@ class DistillationArguments:
     mp_opd_energy_layers: int = field(default=2)
     mp_opd_energy_lr: float = field(default=1e-3)
     mp_opd_energy_checkpoint: Optional[str] = field(default=None)
+    mp_opd_alternating: bool = field(default=False)
+    mp_opd_meta_path: Optional[str] = field(default=None)
+    mp_opd_meta_batch_size: int = field(default=16)
+    mp_opd_meta_microbatch_size: int = field(default=4)
+    mp_opd_energy_every: int = field(default=1)
 
     def __post_init__(self):
         # Validate teacher parallel size settings
@@ -250,4 +255,3 @@ class DistillationArguments:
                 raise ValueError("mp_opd_energy_lr must be positive")
             if self.mp_opd_mode == "soft" and not self.mp_opd_energy_checkpoint:
                 raise ValueError("mp_opd_energy_checkpoint is required for soft mode")
-

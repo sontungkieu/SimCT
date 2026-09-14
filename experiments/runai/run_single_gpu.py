@@ -13,7 +13,12 @@ assert 0 <= limit <= 312
 
 root = Path(__file__).resolve().parents[2]
 run_dir = Path(output).resolve()
-run_dir.mkdir(parents=True, exist_ok=False)
+resume = os.environ.get("MP_RESUME", "0") == "1"
+if resume:
+    if not (run_dir / "checkpoints/latest.json").is_file():
+        raise ValueError("Resume requested without a complete training checkpoint; refusing SFT restart")
+else:
+    run_dir.mkdir(parents=True, exist_ok=False)
 
 # Đọc dictionary cấu hình từ runner đã đóng gói, không chạy code Modal.
 runner = root / "experiments/modal/mp_opd_phi_gemma_50.py"
@@ -65,6 +70,9 @@ opts.update(
     save_path=str(run_dir / "checkpoint"),
     ckpt_path=str(run_dir / "checkpoints"),
     use_wandb=False,
+    load_checkpoint=resume,
+    pause_after_updates=int(os.environ.get("MP_PAUSE_AFTER_UPDATES", "0")),
+    resume_checkpoint_steps=os.environ.get("MP_CHECKPOINT_STEPS", "40,80,120,156,200,240,280,312"),
 )
 
 if opts['attn_implementation'] not in {'eager', 'sdpa'}:
@@ -76,6 +84,11 @@ if mode == "soft":
     energy_path = Path(os.environ['MP_ENERGY_CHECKPOINT'])
     if not energy_path.is_file(): raise ValueError('Missing trained energy checkpoint')
     opts.update(mp_opd_energy_checkpoint=str(energy_path),mp_opd_partition_temperature=1.)
+    if os.environ.get('MP_ALTERNATING','0')=='1':
+        opts.update(mp_opd_alternating=True,mp_opd_meta_path=os.environ['MP_META_PATH'],
+            mp_opd_meta_batch_size=16,mp_opd_meta_microbatch_size=4,
+            mp_opd_energy_lr=float(os.environ.get('MP_ENERGY_LR','0.001')),
+            mp_opd_energy_every=int(os.environ.get('MP_ENERGY_EVERY','1')))
 
 if opts["kd_algorithm"] not in {"mp_opd", "span_ctkd", "xtoken"}:
     raise ValueError("MP_ALGORITHM must be mp_opd, span_ctkd or xtoken")
@@ -120,7 +133,7 @@ for package in ("torch", "transformers", "sglang", "ray"):
     except importlib.metadata.PackageNotFoundError:
         versions[package] = None
 
-(run_dir / "launch-config.json").write_text(json.dumps({
+manifest = {
     "options": opts,
     "source_root": str(root),
     "source_commit": os.environ.get("MP_SOURCE_COMMIT"),
@@ -144,7 +157,24 @@ for package in ("torch", "transformers", "sglang", "ray"):
         "evaluation_contract": "external pinned eval manifest required",
     },
     "gpu_mapping": "single visible GPU maps SGLang base_gpu_id to zero",
-}, indent=2))
+}
+if resume:
+    previous = json.loads((run_dir / "launch-config.json").read_text())
+    def normalized(value):
+        value = dict(value)
+        options = dict(value["options"])
+        for key in ("load_checkpoint", "pause_after_updates"):
+            options.pop(key, None)
+        value["options"] = options
+        for key in ("cuda_visible_devices", "cooperative_stop_at", "checkpoint_reserve_seconds"):
+            value.pop(key, None)
+        return value
+    if normalized(previous) != normalized(manifest):
+        raise ValueError("Launcher resume provenance differs; original manifest retained")
+    import time
+    (run_dir / f"resume-attempt-{time.time_ns()}.json").write_text(json.dumps(manifest, indent=2))
+else:
+    (run_dir / "launch-config.json").write_text(json.dumps(manifest, indent=2))
 
 if os.environ.get("MP_PREFLIGHT_ONLY") == "1":
     print(f"PREFLIGHT_READY={run_dir / 'launch-config.json'}")
@@ -193,7 +223,7 @@ try:
         (run_dir / "checkpoint/run-summary.json").read_text()
     )
     expected = limit or 312
-    if summary["status"] == "stopped" and summary.get("stop_reason") == "deadline_checkpoint_reserve":
+    if summary["status"] == "stopped" and summary.get("stop_reason") in {"deadline_checkpoint_reserve", "checkpoint_pause"}:
         updates = summary["optimizer_updates"]
         checkpoint = run_dir / "checkpoint" / f"step{updates}"
         assert updates >= 1 and checkpoint.is_dir(), summary
