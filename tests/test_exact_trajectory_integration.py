@@ -92,7 +92,7 @@ def test_collapse_stops_before_update_and_saves_completed_policy(tmp_path, monke
     obj.args = SimpleNamespace(
         rollout=SimpleNamespace(diagnostic_max_updates=30, rollout_tp_size=1),
         train=SimpleNamespace(train_batch_size=64, micro_train_batch_size=1, enable_sleep=True,
-                              save_path=str(tmp_path)),
+                              save_path=str(tmp_path),seed=42),
         model=SimpleNamespace(student_name_or_path="student", teacher_name_or_path="teacher"),
         kd=SimpleNamespace(kd_algorithm="mp_opd"),
     )
@@ -101,12 +101,14 @@ def test_collapse_stops_before_update_and_saves_completed_policy(tmp_path, monke
     obj.teacher = SimpleNamespace(forward=lambda *args: pytest.fail("teacher must not run after collapse"))
     obj.rollout_group = SimpleNamespace(actors=[])
     class Loader(list):
-        sampler = SimpleNamespace(set_epoch=lambda epoch: None)
+        sampler = SimpleNamespace(set_epoch=lambda epoch,consumed_samples=0: None)
     obj.train_dataloader = Loader([[{"stu_prompt": "prefix"}]])
     obj.epochs = 2
     obj.completed_optimizer_updates = 3
     obj.max_rollout_iters = 100
     obj.generate_kwargs = {}
+    obj._resume_directory = None
+    obj.meta_sampler = None
     obj.log_state = defaultdict(list)
     obj._wandb = obj._tensorboard = None
     obj.strategy = SimpleNamespace(log=lambda message: None)
