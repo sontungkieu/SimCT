@@ -48,7 +48,7 @@ def main(micros: str = '16,8,4', run_id: str = 'full-meta-capacity-r2',
         raise ValueError('microbatch must divide B64')
     if steps not in (1,2,10,30) or batch not in (0,64) or meta_micro not in (1,2,4,8,16):
         raise ValueError('Invalid bounded probe configuration')
-    if attention not in ('eager', 'sdpa', 'flex_attention'):
+    if attention not in ('eager', 'sdpa'):
         raise ValueError('Invalid attention backend')
     dest = ROOT/'remote_artifacts'/run_id
     dest.mkdir(parents=True, exist_ok=False)

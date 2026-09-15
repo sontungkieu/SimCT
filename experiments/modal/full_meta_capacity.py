@@ -20,7 +20,7 @@ p.add_argument('--meta-micro', type=int, default=4)
 p.add_argument('--length', type=int, default=1024)
 p.add_argument('--steps', type=int, default=1)
 p.add_argument('--batch', type=int, default=0, help='0: two-microbatch capacity probe; 64: timing')
-p.add_argument('--attention', choices=('eager', 'sdpa', 'flex_attention'), default='eager')
+p.add_argument('--attention', choices=('eager', 'sdpa'), default='eager')
 a = p.parse_args()
 if a.steps < 1 or a.micro < 1 or 64 % a.micro or 16 % a.meta_micro:
     raise ValueError('Invalid steps or microbatch divisors')
