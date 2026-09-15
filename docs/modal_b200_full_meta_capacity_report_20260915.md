@@ -5,12 +5,13 @@
 
 ## 1. Kết luận
 
-Một B200 đơn lẻ không chạy được **exact full hypergradient hiện tại** ở shape mục tiêu: sequence length 4096, inner batch B=64, outer/meta batch M=16, meta microbatch=4.
+Một B200 đơn lẻ không chạy được **exact full hypergradient hiện tại** ở shape mục tiêu nếu giữ nguyên eager path và Adam moments trên GPU: sequence length 4096, inner batch B=64, outer/meta batch M=16, meta microbatch=4. Sau khi thêm cơ chế offload Adam moments theo phase, synthetic full-size harness đã chạy qua hai update liên tiếp ở đúng shape này.
 
 - Eager attention OOM ở inner higher-order VJP cả với microbatch 2 lẫn 1.
 - SDPA không có double-backward trong runtime này.
 - Flex Attention qua AOTAutograd/torch.compile cũng không hỗ trợ double-backward.
 - Reuse VJP storage không tạo giảm peak đo được và đã bị revert.
+- Offload `exp_avg`/`exp_avg_sq` sang CPU trong khoảng higher-order VJP đã giảm peak allocated đủ để synthetic harness pass; khả năng này chưa được kiểm tra với teacher/rollout/partition DP thật.
 
 Không gửi lại campaign công ty với cùng exact objective và chỉ thay microbatch/allocator. Cần quyết định phương pháp: giữ exact rồi đổi runtime/tài nguyên; chuyển sang first-order hay implicit estimator có validation riêng; hoặc thay đổi protocol length với phê duyệt khoa học.
 
@@ -69,6 +70,8 @@ Runner giới hạn một B200, timeout 1500 s, retries=0, max_containers=1. M�
 | modal-full-meta-sdpa-doubleback-20260915-r1 | SDPA | 4 / 2 / 16 / 4096 | error | 167.118 GiB | 168.385 GiB | Efficient-attention backward không có derivative. |
 | modal-full-meta-flex-doubleback-20260915-r2 | Flex | 4 / 2 / 16 / 4096 | error | 120.500 GiB | 131.975 GiB | Đòi tắt donated buffers. |
 | modal-full-meta-flex-nodonate-20260915-r1 | Flex, donated buffer off | 4 / 2 / 16 / 4096 | error | 167.102 GiB | 168.318 GiB | AOTAutograd không hỗ trợ double backward. |
+| modal-full-meta-offload-20260915-r2 | eager + Adam moment offload | 64 / 1 / 16 / 4096 | **pass** | 147.442 GiB | 175.344 GiB | Exact synthetic full-meta, 1 update. |
+| modal-full-meta-offload-steady-20260915-r1 | eager + Adam moment offload | 64 / 1 / 16 / 4096 | **pass** | 147.442 GiB | 176.043 GiB | Exact synthetic full-meta, 2 update liên tiếp. |
 
 Raw result có tại `remote_artifacts/<run-id>/results.json`. Mọi app trong bảng đã terminal; không có job Modal đang chạy lúc chốt.
 
@@ -109,6 +112,17 @@ pass của teacher thật, rollout, partition DP hay company queue. Raw evidence
 Probe r1 chỉ fail ở local entrypoint vì thư mục output đã được tạo trước khi
 runner tự tạo; không có GPU workload ở r1.
 
+Steady-state follow-up `modal-full-meta-offload-steady-20260915-r1` chạy đủ cả
+hai update. Step 1 mất **101.325 s**, step 2 mất **90.806 s**; không có OOM và
+đủ inner second-backward indices 0--63 ở cả hai step. Peak allocated vẫn
+**147.442 GiB**, peak reserved **176.043 GiB**. Các marker cho thấy
+`offloaded_bytes=20,914,735,104` (~19.48 GiB). Metrics synthetic đi từ
+`meta_nll=12.957769` sang `12.833384`; đây chỉ là sanity của mechanics/steady
+state, không phải efficacy.
+
+Raw evidence: `remote_artifacts/modal-full-meta-offload-steady-20260915-r1/results.json`
+và `remote_artifacts/modal-full-meta-offload-steady-20260915-r1.launch.log`.
+
 ## 5. Diễn giải kỹ thuật
 
 ### Eager path
@@ -141,6 +155,8 @@ torch.compile with aot_autograd does not currently support double backward
 | 73f772a | Parameterize eager/SDPA trong capacity harness. | Giữ lại cho diagnosis. |
 | 78e382d + 6129c1f | Thử rồi revert reuse VJP storage. | Source đã khôi phục. |
 | 001a4c7, 6d03504, ac6e810, a1bf236 | Thử Flex rồi revert toàn bộ. | Source không cho Flex. |
+| e402a1d | Thêm opt-in Adam moment offload diagnostic. | Đã test local và chạy trên B200. |
+| ce5a7db | Ghi nhận canary offload. | Giữ lại; báo cáo tiếp tục cập nhật steady probe. |
 
 Branch: `vdt/ops/b200-portable`. Commit mới local-only, chưa push. `remote_artifacts/` đang untracked và chứa evidence; không stage nó nhầm cùng code.
 
@@ -189,13 +205,15 @@ với đúng case ID/receipt đang dùng.
 
 ## 8. Billing
 
-Billing snapshot 2026-09-15T10:50:19Z:
+Billing snapshot 2026-09-15T10:57:11Z:
 
-- Tổng tháng: **$22.13732993**
-- B200: **$17.57787781**
+- Tổng tháng: **$22.61386717**
+- B200: **$17.98055448**
 - Canary offload r2: **$0.22600091**
+- Steady offload 2-update: **$0.47653724**
 
 Profile `lhtu05`: workspace budget $30, guard hard limit $28.5, reserve $1. Kỳ billing được gắn `calendar_month_default`; không coi đây là đối soát invoice cuối cùng. Ledger của mỗi app đã được chốt terminal failed kèm lý do.
+Sau khi chốt steady probe, guard với estimate 0 trả về **OK**: còn $5.88613283 tới hard limit sau reserve; không có app đang chạy.
 
 ## 9. Các nhánh tiếp theo
 
