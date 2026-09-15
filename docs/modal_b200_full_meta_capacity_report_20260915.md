@@ -1,0 +1,162 @@
+# Báo cáo chẩn đoán B200: exact full-meta MP-OPD ở L=4096
+
+**Ngày chốt:** 2026-09-15
+**Mục đích:** handoff tự đủ cho mô hình/kỹ sư tiếp theo. Báo cáo phân biệt rõ evidence vận hành, giới hạn của probe và kết luận khoa học chưa thể rút ra.
+
+## 1. Kết luận
+
+Một B200 đơn lẻ không chạy được **exact full hypergradient hiện tại** ở shape mục tiêu: sequence length 4096, inner batch B=64, outer/meta batch M=16, meta microbatch=4.
+
+- Eager attention OOM ở inner higher-order VJP cả với microbatch 2 lẫn 1.
+- SDPA không có double-backward trong runtime này.
+- Flex Attention qua AOTAutograd/torch.compile cũng không hỗ trợ double-backward.
+- Reuse VJP storage không tạo giảm peak đo được và đã bị revert.
+
+Không gửi lại campaign công ty với cùng exact objective và chỉ thay microbatch/allocator. Cần quyết định phương pháp: giữ exact rồi đổi runtime/tài nguyên; chuyển sang first-order hay implicit estimator có validation riêng; hoặc thay đổi protocol length với phê duyệt khoa học.
+
+## 2. Ranh giới bằng chứng
+
+### Điều đã chạy thật
+
+Các probe chạy B200 thật trên Modal, image được pin:
+
+```text
+docker.io/codemaivanngu/simct-b200@sha256:33b2b55874b34447a1395328987b64c63d824a05fa6b737fe5978b22d497b24f
+```
+
+Runner tải Gemma2 cache từ Modal Volume `simct-phi-gemma-assets`, dùng BF16/FSDP2 một rank, non-reentrant activation checkpointing, AdamW optimizer state, và gọi production `full_meta_step`. Vì vậy nó kiểm tra trực tiếp lifetime của virtual update và higher-order VJP.
+
+### Điều probe không đại diện
+
+Loss là synthetic token NLL cộng energy differentiable nhỏ. Probe không có teacher thật, rollout/generation, partition DP, data selection, SFT checkpoint công ty hay evaluator downstream.
+
+Do đó:
+
+1. OOM trong probe đủ để chặn exact configuration đó.
+2. Pass trong probe chỉ chứng minh mechanics/capacity, không chứng minh campaign pass hay efficacy.
+3. Không dùng runtime/throughput của probe làm benchmark campaign.
+
+### Liên hệ log công ty
+
+Hai archive log đã kiểm hash:
+
+| Nguồn | SHA-256 |
+|---|---|
+| nlp-core-team-0-0 | ae4fe8c9786360b89a8942957498e5ac2f4e34a2b71ec4897648a48a87925254 |
+| hieplh8-beyond-leakage-1-0-0 | b197e2356ea27de4d0d8e23e309f36f1407f7e2b16abd3c7f0dac4ad31f3e29d |
+
+Sáu run case `alt-full-stream-20a2eff` đều OOM sau khi source streaming đã chạy ở length 4096. Failure nằm ở `parameter_grad(..., create_graph=True)`; allocated PyTorch xấp xỉ 163--170 GiB, process khoảng 173 GiB trên GPU 178.35 GiB. Reserved-but-free chỉ 1.3--8.8 GiB, nên không có bằng chứng fragmentation là nguyên nhân chính.
+
+## 3. Cấu hình tái lập
+
+Source:
+
+- `experiments/modal/full_meta_capacity.py`
+- `experiments/modal/full_meta_capacity_modal.py`
+- `kdflow/algorithms/_mp_opd_full_meta.py`
+
+Target: B=64, M=16, L=4096, meta_micro=4, một update. `batch=0` là smoke probe chỉ gồm hai inner microbatches, dùng để kiểm tra backend có hỗ trợ double-backward trước probe B64.
+
+Runner giới hạn một B200, timeout 1500 s, retries=0, max_containers=1. Mỗi micro chạy process riêng để release allocation sau OOM.
+
+## 4. Kết quả Modal
+
+| Run ID | Backend | B / micro / M / L | Status | Peak allocated | Peak reserved | Ý nghĩa |
+|---|---|---:|---|---:|---:|---|
+| modal-full-meta-b200-realshape-20260915-r1 | eager | 64 / 2 / 16 / 4096 | OOM | 176.239 GiB | 177.313 GiB | Exact path không fit. |
+| modal-full-meta-b200-realshape-20260915-r2 | eager + VJP reuse | 64 / 2 / 16 / 4096 | OOM | 176.238 GiB | 177.211 GiB | Không có cải thiện thực tế. |
+| modal-full-meta-micro1-4096-20260915-r1 | eager | 64 / 1 / 16 / 4096 | OOM | 166.970 GiB | 176.920 GiB | Chết ở inner second-backward thứ ba. |
+| modal-full-meta-sdpa-doubleback-20260915-r1 | SDPA | 4 / 2 / 16 / 4096 | error | 167.118 GiB | 168.385 GiB | Efficient-attention backward không có derivative. |
+| modal-full-meta-flex-doubleback-20260915-r2 | Flex | 4 / 2 / 16 / 4096 | error | 120.500 GiB | 131.975 GiB | Đòi tắt donated buffers. |
+| modal-full-meta-flex-nodonate-20260915-r1 | Flex, donated buffer off | 4 / 2 / 16 / 4096 | error | 167.102 GiB | 168.318 GiB | AOTAutograd không hỗ trợ double backward. |
+
+Raw result có tại `remote_artifacts/<run-id>/results.json`. Mọi app trong bảng đã terminal; không có job Modal đang chạy lúc chốt.
+
+## 5. Diễn giải kỹ thuật
+
+### Eager path
+
+`full_meta_step` giữ graph inner gradient bằng `create_graph=True` để lấy VJP của virtual AdamW update theo energy parameters. Activation checkpoint giảm một phần forward activation, nhưng không loại bỏ graph và temporary tensor của higher-order backward. Hạ microbatch từ 2 xuống 1 giúp giảm peak allocated khoảng 9.27 GiB nhưng không rút ngắn lifetime tổng thể đủ để fit.
+
+Thử reuse outer-VJP storage ở commit `78e382d` chỉ đổi peak nhỏ hơn 0.001 GiB. Nó bị revert ở `6129c1f`; không phải production fix.
+
+### Backend attention
+
+SDPA có tiềm năng giảm memory của first-order training nhưng runtime trả về:
+
+```text
+derivative for aten::_scaled_dot_product_efficient_attention_backward is not implemented
+```
+
+Flex Attention ban đầu báo donated buffer không tương thích với `create_graph=True`. Tắt donated buffers dẫn tới blocker cuối cùng:
+
+```text
+torch.compile with aot_autograd does not currently support double backward
+```
+
+Đây là capability blocker, không phải allocator tuning. Các thay đổi thử Flex đã được revert để runner không quảng cáo option không hợp lệ.
+
+## 6. Git, artifact và kiểm chứng
+
+| Commit | Ý nghĩa | Trạng thái |
+|---|---|---|
+| 20a2eff | Stream full-meta inner microbatch lên GPU. | Giữ lại. |
+| 73f772a | Parameterize eager/SDPA trong capacity harness. | Giữ lại cho diagnosis. |
+| 78e382d + 6129c1f | Thử rồi revert reuse VJP storage. | Source đã khôi phục. |
+| 001a4c7, 6d03504, ac6e810, a1bf236 | Thử Flex rồi revert toàn bộ. | Source không cho Flex. |
+
+Branch: `vdt/ops/b200-portable`. Commit mới local-only, chưa push. `remote_artifacts/` đang untracked và chứa evidence; không stage nó nhầm cùng code.
+
+Đã chạy `py_compile` cho hai Modal runner sau khi revert. Đây là kiểm tra cú pháp, không phải end-to-end campaign test.
+
+## 7. Billing
+
+Billing snapshot 2026-09-15T09:43:08Z:
+
+- Tổng tháng: **$21.91132902**
+- B200: **$17.38690576**
+- Tổng các probe mới: khoảng **$0.681**
+
+Profile `lhtu05`: workspace budget $30, guard hard limit $28.5, reserve $1. Kỳ billing được gắn `calendar_month_default`; không coi đây là đối soát invoice cuối cùng. Ledger của mỗi app đã được chốt terminal failed kèm lý do.
+
+## 8. Các nhánh tiếp theo
+
+### A. Giữ exact full hypergradient
+
+Cần runtime/kernel hỗ trợ double backward và đủ memory, hoặc topology phân phối được activation/higher-order graph. Chỉ thêm GPU để shard parameters không đảm bảo activation per-sample giảm; cần B200 canary trên topology chính xác.
+
+### B. First-order hypergradient
+
+Bỏ đạo hàm bậc hai qua virtual update. Có cơ hội fit B200 nhưng là estimator/objective khác. Trước train thật, phải so với exact reference ở tiny model/length: cosine gradient, relative norm/error, loss sau một update và variance theo seed. Không được gọi biến thể này là exact full-meta.
+
+### C. Implicit hoặc truncated estimator
+
+Dùng HVP/linear solve hoặc unroll truncate để giảm graph lifetime. Đây cũng là thay đổi phương pháp; cần contract solver, condition/convergence và validation exact reference. Không giả định HVP tự fit memory.
+
+### D. Đổi length protocol
+
+Hạ length chỉ hợp lệ khi protocol nghiên cứu cho phép. Nó tạo distribution shift, không phải tối ưu kỹ thuật trung tính; phải có control rõ ràng.
+
+## 9. Kế hoạch tối thiểu nên làm
+
+1. Chọn rõ A/B/C/D; tạo config/run ID mới, không ghi đè exact full-meta.
+2. Viết regression tiny-model có exact reference cho estimator mới.
+3. Chạy B200 capacity canary L=4096 với Gemma/FSDP/optimizer state; pass nghĩa là full virtual update/hypergradient hoàn tất, không chỉ forward hoặc finite loss.
+4. Nếu pass, chạy probe nhỏ có teacher, rollout và partition DP; ghi peak memory, source/config SHA, seed, checkpoint lineage.
+5. Chỉ sau các gate này mới can thiệp campaign công ty. Không restart/cancel/submit company queue từ báo cáo này.
+
+## 10. Invariant cho mô hình tiếp nhận
+
+- Phân biệt exact full-meta, first-order, implicit và lower-length protocol.
+- Completed scheduler step, finite loss hay checkpoint không phải bằng chứng efficacy.
+- Static inspection không phải reproduction.
+- Không chạy lại B64 eager/micro1 trên company B200: Modal đã đủ evidence OOM cho shape đó.
+- Giữ nguyên logs, run IDs, `remote_artifacts/` và thay đổi không liên quan của người dùng.
+- Với probe Modal mới: billing guard trước, run ID độc nhất, record terminal state, rồi đọc log/result sau khi app stopped.
+
+### Câu hỏi cần trả lời trước khi code
+
+1. Exact gradient có phải invariant bắt buộc không?
+2. Nếu không, first-order hay implicit estimator nào phù hợp claim/paper protocol?
+3. Acceptance metric, seed và budget cho estimator mới là gì?
+4. Có runtime hoặc allocation multi-GPU nào được phép cho exact path không?
