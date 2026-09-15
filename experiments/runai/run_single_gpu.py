@@ -73,7 +73,13 @@ opts.update(
     load_checkpoint=resume,
     pause_after_updates=int(os.environ.get("MP_PAUSE_AFTER_UPDATES", "0")),
     resume_checkpoint_steps=os.environ.get("MP_CHECKPOINT_STEPS", "40,80,120,156,200,240,280,312"),
+    mp_opd_offload_adam_moments=os.environ.get("MP_OFFLOAD_ADAM_MOMENTS", "0") == "1",
 )
+
+if os.environ.get("MP_OFFLOAD_ADAM_MOMENTS", "0") not in {"0", "1"}:
+    raise ValueError("MP_OFFLOAD_ADAM_MOMENTS must be 0 or 1")
+if opts["mp_opd_offload_adam_moments"] and (opts["kd_algorithm"] != "mp_opd" or mode != "soft"):
+    raise ValueError("Adam moment offload requires the soft mp_opd production path")
 
 if opts['attn_implementation'] not in {'eager', 'sdpa'}:
     raise ValueError('MP_ATTN_IMPLEMENTATION must be eager or sdpa')
@@ -187,6 +193,11 @@ else:
     (run_dir / "launch-config.json").write_text(json.dumps(manifest, indent=2))
 
 if os.environ.get("MP_PREFLIGHT_ONLY") == "1":
+    print(
+        "EFFECTIVE_MP_OPD_OFFLOAD_ADAM_MOMENTS="
+        + str(opts["mp_opd_offload_adam_moments"]).lower(),
+        flush=True,
+    )
     print(f"PREFLIGHT_READY={run_dir / 'launch-config.json'}")
     raise SystemExit(0)
 

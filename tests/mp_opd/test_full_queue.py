@@ -21,7 +21,7 @@ def test_run_command_forwards_pinned_microbatch_not_shell(tmp_path,monkeypatch):
     monkeypatch.setenv('MP_MICRO_TRAIN_BATCH_SIZE','32')
     monkeypatch.setenv('MP_META_MICRO_BATCH_SIZE','16')
     monkeypatch.setattr(q,'checked_config',lambda _:dict(student='s',teacher='t',
-        dataset='d',energy='e',meta='m',commit='test'))
+        dataset='d',energy='e',meta='m',commit='test',offload_adam_moments=True))
     captured={}
     def run(argv,**kwargs):
         captured.update(kwargs['env'])
@@ -32,6 +32,13 @@ def test_run_command_forwards_pinned_microbatch_not_shell(tmp_path,monkeypatch):
     q.run_command(tmp_path,q.configurations()[0],tmp_path/'run')
     assert captured['MP_MICRO_TRAIN_BATCH_SIZE']=='2'
     assert captured['MP_META_MICRO_BATCH_SIZE']=='4'
+    assert captured['MP_OFFLOAD_ADAM_MOMENTS']=='1'
+
+
+def test_specs_forwards_case_offload_flag(tmp_path):
+    (tmp_path / 'campaign.json').write_text('{"offload_adam_moments": true}')
+    jobs = q.specs(tmp_path, 'GPU-test')
+    assert jobs and all(j['env']['MP_OFFLOAD_ADAM_MOMENTS'] == '1' for j in jobs)
 
 
 def test_dag_qualification_gate_and_48_eval_checkpoints(tmp_path):

@@ -41,6 +41,8 @@ def configurations():
 
 def specs(case,gpu):
     case=Path(case)
+    campaign = read(case/'campaign.json') if (case/'campaign.json').exists() else {}
+    offload_flag = offload_env(campaign.get('offload_adam_moments', False))
     prefix='alt312-'+hashlib.sha256(str(case.resolve()).encode()).hexdigest()[:10]
     jobs=[]
     def add(label,action,deps,gpu_job=True,run=None,step=None):
@@ -50,7 +52,8 @@ def specs(case,gpu):
         key=prefix+'-'+label
         jobs.append(dict(version=1,id=key,project='full-alternating-312',cwd=str(ROOT),
             argv=argv,env={'PYTHONPATH':str(ROOT/'experiments/modal/vendor')+':'+str(ROOT),
-                'HF_HUB_OFFLINE':'1','TRANSFORMERS_OFFLINE':'1','TOKENIZERS_PARALLELISM':'false'},
+                'HF_HUB_OFFLINE':'1','TRANSFORMERS_OFFLINE':'1','TOKENIZERS_PARALLELISM':'false',
+                'MP_OFFLOAD_ADAM_MOMENTS':offload_flag},
             gpus=[gpu] if gpu_job else 0,cpu_slots=1,timeout_seconds=7*24*3600,
             dependencies=list(deps),dependency_policy='success'))
         return key
@@ -78,6 +81,13 @@ def checked_config(case):
     for path,expected in c['input_hashes'].items():
         if sha(Path(path))!=expected:raise ValueError('Input file changed: '+path)
     return c
+
+
+def offload_env(value):
+    """Serialize the case-level diagnostic flag for the launcher contract."""
+    if not isinstance(value, bool):
+        raise ValueError('campaign offload_adam_moments must be a boolean')
+    return '1' if value else '0'
 
 
 def audit(case):
@@ -145,6 +155,7 @@ def run_command(case,config,out,limit=312,pause=0,resume=False):
         MP_ENERGY_CHECKPOINT=c['energy'],MP_SEED=str(config['train_seed']),MP_PARTITION_SEED='43',
         MP_ALTERNATING='1',MP_META_PATH=c['meta'],MP_ENERGY_LR=str(config['energy_lr']),
         MP_ENERGY_EVERY=str(config['energy_every']),MP_RESUME=str(int(resume)),
+        MP_OFFLOAD_ADAM_MOMENTS=offload_env(c.get('offload_adam_moments', False)),
         MP_PAUSE_AFTER_UPDATES=str(pause),MP_SOURCE_COMMIT=c['commit'],MP_SOURCE_DIRTY='',
         MP_RAY_TMP=f'/var/tmp/alt-ray-{os.getpid()}-{time.time_ns()}',
         MP_CHECKPOINT_STEPS=','.join(map(str,STEPS)))

@@ -36,3 +36,36 @@ def test_preflight_configuration_and_input_hashes(tmp_path):
     assert result.returncode==0,result.stderr
     config3=json.loads((tmp_path/'out3/launch-config.json').read_text())
     assert config3['contract']['parity'] is None
+
+
+def test_soft_preflight_propagates_adam_moment_offload(tmp_path):
+    for name in ('student', 'teacher'):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / 'config.json').write_text('{}')
+    data = tmp_path / 'prompts.parquet'
+    data.write_bytes(b'fixture')
+    energy = tmp_path / 'energy.pt'
+    meta = tmp_path / 'meta.parquet'
+    energy.write_bytes(b'energy')
+    meta.write_bytes(b'meta')
+    env = dict(
+        os.environ,
+        MP_PREFLIGHT_ONLY='1',
+        MP_STUDENT_PATH=str(tmp_path / 'student'),
+        MP_TEACHER_PATH=str(tmp_path / 'teacher'),
+        MP_DATASET_PATH=str(data),
+        MP_ENERGY_CHECKPOINT=str(energy),
+        MP_META_PATH=str(meta),
+        MP_ALTERNATING='1',
+        MP_ATTN_IMPLEMENTATION='eager',
+        MP_OFFLOAD_ADAM_MOMENTS='1',
+        CUDA_VISIBLE_DEVICES='0',
+    )
+    result = subprocess.run(
+        [sys.executable, str(ROOT / 'experiments/runai/run_single_gpu.py'), 'soft', '2', str(tmp_path / 'out')],
+        env=env, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    config = json.loads((tmp_path / 'out/launch-config.json').read_text())
+    assert config['options']['mp_opd_offload_adam_moments'] is True
+    assert 'EFFECTIVE_MP_OPD_OFFLOAD_ADAM_MOMENTS=true' in result.stdout
