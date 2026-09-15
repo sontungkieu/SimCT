@@ -16,7 +16,8 @@ assets = modal.Volume.from_name('simct-phi-gemma-assets', create_if_missing=Fals
 
 @app.function(image=image, gpu='B200', cpu=8, memory=98304, timeout=1500,
               retries=0, max_containers=1, volumes={'/assets': assets})
-def sweep(micros: list[int], steps: int, batch: int, length: int, meta_micro: int):
+def sweep(micros: list[int], steps: int, batch: int, length: int, meta_micro: int,
+          attention: str):
     start = time.monotonic(); results = []
     # Separate process releases all allocations after an OOM. Failures other
     # than OOM stop the sweep rather than masquerading as capacity findings.
@@ -26,7 +27,8 @@ def sweep(micros: list[int], steps: int, batch: int, length: int, meta_micro: in
         try:
             p = subprocess.run(['/opt/venvs/simct-b200/bin/python', '/opt/overlay/capacity.py',
                 '--micro', str(micro), '--steps', str(steps), '--batch', str(batch),
-                '--length', str(length), '--meta-micro', str(meta_micro)], capture_output=True, text=True,
+                '--length', str(length), '--meta-micro', str(meta_micro),
+                '--attention', attention], capture_output=True, text=True,
                 env=dict(os.environ, PYTHONUNBUFFERED='1'), timeout=min(remaining, 500) if steps == 1 else remaining)
         except subprocess.TimeoutExpired:
             results.append(dict(micro=micro,status='timeout')); break
@@ -39,14 +41,17 @@ def sweep(micros: list[int], steps: int, batch: int, length: int, meta_micro: in
 
 @app.local_entrypoint()
 def main(micros: str = '16,8,4', run_id: str = 'full-meta-capacity-r2',
-         steps: int = 1, batch: int = 0, length: int = 1024, meta_micro: int = 4):
+         steps: int = 1, batch: int = 0, length: int = 1024, meta_micro: int = 4,
+         attention: str = 'eager'):
     values = [int(x) for x in micros.split(',')]
     if any(x not in (1,2,4,8,16,32,64) for x in values):
         raise ValueError('microbatch must divide B64')
     if steps not in (1,2,10,30) or batch not in (0,64) or meta_micro not in (1,2,4,8,16):
         raise ValueError('Invalid bounded probe configuration')
+    if attention not in ('eager', 'sdpa'):
+        raise ValueError('Invalid attention backend')
     dest = ROOT/'remote_artifacts'/run_id
     dest.mkdir(parents=True, exist_ok=False)
-    results = sweep.remote(values, steps, batch, length, meta_micro)
+    results = sweep.remote(values, steps, batch, length, meta_micro, attention)
     (dest/'results.json').write_text(json.dumps(results, indent=2))
     print(json.dumps(results, indent=2))

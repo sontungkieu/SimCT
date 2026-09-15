@@ -20,6 +20,7 @@ p.add_argument('--meta-micro', type=int, default=4)
 p.add_argument('--length', type=int, default=1024)
 p.add_argument('--steps', type=int, default=1)
 p.add_argument('--batch', type=int, default=0, help='0: two-microbatch capacity probe; 64: timing')
+p.add_argument('--attention', choices=('eager', 'sdpa'), default='eager')
 a = p.parse_args()
 if a.steps < 1 or a.micro < 1 or 64 % a.micro or 16 % a.meta_micro:
     raise ValueError('Invalid steps or microbatch divisors')
@@ -31,11 +32,12 @@ torch.cuda.set_device(0)
 dist.init_process_group('nccl', init_method='tcp://127.0.0.1:29721', rank=0, world_size=1)
 report = dict(micro=a.micro, meta_micro=a.meta_micro, length=a.length,
     batch=batch, requested_steps=a.steps, steps=[],
+    attention=a.attention,
     scope='synthetic full-size student/meta timing; excludes teacher, rollout and partition DP')
 try:
     torch.manual_seed(42)
     model = AutoModelForCausalLM.from_pretrained('/assets/student', local_files_only=True,
-        dtype=torch.float32, attn_implementation='eager').cuda().train()
+        dtype=torch.float32, attn_implementation=a.attention).cuda().train()
     model.config.use_cache = False
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={'use_reentrant': False})
     policy = MixedPrecisionPolicy(param_dtype=torch.bfloat16, reduce_dtype=torch.float32)
