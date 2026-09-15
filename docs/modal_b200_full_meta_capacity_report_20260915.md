@@ -156,7 +156,8 @@ torch.compile with aot_autograd does not currently support double backward
 | 78e382d + 6129c1f | Thử rồi revert reuse VJP storage. | Source đã khôi phục. |
 | 001a4c7, 6d03504, ac6e810, a1bf236 | Thử Flex rồi revert toàn bộ. | Source không cho Flex. |
 | e402a1d | Thêm opt-in Adam moment offload diagnostic. | Đã test local và chạy trên B200. |
-| ce5a7db | Ghi nhận canary offload. | Giữ lại; báo cáo tiếp tục cập nhật steady probe. |
+| ce5a7db | Ghi nhận canary offload. | Giữ lại. |
+| c411ffa | Ghi nhận steady-state offload probe. | Đã chốt 2 update trên B200. |
 
 Branch: `vdt/ops/b200-portable`. Commit mới local-only, chưa push. `remote_artifacts/` đang untracked và chứa evidence; không stage nó nhầm cùng code.
 
@@ -212,7 +213,7 @@ Billing snapshot 2026-09-15T10:57:11Z:
 - Canary offload r2: **$0.22600091**
 - Steady offload 2-update: **$0.47653724**
 
-Profile `lhtu05`: workspace budget $30, guard hard limit $28.5, reserve $1. Kỳ billing được gắn `calendar_month_default`; không coi đây là đối soát invoice cuối cùng. Ledger của mỗi app đã được chốt terminal failed kèm lý do.
+Profile `lhtu05`: workspace budget $30, guard hard limit $28.5, reserve $1. Kỳ billing được gắn `calendar_month_default`; không coi đây là đối soát invoice cuối cùng. Ledger của mỗi app đã được chốt terminal state kèm lý do khi có lỗi.
 Sau khi chốt steady probe, guard với estimate 0 trả về **OK**: còn $5.88613283 tới hard limit sau reserve; không có app đang chạy.
 
 ## 9. Các nhánh tiếp theo
