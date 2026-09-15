@@ -109,7 +109,30 @@ Branch: `vdt/ops/b200-portable`. Commit mới local-only, chưa push. `remote_ar
 
 Đã chạy `py_compile` cho hai Modal runner sau khi revert. Đây là kiểm tra cú pháp, không phải end-to-end campaign test.
 
-## 7. Billing
+## 7. Round evaluation seed 42 đã có
+
+Seed 42 bị vắng trong phần bảng Modal vì bảng đó chỉ nói về capacity của
+exact full-meta. Artifact evaluation lịch sử vẫn có đủ round decoding seeds
+42/43/44 cho cùng training run và các checkpoint steps 40, 80, 120, 156, 200,
+240, 280, 312. Ba seed này là các lần decode/evaluate của **một checkpoint**;
+chúng không phải ba independent training seeds.
+
+Ở checkpoint 312, row seed 42 ghi macro **0.313356935995602** (31.3357%):
+
+| Benchmark | seed 42, step 312 |
+|---|---:|
+| GSM8K | 0.6186504927975739 |
+| MATH500 | 0.224 |
+| MBPP | 0.334 |
+| LiveCodeBench v6 | 0.07677725118483412 |
+| Macro | 0.313356935995602 |
+
+Evidence là bảng W&B đã export tại
+`remote_artifacts/eval-dispersion-20260910/wandb/run-20260910_180134-mpbackfill-ec7c67c50e92a2e6/files/media/table/eval/dispersion_table_331_839bbdc12866a5107d8f.table.json`.
+Đây là evidence evaluation của training path lịch sử; không chứng minh exact
+full-meta capacity mới pass và không thay thế training-seed replication.
+
+## 8. Billing
 
 Billing snapshot 2026-09-15T09:43:08Z:
 
@@ -119,7 +142,7 @@ Billing snapshot 2026-09-15T09:43:08Z:
 
 Profile `lhtu05`: workspace budget $30, guard hard limit $28.5, reserve $1. Kỳ billing được gắn `calendar_month_default`; không coi đây là đối soát invoice cuối cùng. Ledger của mỗi app đã được chốt terminal failed kèm lý do.
 
-## 8. Các nhánh tiếp theo
+## 9. Các nhánh tiếp theo
 
 ### A. Giữ exact full hypergradient
 
@@ -137,7 +160,7 @@ Dùng HVP/linear solve hoặc unroll truncate để giảm graph lifetime. Đây
 
 Hạ length chỉ hợp lệ khi protocol nghiên cứu cho phép. Nó tạo distribution shift, không phải tối ưu kỹ thuật trung tính; phải có control rõ ràng.
 
-## 9. Kế hoạch tối thiểu nên làm
+## 10. Kế hoạch tối thiểu nên làm
 
 1. Chọn rõ A/B/C/D; tạo config/run ID mới, không ghi đè exact full-meta.
 2. Viết regression tiny-model có exact reference cho estimator mới.
@@ -145,7 +168,7 @@ Hạ length chỉ hợp lệ khi protocol nghiên cứu cho phép. Nó tạo dis
 4. Nếu pass, chạy probe nhỏ có teacher, rollout và partition DP; ghi peak memory, source/config SHA, seed, checkpoint lineage.
 5. Chỉ sau các gate này mới can thiệp campaign công ty. Không restart/cancel/submit company queue từ báo cáo này.
 
-## 10. Invariant cho mô hình tiếp nhận
+## 11. Invariant cho mô hình tiếp nhận
 
 - Phân biệt exact full-meta, first-order, implicit và lower-length protocol.
 - Completed scheduler step, finite loss hay checkpoint không phải bằng chứng efficacy.
