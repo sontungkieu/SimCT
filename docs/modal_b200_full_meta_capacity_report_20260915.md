@@ -125,8 +125,9 @@ và `remote_artifacts/modal-full-meta-offload-steady-20260915-r1.launch.log`.
 
 ## 5.2. P0 production wiring audit
 
-Handoff integration được kiểm trên HEAD hiện tại sau patch:
-`787a5896702b80539cb14da2fe2df5526443ca98`.
+Handoff integration được kiểm trên code revision
+`787a5896702b80539cb14da2fe2df5526443ca98`; report này được commit riêng
+sau khi kiểm tra.
 
 Đường truyền đã kiểm:
 
