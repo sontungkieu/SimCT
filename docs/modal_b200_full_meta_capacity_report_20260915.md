@@ -132,6 +132,24 @@ Evidence là bảng W&B đã export tại
 Đây là evidence evaluation của training path lịch sử; không chứng minh exact
 full-meta capacity mới pass và không thay thế training-seed replication.
 
+### Không nhầm với training seed 42 của sơ đồ 4+1 GPU
+
+Sơ đồ 4+1 có hai namespace seed khác nhau:
+
+- `train_seed=42` là queue train trên GPU persistent/owner. Nó chạy tuần tự
+  `main42 -> lowLR42 -> every4-42`, rồi mới có thể tạo export/evaluation.
+- `eval_seed=42` là một lần decode/scoring của **một checkpoint đã tồn tại**;
+  nó nằm cùng `eval_seed=43,44` trong bảng ở trên.
+
+Với case full đã được archive là `alt-full-stream-20a2eff`, sáu full training
+runs đều OOM ở `parameter_grad(..., create_graph=True)`. Do đó chain
+`train_seed=42` của case này không có training completion/evaluation completion
+được xác nhận; scheduler state terminal của gen/score không thay thế
+`score.done.json`. Đây là trạng thái cuối cùng có bằng chứng log, không phải
+status live của persistent GPU ở thời điểm đọc báo cáo. Để lấy status live,
+phải chạy trên owner host `queue_split_alternating.py status --case <CASE>`
+với đúng case ID/receipt đang dùng.
+
 ## 8. Billing
 
 Billing snapshot 2026-09-15T09:43:08Z:
