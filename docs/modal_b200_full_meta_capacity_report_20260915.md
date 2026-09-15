@@ -126,7 +126,7 @@ và `remote_artifacts/modal-full-meta-offload-steady-20260915-r1.launch.log`.
 ## 5.2. P0 production wiring audit
 
 Handoff integration được kiểm trên HEAD hiện tại sau patch:
-`97b751ace99693cc2fd6268c9e40c964671f5d8b`.
+`787a5896702b80539cb14da2fe2df5526443ca98`.
 
 Đường truyền đã kiểm:
 
@@ -141,8 +141,8 @@ campaign.json: offload_adam_moments=true
  -> full_meta_step(..., offload_adam_moments=True)
 ```
 
-Launcher fail-closed nếu biến không phải `0/1`, hoặc nếu bật ngoài soft
-`mp_opd` production path. Effective config được ghi trong
+Launcher fail-closed nếu biến không phải `0/1`, hoặc nếu bật ngoài alternating
+soft `mp_opd` production path. Effective config được ghi trong
 `launch-config.json` và preflight in marker
 `EFFECTIVE_MP_OPD_OFFLOAD_ADAM_MOMENTS=true`.
 
