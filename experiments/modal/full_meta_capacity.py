@@ -35,8 +35,6 @@ report = dict(micro=a.micro, meta_micro=a.meta_micro, length=a.length,
     attention=a.attention,
     scope='synthetic full-size student/meta timing; excludes teacher, rollout and partition DP')
 try:
-    if a.attention == 'flex_attention':
-        torch._functorch.config.donated_buffer = False
     torch.manual_seed(42)
     model = AutoModelForCausalLM.from_pretrained('/assets/student', local_files_only=True,
         dtype=torch.float32, attn_implementation=a.attention).cuda().train()
