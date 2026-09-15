@@ -78,8 +78,12 @@ opts.update(
 
 if os.environ.get("MP_OFFLOAD_ADAM_MOMENTS", "0") not in {"0", "1"}:
     raise ValueError("MP_OFFLOAD_ADAM_MOMENTS must be 0 or 1")
-if opts["mp_opd_offload_adam_moments"] and (opts["kd_algorithm"] != "mp_opd" or mode != "soft"):
-    raise ValueError("Adam moment offload requires the soft mp_opd production path")
+if opts["mp_opd_offload_adam_moments"] and (
+    opts["kd_algorithm"] != "mp_opd"
+    or mode != "soft"
+    or os.environ.get("MP_ALTERNATING", "0") != "1"
+):
+    raise ValueError("Adam moment offload requires the alternating soft mp_opd production path")
 
 if opts['attn_implementation'] not in {'eager', 'sdpa'}:
     raise ValueError('MP_ATTN_IMPLEMENTATION must be eager or sdpa')
