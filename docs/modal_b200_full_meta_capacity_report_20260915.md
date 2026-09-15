@@ -123,6 +123,55 @@ state, không phải efficacy.
 Raw evidence: `remote_artifacts/modal-full-meta-offload-steady-20260915-r1/results.json`
 và `remote_artifacts/modal-full-meta-offload-steady-20260915-r1.launch.log`.
 
+## 5.2. P0 production wiring audit
+
+Handoff integration được kiểm trên HEAD hiện tại sau patch:
+`97b751ace99693cc2fd6268c9e40c964671f5d8b`.
+
+Đường truyền đã kiểm:
+
+```text
+campaign.json: offload_adam_moments=true
+ -> queue_full_alternating.specs(): MP_OFFLOAD_ADAM_MOMENTS=1
+ -> queue_full_alternating.run_command(): MP_OFFLOAD_ADAM_MOMENTS=1
+ -> run_single_gpu.py: opts.mp_opd_offload_adam_moments=True
+ -> CLI --mp_opd_offload_adam_moments
+ -> args.kd.mp_opd_offload_adam_moments
+ -> MetaPartitionedOPD.update_energy_full()
+ -> full_meta_step(..., offload_adam_moments=True)
+```
+
+Launcher fail-closed nếu biến không phải `0/1`, hoặc nếu bật ngoài soft
+`mp_opd` production path. Effective config được ghi trong
+`launch-config.json` và preflight in marker
+`EFFECTIVE_MP_OPD_OFFLOAD_ADAM_MOMENTS=true`.
+
+Kiểm chứng P0:
+
+- `tests/test_runai_contract.py` và `tests/mp_opd/test_full_queue.py` cùng
+  `tests/mp_opd/test_full_meta.py`: **21 passed**.
+- `py_compile` cho hai launcher và `git diff --check`: **pass**.
+- Test propagation xác nhận cả case-level config, job environment và CLI
+  manifest; default không có cờ vẫn là `false`.
+
+## 5.3. P1 production integration gate
+
+P1 **chưa được launch** vì thiếu tài sản đúng contract trong Modal. Inventory
+read-only của volume được phép `simct-phi-gemma-assets` chỉ có `student/`,
+`teacher/`, `prompts.parquet`, `ready.json` và preflight metadata. Các volume
+training hiện có chỉ chứa atomic training outputs/checkpoints; không có
+`mp_opd_meta_path` hợp lệ và energy checkpoint cho `soft` alternating.
+
+Vì vậy chưa đủ để đi qua teacher + rollout + production atom/credit + energy
+network/partition DP + full-meta + weight sync của update thứ hai. Không thay
+meta/energy bằng tensor giả, base checkpoint hay checkpoint nội bộ chưa được
+phép chuyển. Không có paid integration app nào được tạo; synthetic canary
+không bị lặp lại.
+
+Trạng thái gate: `synthetic_pass`; `P0_wiring_pass`;
+`integration_pending_blocked_missing_meta_energy_assets`;
+`company_not_verified`; `resume_not_qualified_here`.
+
 ## 5. Diễn giải kỹ thuật
 
 ### Eager path
