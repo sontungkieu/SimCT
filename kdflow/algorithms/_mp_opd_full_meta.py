@@ -166,7 +166,10 @@ def full_meta_step(parameters, optimizer, energy, energy_optimizer, inner_losses
     del originals
     # VJP of the optimizer, holding pre-step moments fixed. Work parameter by
     # parameter so optimizer-expression graphs do not scale with the full model.
-    u = []
+    # ``outer`` is a detached, one-tensor-per-parameter vector.  Reuse its
+    # storage for the AdamW VJP rather than holding a second full-model
+    # ``u`` tuple at the same time.  On the B200 full-length path that saves
+    # one complete parameter-vector allocation before the second derivative.
     for p, grad, vector in zip(params, cg, outer):
         group=groups[id(p)]; state=optimizer.state.get(p,{})
         b1,b2=group['betas']; step=float(state.get('step',0))+1
@@ -180,14 +183,16 @@ def full_meta_step(parameters, optimizer, energy, energy_optimizer, inner_losses
         tangent=(-group['lr']/(1-b1**step)*((1-b1)/denom-correction)*vector).detach()
         if not torch.isfinite(tangent).all():
             raise FloatingPointError("Nonfinite AdamW VJP; inspect zero-variance/numerical edge")
-        u.append(tangent)
+        vector.copy_(tangent)
         del m1, v1, root, denom, root_safe, correction, tangent
-    del cg, outer
+    del cg
     # VJP through GLOBAL gradient clipping, including its cross-parameter term.
     if max_norm > 0 and float(scale) < 1:
-        dot = sum((a*b).sum() for a,b in zip(u,g))
+        dot = sum((a*b).sum() for a,b in zip(outer,g))
         correction = scale*dot/(norm*(norm+1e-6))
-        u = [scale.to(a.dtype)*a - correction.to(b.dtype)*b for a,b in zip(u,g)]
+        for vector, grad in zip(outer,g):
+            vector.mul_(scale.to(vector.dtype))
+            vector.sub_(correction.to(grad.dtype)*grad)
     del g
     restore_rng(initial_rng)
     hyper = [torch.zeros_like(p) for p in phi]
@@ -195,7 +200,7 @@ def full_meta_step(parameters, optimizer, energy, energy_optimizer, inner_losses
         loss = loss_fn()
         memory_event('inner_second_backward',params[0].device,index=index)
         part = parameter_grad(loss, params, create_graph=True, allow_unused=True)
-        active = [(grad, vector) for grad, vector in zip(part,u) if grad is not None and grad.requires_grad]
+        active = [(grad, vector) for grad, vector in zip(part,outer) if grad is not None and grad.requires_grad]
         if active:
             hg = torch.autograd.grad(tuple(x for x,_ in active), phi,
                                      grad_outputs=tuple(v for _,v in active), allow_unused=True)
@@ -204,6 +209,7 @@ def full_meta_step(parameters, optimizer, energy, energy_optimizer, inner_losses
             del hg, target, value
         del active, part, loss
         memory_event('inner_second_released',params[0].device,index=index)
+    del outer
     if not all(torch.isfinite(x).all() for x in hyper):
         raise FloatingPointError("Nonfinite full energy hypergradient")
     energy_optimizer.zero_grad(set_to_none=True)
