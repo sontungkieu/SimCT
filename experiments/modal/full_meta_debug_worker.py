@@ -62,6 +62,14 @@ def run(sharded, nested=False, mixed=False, gemma=False):
             return logits.square().mean()
         return (forward(x + .1) - y).square().mean()
     params = tuple(model.parameters())
+    # Materialize Adam moments before the meta step so the diagnostic exercises
+    # the actual offload/restore path instead of an empty optimizer state.
+    warm_loss = inner()
+    warm_loss.backward()
+    torch.nn.utils.clip_grad_norm_(params, .1)
+    opt.step()
+    opt.zero_grad(set_to_none=True)
+    eo.zero_grad(set_to_none=True)
     bridge = module.ForwardParameterBridge(model)
     loss = inner()
     grads = torch.autograd.grad(loss, params, allow_unused=True)
@@ -76,7 +84,8 @@ def run(sharded, nested=False, mixed=False, gemma=False):
             before = [p.detach().clone() for p in params]
             metrics = full_meta_step(params, opt, energy, eo,
                 [lambda: inner()/2, lambda: inner()/2], [outer], max_norm=.1,
-                parameter_grad=bridge.grad, refresh_parameters=refresh)
+                parameter_grad=bridge.grad, refresh_parameters=refresh,
+                offload_adam_moments=True)
             report['steps'].append(metrics)
             assert all(torch.equal(a,b) for a,b in zip(params,before)), 'Virtual state did not roll back'
             inner().backward()
