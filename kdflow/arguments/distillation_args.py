@@ -209,6 +209,10 @@ class DistillationArguments:
     mp_opd_meta_batch_size: int = field(default=16)
     mp_opd_meta_microbatch_size: int = field(default=4)
     mp_opd_energy_every: int = field(default=1)
+    mp_opd_offload_adam_moments: bool = field(
+        default=False,
+        metadata={"help": "Diagnostic: offload student Adam moments during full-meta mixed VJP."},
+    )
 
     def __post_init__(self):
         # Validate teacher parallel size settings

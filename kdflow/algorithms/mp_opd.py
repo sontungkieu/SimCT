@@ -263,7 +263,8 @@ class MetaPartitionedOPD:
         try:
             result=full_meta_step(tuple(p for p in self.student.parameters() if p.requires_grad),
                 optimizer,self.energy,self.energy_optimizer,inner,outer,max_norm=self.args.train.max_norm,
-                refresh_parameters=refresh_parameters, parameter_grad=bridge.grad)
+                refresh_parameters=refresh_parameters, parameter_grad=bridge.grad,
+                offload_adam_moments=args.mp_opd_offload_adam_moments)
         finally:
             bridge.close()
             self._meta_gradient=False

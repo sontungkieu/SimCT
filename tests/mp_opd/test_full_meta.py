@@ -2,6 +2,7 @@ import copy
 import pytest
 import torch
 from kdflow.algorithms._mp_opd_full_meta import full_meta_step, adam_value, clipped
+from kdflow.algorithms._mp_opd_full_meta import offload_adam_moments_scope
 from kdflow.algorithms._mp_opd_full_meta import ForwardParameterBridge
 
 
@@ -97,6 +98,25 @@ def test_virtual_adam_matches_real_adam_and_preserves_state():
         virtual=adam_value(p,g,opt.state.get(p,{}),opt.param_groups[0])
         p.grad=g;opt.step();opt.zero_grad(set_to_none=True)
         assert torch.allclose(virtual,p,rtol=1e-14,atol=1e-14)
+
+
+def test_adam_moment_offload_is_opt_in_and_cpu_safe():
+    p = torch.nn.Parameter(torch.tensor([.4, -.8], dtype=torch.double))
+    opt = torch.optim.AdamW([p], lr=.002)
+    p.grad = torch.tensor([.3, -.1], dtype=torch.double)
+    opt.step(); opt.zero_grad(set_to_none=True)
+    before = copy.deepcopy(opt.state_dict())
+    with offload_adam_moments_scope(opt, [p], enabled=True, device='cpu') as info:
+        assert info == {"enabled": True, "offloaded_bytes": 0}
+    after = opt.state_dict()
+    assert before['param_groups'] == after['param_groups']
+    for key, state in before['state'].items():
+        for name, value in state.items():
+            actual = after['state'][key][name]
+            if torch.is_tensor(value):
+                assert torch.equal(value, actual)
+            else:
+                assert value == actual
 
 
 def test_virtual_failure_rolls_back_student():

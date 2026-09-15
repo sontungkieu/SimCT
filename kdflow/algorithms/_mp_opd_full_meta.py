@@ -4,6 +4,7 @@ The optimizer state is held constant (truncated one-step objective). A virtual
 student is installed temporarily, always rolled back, and never checkpointed.
 Only one rollout microbatch's higher-order graph is retained at a time.
 """
+from contextlib import contextmanager
 import torch
 import json
 from kdflow.training_checkpoint import capture_rng, restore_rng
@@ -105,6 +106,50 @@ def adam_value(p, g, state, group):
     return p.detach()*(1-group["lr"]*group["weight_decay"]) - group["lr"]*m1/(1-beta1**step)/denom
 
 
+@contextmanager
+def offload_adam_moments_scope(optimizer, parameters, *, enabled=False, device=None):
+    """Temporarily move CUDA Adam moments out of the higher-order phase.
+
+    The one-step objective holds optimizer state fixed, and the mixed VJP below
+    the optimizer map does not read the moments. Only ``exp_avg`` and
+    ``exp_avg_sq`` are moved; scalar ``step`` and every other state entry stay
+    untouched. No old tensor is retained in the restore metadata, so the move
+    can actually release its CUDA storage. Restoration is fail-closed through
+    the context manager's ``finally`` block.
+    """
+    if not enabled:
+        yield {"enabled": False, "offloaded_bytes": 0}
+        return
+    entries = []
+    offloaded_bytes = 0
+    try:
+        for parameter in parameters:
+            state = optimizer.state.get(parameter, {})
+            for name in ("exp_avg", "exp_avg_sq"):
+                value = state.get(name)
+                if value is None:
+                    continue
+                if not isinstance(value, torch.Tensor):
+                    raise TypeError(f"Adam state {name} must be a tensor")
+                if value.device.type != "cuda":
+                    continue
+                original_device = value.device
+                offloaded_bytes += value.numel() * value.element_size()
+                state[name] = value.to("cpu", non_blocking=False)
+                entries.append((state, name, original_device))
+        if device is not None and torch.device(device).type == "cuda":
+            torch.cuda.synchronize(device)
+        yield {"enabled": True, "offloaded_bytes": offloaded_bytes}
+    finally:
+        for state, name, original_device in reversed(entries):
+            value = state.get(name)
+            if not isinstance(value, torch.Tensor):
+                raise RuntimeError(f"Missing Adam state during restore: {name}")
+            state[name] = value.to(original_device, non_blocking=False)
+        if device is not None and torch.device(device).type == "cuda":
+            torch.cuda.synchronize(device)
+
+
 def clipped(grads, max_norm):
     norm = torch.linalg.vector_norm(torch.stack([torch.linalg.vector_norm(g.detach(), 2) for g in grads]), 2)
     if not torch.isfinite(norm):
@@ -113,7 +158,7 @@ def clipped(grads, max_norm):
     return [g*scale.to(g.dtype) for g in grads], norm, scale
 
 
-def full_meta_step(parameters, optimizer, energy, energy_optimizer, inner_losses, meta_losses, *, max_norm, refresh_parameters=lambda:None, parameter_grad=torch.autograd.grad):
+def full_meta_step(parameters, optimizer, energy, energy_optimizer, inner_losses, meta_losses, *, max_norm, refresh_parameters=lambda:None, parameter_grad=torch.autograd.grad, offload_adam_moments=False):
     """Each callback returns its already normalized contribution to ONE batch.
 
     Inner callbacks keep credits/features detached, but expose energy marginals
@@ -191,19 +236,24 @@ def full_meta_step(parameters, optimizer, energy, energy_optimizer, inner_losses
     del g
     restore_rng(initial_rng)
     hyper = [torch.zeros_like(p) for p in phi]
-    for index,loss_fn in enumerate(inner_losses):
-        loss = loss_fn()
-        memory_event('inner_second_backward',params[0].device,index=index)
-        part = parameter_grad(loss, params, create_graph=True, allow_unused=True)
-        active = [(grad, vector) for grad, vector in zip(part,u) if grad is not None and grad.requires_grad]
-        if active:
-            hg = torch.autograd.grad(tuple(x for x,_ in active), phi,
-                                     grad_outputs=tuple(v for _,v in active), allow_unused=True)
-            for target, value in zip(hyper,hg):
-                if value is not None: target.add_(value.detach())
-            del hg, target, value
-        del active, part, loss
-        memory_event('inner_second_released',params[0].device,index=index)
+    with offload_adam_moments_scope(optimizer, params,
+                              enabled=offload_adam_moments,
+                              device=params[0].device) as moment_info:
+        memory_event('adam_moments_offloaded', params[0].device,
+                     offloaded_bytes=moment_info['offloaded_bytes'])
+        for index,loss_fn in enumerate(inner_losses):
+            loss = loss_fn()
+            memory_event('inner_second_backward',params[0].device,index=index)
+            part = parameter_grad(loss, params, create_graph=True, allow_unused=True)
+            active = [(grad, vector) for grad, vector in zip(part,u) if grad is not None and grad.requires_grad]
+            if active:
+                hg = torch.autograd.grad(tuple(x for x,_ in active), phi,
+                                         grad_outputs=tuple(v for _,v in active), allow_unused=True)
+                for target, value in zip(hyper,hg):
+                    if value is not None: target.add_(value.detach())
+                del hg, target, value
+            del active, part, loss
+            memory_event('inner_second_released',params[0].device,index=index)
     if not all(torch.isfinite(x).all() for x in hyper):
         raise FloatingPointError("Nonfinite full energy hypergradient")
     energy_optimizer.zero_grad(set_to_none=True)

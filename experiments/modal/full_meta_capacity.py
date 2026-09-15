@@ -21,6 +21,7 @@ p.add_argument('--length', type=int, default=1024)
 p.add_argument('--steps', type=int, default=1)
 p.add_argument('--batch', type=int, default=0, help='0: two-microbatch capacity probe; 64: timing')
 p.add_argument('--attention', choices=('eager', 'sdpa'), default='eager')
+p.add_argument('--offload-adam-moments', action='store_true')
 a = p.parse_args()
 if a.steps < 1 or a.micro < 1 or 64 % a.micro or 16 % a.meta_micro:
     raise ValueError('Invalid steps or microbatch divisors')
@@ -33,6 +34,7 @@ dist.init_process_group('nccl', init_method='tcp://127.0.0.1:29721', rank=0, wor
 report = dict(micro=a.micro, meta_micro=a.meta_micro, length=a.length,
     batch=batch, requested_steps=a.steps, steps=[],
     attention=a.attention,
+    offload_adam_moments=a.offload_adam_moments,
     scope='synthetic full-size student/meta timing; excludes teacher, rollout and partition DP')
 try:
     torch.manual_seed(42)
@@ -68,7 +70,8 @@ try:
             metrics = module.full_meta_step(params, opt, energy, eo,
                 [lambda: loss(a.micro, True)/(batch//a.micro) for _ in range(batch//a.micro)],
                 [lambda: loss(a.meta_micro, False)/(16//a.meta_micro) for _ in range(16//a.meta_micro)],
-                max_norm=1., parameter_grad=bridge.grad, refresh_parameters=refresh)
+                max_norm=1., parameter_grad=bridge.grad, refresh_parameters=refresh,
+                offload_adam_moments=a.offload_adam_moments)
         finally:
             bridge.close()
         for _ in range(batch//a.micro):
