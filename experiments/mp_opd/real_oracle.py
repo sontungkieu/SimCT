@@ -52,6 +52,20 @@ def digest(path):
     return h.hexdigest()
 
 
+def source_provenance(root):
+    explicit = os.environ.get("KDFLOW_SOURCE_COMMIT")
+    if explicit:
+        return explicit, None
+    try:
+        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+        diff = hashlib.sha256(subprocess.check_output(["git", "diff", "HEAD"], cwd=root)).hexdigest()
+        return commit, diff
+    except (OSError, subprocess.CalledProcessError):
+        # Portable source bundles may intentionally omit .git. Preserve the
+        # manifest boundary without making the diagnostic depend on Git.
+        return "unavailable", None
+
+
 def identity(messages):
     return hashlib.sha256(json.dumps(messages, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
 
@@ -326,11 +340,14 @@ def _run(args):
         print(f"Hashing {label} model files for provenance", flush=True)
         model_files[label] = {str(p.relative_to(root)): digest(p) for p in sorted(root.rglob("*"))
                               if p.is_file() and p.suffix in {".json", ".safetensors", ".bin", ".model", ".txt", ".tiktoken"}}
+    source_commit, source_diff = source_provenance(Path(__file__).resolve().parents[2])
+    if getattr(args, "source_commit", None):
+        source_commit, source_diff = args.source_commit, None
     manifest = {"schema": "mp-real-oracle-v1", "data_sha256": digest(args.data), "split_audit": audit,
                 "args": {k: str(v) if isinstance(v, Path) else v for k,v in vars(args).items() if k != "func"},
                 "models": model_files, "torch": torch.__version__,
-                "source_commit": getattr(args,"source_commit",None) or subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[2], text=True).strip(),
-                "source_diff_sha256": None if getattr(args,"source_commit",None) else hashlib.sha256(subprocess.check_output(["git", "diff", "HEAD"], cwd=Path(__file__).resolve().parents[2])).hexdigest(),
+                "source_commit": source_commit,
+                "source_diff_sha256": source_diff,
                 "effective_model_dtype": str(dtype),
                 "oracle_script_sha256": digest(Path(__file__)),
                 "scope": "frozen checkpoint, zero-initialized last-module low-rank B probe, virtual SGD",

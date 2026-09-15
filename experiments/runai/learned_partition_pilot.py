@@ -3,6 +3,16 @@ import argparse, copy, hashlib, json, math, os, subprocess, sys, time
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[2]
 
+def source_commit():
+    explicit=os.environ.get("KDFLOW_SOURCE_COMMIT")
+    if explicit:
+        return explicit
+    try:
+        return subprocess.check_output(["git","rev-parse","HEAD"],cwd=ROOT,text=True).strip()
+    except (OSError, subprocess.CalledProcessError):
+        # Source bundles used by pinned runtimes may omit .git.
+        return "unavailable"
+
 def qualify(work):
     summary=json.loads((work/'energy/summary.json').read_text())
     rows=[json.loads(x) for x in (work/'energy/results.jsonl').read_text().splitlines()]
@@ -43,7 +53,7 @@ def prepare(prior, original, out):
     env=dict(MP_ALGORITHM='mp_opd',MP_STUDENT_PATH=cfg['student'],MP_TEACHER_PATH=cfg['teacher'],MP_DATASET_PATH=cfg['dataset'],MP_SEED='43',MP_PARTITION_SEED='43',MP_MAX_SPAN_LENGTH='2',MP_FIXED_SPAN_LENGTH='2',MP_PREFLIGHT_ONLY='0',MP_ENERGY_CHECKPOINT=str(out/'energy/energy-select-4.pt'))
     for name,limit,budget,dep in [('soft-canary','5',1200,'qualify'),('soft-pilot','50',5400,'soft-canary')]:
         jobs.append(dict(id=name,gpu=1,require_success=[dep],budget_seconds=budget,env=dict(env,MP_RUN_ROOT=str(out/name)),argv=['bash',str(ROOT/'experiments/runai/run_single_gpu.sh'),'1','soft',limit]))
-    plan=dict(hours=old['hours'],source=str(ROOT),source_commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),jobs=jobs)
+    plan=dict(hours=old['hours'],source=str(ROOT),source_commit=source_commit(),jobs=jobs)
     path=out/'plan.json';path.write_text(json.dumps(plan,indent=2))
     (out/'campaign-state.json').write_text(json.dumps(dict(plan_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),started=state['started'],jobs={}),indent=2))
     print('READY',out,'ORIGINAL_DEADLINE',deadline,flush=True)
@@ -63,7 +73,7 @@ def recover(prior, out):
         if 'env' in j:
             j['env']={k:str(v).replace(str(prior),str(out)) for k,v in j['env'].items()}
         if j['id']=='soft-pilot':j['budget_seconds']=min(5400,remaining-180-1200-180)
-    plan=dict(hours=old['hours'],source=str(ROOT),source_commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=ROOT,text=True).strip(),jobs=jobs)
+    plan=dict(hours=old['hours'],source=str(ROOT),source_commit=source_commit(),jobs=jobs)
     path=out/'plan.json';path.write_text(json.dumps(plan,indent=2))
     (out/'campaign-state.json').write_text(json.dumps(dict(plan_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),started=state['started'],jobs={}),indent=2))
     print('READY',out,'REUSED_ENERGY',prior/'energy','PILOT_BUDGET_SECONDS',jobs[-1]['budget_seconds'],flush=True)
