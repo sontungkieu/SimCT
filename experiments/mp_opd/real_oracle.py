@@ -57,8 +57,8 @@ def source_provenance(root):
     if explicit:
         return explicit, None
     try:
-        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
-        diff = hashlib.sha256(subprocess.check_output(["git", "diff", "HEAD"], cwd=root)).hexdigest()
+        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True, stderr=subprocess.DEVNULL).strip()
+        diff = hashlib.sha256(subprocess.check_output(["git", "diff", "HEAD"], cwd=root, stderr=subprocess.DEVNULL)).hexdigest()
         return commit, diff
     except (OSError, subprocess.CalledProcessError):
         # Portable source bundles may intentionally omit .git. Preserve the

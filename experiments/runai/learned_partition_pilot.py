@@ -8,7 +8,7 @@ def source_commit():
     if explicit:
         return explicit
     try:
-        return subprocess.check_output(["git","rev-parse","HEAD"],cwd=ROOT,text=True).strip()
+        return subprocess.check_output(["git","rev-parse","HEAD"],cwd=ROOT,text=True,stderr=subprocess.DEVNULL).strip()
     except (OSError, subprocess.CalledProcessError):
         # Source bundles used by pinned runtimes may omit .git.
         return "unavailable"
