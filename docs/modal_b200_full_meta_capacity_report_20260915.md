@@ -72,6 +72,43 @@ Runner giới hạn một B200, timeout 1500 s, retries=0, max_containers=1. M�
 
 Raw result có tại `remote_artifacts/<run-id>/results.json`. Mọi app trong bảng đã terminal; không có job Modal đang chạy lúc chốt.
 
+## 5.1. Patch offload Adam moments và canary B200
+
+Theo hướng dẫn tiếp theo, tôi đã triển khai một patch opt-in ở commit
+`e402a1d`:
+
+- thêm config `mp_opd_offload_adam_moments`, mặc định `false`;
+- sau khi hoàn tất optimizer VJP và global-clipping VJP, chỉ chuyển
+  `exp_avg`/`exp_avg_sq` của student optimizer sang CPU;
+- giữ nguyên `step`, parameter groups và mọi state khác;
+- restore bằng context `try/finally` trước energy optimizer step/real student
+  update; nếu state thiếu hoặc restore lỗi thì fail-closed;
+- thêm marker `adam_moments_offloaded` và byte inventory;
+- Modal harness nhận flag `--offload-adam-moments`.
+
+Kiểm chứng local: `tests/mp_opd/test_full_meta.py` **12 passed**; factored
+hypergradient algebra trên HEAD **36/36 cases pass**. Đây là correctness/CPU
+evidence, không thay thế GPU integration.
+
+Canary mới:
+
+| Run | Cấu hình | Kết quả |
+|---|---|---|
+| `modal-full-meta-offload-20260915-r2` | B200, eager, B64/M16/L4096, micro1, meta4, exact full-meta, offload on | **PASS**, 1 update trong 88.155 s |
+
+Runtime marker ghi `offloaded_bytes=20,914,735,104` (~19.48 GiB). Peak
+allocated cuối là **147.442 GiB**, so với **166.970 GiB** của eager micro1
+không offload; probe đã đi qua đủ inner second-backward indices 0--63, energy
+update và real student update. `CAPACITY_RESULT` có `status=pass`.
+
+Đây là pass của synthetic full-size student/meta capacity harness, chưa phải
+pass của teacher thật, rollout, partition DP hay company queue. Raw evidence:
+`remote_artifacts/modal-full-meta-offload-20260915-r2/results.json` và
+`remote_artifacts/modal-full-meta-offload-20260915-r2.launch.log`.
+
+Probe r1 chỉ fail ở local entrypoint vì thư mục output đã được tạo trước khi
+runner tự tạo; không có GPU workload ở r1.
+
 ## 5. Diễn giải kỹ thuật
 
 ### Eager path
@@ -152,11 +189,11 @@ với đúng case ID/receipt đang dùng.
 
 ## 8. Billing
 
-Billing snapshot 2026-09-15T09:43:08Z:
+Billing snapshot 2026-09-15T10:50:19Z:
 
-- Tổng tháng: **$21.91132902**
-- B200: **$17.38690576**
-- Tổng các probe mới: khoảng **$0.681**
+- Tổng tháng: **$22.13732993**
+- B200: **$17.57787781**
+- Canary offload r2: **$0.22600091**
 
 Profile `lhtu05`: workspace budget $30, guard hard limit $28.5, reserve $1. Kỳ billing được gắn `calendar_month_default`; không coi đây là đối soát invoice cuối cùng. Ledger của mỗi app đã được chốt terminal failed kèm lý do.
 
