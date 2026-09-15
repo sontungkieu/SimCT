@@ -255,7 +255,7 @@ với đúng case ID/receipt đang dùng.
 
 ## 8. Billing
 
-Billing snapshot 2026-09-15T10:57:11Z:
+Billing snapshot 2026-09-15T11:31:06Z (post-P0, no new paid app):
 
 - Tổng tháng: **$22.61386717**
 - B200: **$17.98055448**
@@ -264,6 +264,7 @@ Billing snapshot 2026-09-15T10:57:11Z:
 
 Profile `lhtu05`: workspace budget $30, guard hard limit $28.5, reserve $1. Kỳ billing được gắn `calendar_month_default`; không coi đây là đối soát invoice cuối cùng. Ledger của mỗi app đã được chốt terminal state kèm lý do khi có lỗi.
 Sau khi chốt steady probe, guard với estimate 0 trả về **OK**: còn $5.88613283 tới hard limit sau reserve; không có app đang chạy.
+Raw billing report: `/home/tung/.codex/state/modal-gpu-ops/raw_billing_reports/lhtu05/2026-09-01_2026-10-01_20260915T113106Z.json`.
 
 ## 9. Các nhánh tiếp theo
 
