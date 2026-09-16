@@ -225,7 +225,7 @@ def resume_check_remote() -> dict[str, object]:
 def resume_control_from_step1(commit: str, receipt_sha256: str) -> dict[str, object]:
     """Resume control from the immutable r5 step1 transaction into a new root."""
     source = Path("/runs/p1-hostmask-ab-20260916-r5-control")
-    run_dir = Path("/runs/p1-hostmask-ab-20260916-r5-resume-control")
+    run_dir = Path("/runs/p1-hostmask-ab-20260916-r5-resume-control-attempt2")
     result: dict[str, object] = {
         "run_id": "simct-p1-control-resume-step1-to-step2-20260916",
         "arm": "control", "host_mask": False, "source_commit": commit,
@@ -252,13 +252,13 @@ def resume_control_from_step1(commit: str, receipt_sha256: str) -> dict[str, obj
             if key in options:
                 options[key] = str(options[key]).replace(
                     "p1-hostmask-ab-20260916-r5-control",
-                    "p1-hostmask-ab-20260916-r5-resume-control")
+                    "p1-hostmask-ab-20260916-r5-resume-control-attempt2")
         atomic_json(run_dir / "launch-config.json", previous)
         import torch
         driver = torch.load(destination / "driver.pt", map_location="cpu", weights_only=False)
         result["start_optimizer_updates"] = int(driver["optimizer_updates"])
         result["start_energy_updates"] = int(driver["energy_updates"])
-        cmd = ["bash", "/opt/repo/experiments/runai/python-b200-host.sh",
+        cmd = ["bash", "-x", "/opt/repo/experiments/runai/python-b200-host.sh",
                "/opt/repo/experiments/runai/run_single_gpu.py", "soft", "2", str(run_dir)]
         env = environment("control", False, "/runs", commit)
         env.update({
@@ -291,7 +291,7 @@ def resume_control_from_step1(commit: str, receipt_sha256: str) -> dict[str, obj
                       error=str(ex), traceback="".join(traceback.format_exception_only(type(ex), ex)).strip())
     finally:
         result["finished_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
-        atomic_json(Path("/runs/p1-hostmask-ab-20260916-r5-resume-control.result.json"), result)
+        atomic_json(Path("/runs/p1-hostmask-ab-20260916-r5-resume-control-attempt2.result.json"), result)
         runs.commit()
     return result
 
