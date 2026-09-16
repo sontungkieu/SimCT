@@ -14,6 +14,11 @@ def validate(micro, meta, limit):
                                              'Microbatch overrides are'))
                       for n in ast.walk(node))]
     assert len(guards) == 3
+    limit_guards = [node for node in tree.body if isinstance(node, ast.Assert)
+                    and isinstance(node.test, ast.Compare)
+                    and any(isinstance(n, ast.Name) and n.id == "limit"
+                            for n in ast.walk(node.test))]
+    assert len(limit_guards) == 1
     admission_assignments = [node for node in tree.body if isinstance(node, ast.Assign)
                              and any(isinstance(target, ast.Name)
                                      and target.id in {"micro_recipe", "exact_soft_alternating_full"}
@@ -34,7 +39,7 @@ def validate(micro, meta, limit):
         'exact_token_trajectory': True,
         'enforce_max_sequence_length': True,
     }
-    exec(compile(ast.Module(body=admission_assignments + guards, type_ignores=[]),
+    exec(compile(ast.Module(body=admission_assignments + limit_guards + guards, type_ignores=[]),
                  str(SOURCE), 'exec'),
          dict(opts=opts, limit=limit, mode='soft'))
 
@@ -47,3 +52,8 @@ def test_valid_recipe(micro, meta, limit):
 @pytest.mark.parametrize('micro,meta,limit', [(3,4,10),(4,3,10),(8,4,312),(4,8,0),(1,4,31)])
 def test_invalid_or_unqualified_production_override(micro, meta, limit):
     with pytest.raises(ValueError): validate(micro,meta,limit)
+
+
+def test_update_limit_remains_hard_cap():
+    with pytest.raises(AssertionError):
+        validate(4, 4, 313)
