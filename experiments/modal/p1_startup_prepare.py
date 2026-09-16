@@ -19,7 +19,7 @@ prepvol = modal.Volume.from_name(PREP_VOLUME, create_if_missing=True)
               volumes={"/assets": assets, "/prep": prepvol})
 def prepare_remote(commit: str, snapshot_id: str = "assets-20260916") -> dict:
     import sys
-    sys.path.insert(0, "/opt/repo")
+    sys.path.insert(0, "/opt/repo/experiments/modal")
     from provenance_prepare import prepare, write_receipt
     events = []
     roots = {"student": "/assets/student", "teacher": "/assets/teacher",
