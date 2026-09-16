@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import traceback
+import time
 from pathlib import Path
 
 import modal
@@ -17,7 +18,7 @@ IMAGE_REF = "docker.io/codemaivanngu/simct-b200@sha256:33b2b55874b34447a13953289
 ASSET_VOLUME = "simct-qwen7b-gemma2-assets-20260916"
 RUN_VOLUME = "simct-qwen7b-gemma2-runs-20260916-main"
 APP_NAME = "simct-p1-hostmask-ab-20260916"
-RUN_TAG = "p1-hostmask-ab-20260916-r3"
+RUN_TAG = "p1-hostmask-ab-20260916-r4"
 
 
 image = (
@@ -51,6 +52,37 @@ def atomic_json(path: Path, value: object) -> None:
     tmp = path.with_suffix(path.suffix + ".pending")
     tmp.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
     tmp.replace(path)
+
+
+def run_logged(cmd, *, cwd, env, log, timeout, stage):
+    """Drain child output while retaining bounded PID/I/O progress evidence."""
+    started = time.time()
+    p = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=log, stderr=subprocess.STDOUT)
+    (log.parent / f"{stage}.pid").write_text(str(p.pid) + "\n")
+    while True:
+        rc = p.poll()
+        if rc is not None:
+            log.write(f"STAGE_END {stage} pid={p.pid} rc={rc} seconds={time.time()-started:.3f}\n")
+            log.flush()
+            return rc
+        elapsed = time.time() - started
+        if elapsed > timeout:
+            log.write(f"STAGE_TIMEOUT {stage} pid={p.pid} seconds={elapsed:.3f}\n")
+            try:
+                status = Path(f"/proc/{p.pid}/status").read_text()
+                io = Path(f"/proc/{p.pid}/io").read_text()
+                log.write("PROC_STATUS_BEGIN\n" + status + "PROC_STATUS_END\n")
+                log.write("PROC_IO_BEGIN\n" + io + "PROC_IO_END\n")
+            except OSError as exc:
+                log.write(f"PROC_EVIDENCE_ERROR {exc!r}\n")
+            log.flush()
+            p.terminate()
+            try: p.wait(timeout=30)
+            except subprocess.TimeoutExpired: p.kill(); p.wait()
+            return 124
+        log.write(f"STAGE_PROGRESS {stage} pid={p.pid} seconds={elapsed:.3f}\n")
+        log.flush()
+        time.sleep(5)
 
 
 def environment(arm: str, host_mask: bool, run_root: str, commit: str) -> dict[str, str]:
@@ -92,7 +124,7 @@ def environment(arm: str, host_mask: bool, run_root: str, commit: str) -> dict[s
     timeout=3600, retries=0, max_containers=1, single_use_containers=True,
     volumes={"/assets": assets, "/runs": runs, "/prep": prepvol},
 )
-def run_arm(arm: str, host_mask: bool, commit: str, receipt_sha256: str) -> dict[str, object]:
+def run_arm(arm: str, host_mask: bool, commit: str, receipt_sha256: str, *, continuous: bool = True) -> dict[str, object]:
     run_root = "/runs"
     run_dir = Path(run_root) / f"{RUN_TAG}-{arm}"
     result: dict[str, object] = {
@@ -114,26 +146,34 @@ def run_arm(arm: str, host_mask: bool, commit: str, receipt_sha256: str) -> dict
                "/opt/repo/experiments/runai/run_single_gpu.py", "soft", "2", str(run_dir)]
         env = environment(arm, host_mask, run_root, commit)
         env["MP_PREPARED_RECEIPT_SHA256"] = receipt_sha256
-        env["MP_PAUSE_AFTER_UPDATES"] = "1"
+        env["MP_PAUSE_AFTER_UPDATES"] = "0" if continuous else "1"
         p1log = run_dir.parent / f"{arm}.phase1.log"
         with p1log.open("w") as out:
-            p1 = subprocess.run(cmd, cwd=str(REMOTE_ROOT), env=env, stdout=out,
-                                stderr=subprocess.STDOUT, timeout=1500)
-        result["phase1_exit"] = p1.returncode
+            out.write(f"STAGE_START child_spawn pid=pending continuous={continuous}\n"); out.flush()
+            p1rc = run_logged(cmd, cwd=str(REMOTE_ROOT), env=env, log=out, timeout=1500, stage="continuous" if continuous else "resume_phase1")
+        result["phase1_exit"] = p1rc
         summary = run_dir / "checkpoint" / "run-summary.json"
         result["phase1_summary_present"] = summary.is_file()
-        if p1.returncode != 0 or not summary.is_file():
-            raise RuntimeError(f"phase1 failed rc={p1.returncode} summary={summary.is_file()}")
+        if p1rc != 0 or not summary.is_file():
+            raise RuntimeError(f"phase1 failed rc={p1rc} summary={summary.is_file()}")
         result["phase1_summary"] = json.loads(summary.read_text())
+        if continuous:
+            final = result["phase1_summary"]
+            if final.get("status") != "completed" or final.get("optimizer_updates") != 2:
+                raise RuntimeError(f"continuous arm incomplete: {final}")
+            result["actual_updates"] = final.get("optimizer_updates")
+            result["cleanup"] = {"run_process_exit": True, "run_dir": str(run_dir)}
+            result["status"] = "completed"
+            result["timing_logs"] = {"continuous": str(p1log)}
+            return result
         env["MP_RESUME"] = "1"
         env["MP_PAUSE_AFTER_UPDATES"] = "0"
         p2log = run_dir.parent / f"{arm}.phase2.log"
         with p2log.open("w") as out:
-            p2 = subprocess.run(cmd, cwd=str(REMOTE_ROOT), env=env, stdout=out,
-                                stderr=subprocess.STDOUT, timeout=1500)
-        result["phase2_exit"] = p2.returncode
-        if p2.returncode != 0 or not summary.is_file():
-            raise RuntimeError(f"phase2 failed rc={p2.returncode}")
+            p2rc = run_logged(cmd, cwd=str(REMOTE_ROOT), env=env, log=out, timeout=1500, stage="resume_phase2")
+        result["phase2_exit"] = p2rc
+        if p2rc != 0 or not summary.is_file():
+            raise RuntimeError(f"phase2 failed rc={p2rc}")
         result["final_summary"] = json.loads(summary.read_text())
         result["status"] = "completed"
         result["timing_logs"] = {"phase1": str(p1log), "phase2": str(p2log)}
@@ -147,6 +187,23 @@ def run_arm(arm: str, host_mask: bool, commit: str, receipt_sha256: str) -> dict
     return result
 
 
+@app.function(image=image, cpu=2, memory=8192, timeout=1800, retries=0,
+              volumes={"/runs": runs})
+def resume_check_remote() -> dict[str, object]:
+    """CPU-only transactional validation of the pinned control step1."""
+    import json
+    from kdflow.training_checkpoint import inspect
+    root = Path("/runs/p1-hostmask-ab-20260916-r3-control/checkpoints")
+    latest = json.loads((root / "latest.json").read_text())
+    manifest_path = root / latest["directory"] / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    print(f"RESUME_STAGE_START checkpoint_contract_compare pid={os.getpid()}", flush=True)
+    checked, value = inspect(root, manifest["contract"], manifest["world_size"])
+    print(f"RESUME_STAGE_END checkpoint_payload_verify pid={os.getpid()} step={value['step']}", flush=True)
+    return {"status": "validated", "step": value["step"], "world_size": value["world_size"],
+            "manifest_sha256": sha256(manifest_path), "directory": str(checked)}
+
+
 @app.local_entrypoint()
 def main() -> None:
     commit = subprocess.check_output(["git", "-C", str(LOCAL_ROOT), "rev-parse", "HEAD"], text=True).strip()
@@ -154,9 +211,16 @@ def main() -> None:
     if prep.get("status") != "ready" or prep.get("source_commit") != commit:
         raise SystemExit("P1_PREP_NOT_READY_OR_SOURCE_MISMATCH")
     receipt_sha256 = prep["receipt_sha256"]
+    gate = os.environ.get("P1_GATE", "continuous_ab")
+    if gate == "resume_check":
+        result = resume_check_remote.remote()
+        print("RESUME_CHECK_RESULT=" + json.dumps(result, sort_keys=True), flush=True)
+        return
+    if gate != "continuous_ab":
+        raise SystemExit("unknown P1_GATE=" + gate)
     for arm, host_mask in (("control", False), ("candidate", True)):
         print("START_ARM=" + arm, flush=True)
-        result = run_arm.remote(arm, host_mask, commit, receipt_sha256)
+        result = run_arm.remote(arm, host_mask, commit, receipt_sha256, continuous=True)
         print("P1_ARM_RESULT=" + json.dumps(result, sort_keys=True), flush=True)
         if result.get("status") != "completed":
             raise SystemExit(1)
