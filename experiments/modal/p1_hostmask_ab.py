@@ -18,7 +18,7 @@ IMAGE_REF = "docker.io/codemaivanngu/simct-b200@sha256:33b2b55874b34447a13953289
 ASSET_VOLUME = "simct-qwen7b-gemma2-assets-20260916"
 RUN_VOLUME = "simct-qwen7b-gemma2-runs-20260916-main"
 APP_NAME = "simct-p1-hostmask-ab-20260916"
-RUN_TAG = "p1-hostmask-ab-20260916-r4"
+RUN_TAG = "p1-hostmask-ab-20260916-r5"
 
 
 image = (
@@ -58,7 +58,7 @@ def run_logged(cmd, *, cwd, env, log, timeout, stage):
     """Drain child output while retaining bounded PID/I/O progress evidence."""
     started = time.time()
     p = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=log, stderr=subprocess.STDOUT)
-    (log.parent / f"{stage}.pid").write_text(str(p.pid) + "\n")
+    (Path(log.name).parent / f"{stage}.pid").write_text(str(p.pid) + "\n")
     while True:
         rc = p.poll()
         if rc is not None:
