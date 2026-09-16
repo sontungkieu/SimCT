@@ -18,8 +18,6 @@ ASSET_VOLUME = "simct-qwen7b-gemma2-assets-20260916"
 RUN_VOLUME = "simct-qwen7b-gemma2-runs-20260916-main"
 APP_NAME = "simct-p1-hostmask-ab-20260916"
 
-# Resolved on the Modal client before deployment; the container has no git checkout.
-source_commit = "4e863d5474790b1944cef9c3bb880a99ac40f33b"
 
 image = (
     modal.Image.from_registry(IMAGE_REF)
@@ -87,12 +85,12 @@ def environment(arm: str, host_mask: bool, run_root: str) -> dict[str, str]:
     timeout=3600, retries=0, max_containers=1, single_use_containers=True,
     volumes={"/assets": assets, "/runs": runs},
 )
-def run_arm(arm: str, host_mask: bool) -> dict[str, object]:
+def run_arm(arm: str, host_mask: bool, commit: str) -> dict[str, object]:
     run_root = "/runs"
     run_dir = Path(run_root) / f"p1-hostmask-{arm}-20260916"
     result: dict[str, object] = {
         "run_id": f"simct-p1-{arm}-2update-20260916",
-        "arm": arm, "host_mask": host_mask, "source_commit": source_commit,
+        "arm": arm, "host_mask": host_mask, "source_commit": commit,
         "image": IMAGE_REF, "status": "starting",
         "contract": {
             "student": "google/gemma-2-2b-it", "teacher": "Qwen/Qwen2.5-7B-Instruct",
@@ -107,7 +105,7 @@ def run_arm(arm: str, host_mask: bool) -> dict[str, object]:
             Path(d).mkdir(parents=True, exist_ok=True)
         cmd = ["bash", "/opt/repo/experiments/runai/python-b200-host.sh",
                "/opt/repo/experiments/runai/run_single_gpu.py", "soft", "2", str(run_dir)]
-        env = environment(arm, host_mask, run_root)
+        env = environment(arm, host_mask, run_root)\n        env["MP_SOURCE_COMMIT"] = commit
         env["MP_PAUSE_AFTER_UPDATES"] = "1"
         p1log = run_dir.parent / f"{arm}.phase1.log"
         with p1log.open("w") as out:
@@ -143,9 +141,10 @@ def run_arm(arm: str, host_mask: bool) -> dict[str, object]:
 
 @app.local_entrypoint()
 def main() -> None:
+    commit = subprocess.check_output(["git", "-C", str(LOCAL_ROOT), "rev-parse", "HEAD"], text=True).strip()
     for arm, host_mask in (("control", False), ("candidate", True)):
         print("START_ARM=" + arm, flush=True)
-        result = run_arm.remote(arm, host_mask)
+        result = run_arm.remote(arm, host_mask, commit)
         print("P1_ARM_RESULT=" + json.dumps(result, sort_keys=True), flush=True)
         if result.get("status") != "completed":
             raise SystemExit(1)
