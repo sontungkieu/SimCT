@@ -207,15 +207,15 @@ def resume_check_remote() -> dict[str, object]:
 @app.local_entrypoint()
 def main() -> None:
     commit = subprocess.check_output(["git", "-C", str(LOCAL_ROOT), "rev-parse", "HEAD"], text=True).strip()
-    prep = json.loads(Path("/mnt/d/dev/codex/research_vdt/remote_artifacts/p1-startup-prep-20260916/prep.receipt.json").read_text())
-    if prep.get("status") != "ready" or prep.get("source_commit") != commit:
-        raise SystemExit("P1_PREP_NOT_READY_OR_SOURCE_MISMATCH")
-    receipt_sha256 = prep["receipt_sha256"]
     gate = os.environ.get("P1_GATE", "continuous_ab")
     if gate == "resume_check":
         result = resume_check_remote.remote()
         print("RESUME_CHECK_RESULT=" + json.dumps(result, sort_keys=True), flush=True)
         return
+    prep = json.loads(Path("/mnt/d/dev/codex/research_vdt/remote_artifacts/p1-startup-prep-20260916/prep.receipt.json").read_text())
+    if prep.get("status") != "ready" or prep.get("source_commit") != commit:
+        raise SystemExit("P1_PREP_NOT_READY_OR_SOURCE_MISMATCH")
+    receipt_sha256 = prep["receipt_sha256"]
     if gate != "continuous_ab":
         raise SystemExit("unknown P1_GATE=" + gate)
     for arm, host_mask in (("control", False), ("candidate", True)):
