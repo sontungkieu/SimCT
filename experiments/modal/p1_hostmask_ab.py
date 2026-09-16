@@ -322,7 +322,7 @@ def compare_r5_remote() -> dict[str, object]:
         trajectory_error = f"control={len(control_files)} candidate={len(candidate_files)}"
     else:
         for left in control_files:
-            if trajectory(left) != trajectory(candidate / checkpoint/rollout_data / left.name):
+            if trajectory(left) != trajectory(candidate / "checkpoint/rollout_data" / left.name):
                 trajectory_status = "mismatch"
                 trajectory_error = left.name
                 break
