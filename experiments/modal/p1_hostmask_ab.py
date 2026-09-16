@@ -434,6 +434,8 @@ def resume_preflight_remote() -> dict[str, object]:
               volumes={"/runs": runs})
 def compare_resume_r5_remote() -> dict[str, object]:
     """Compare resumed control step2 with continuous control step2 separately."""
+    import sys
+    sys.path.insert(0, "/opt/repo")
     import numpy as np
     import torch
     from kdflow.training_checkpoint import inspect
