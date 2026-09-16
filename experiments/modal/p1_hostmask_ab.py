@@ -49,7 +49,7 @@ def atomic_json(path: Path, value: object) -> None:
     tmp.replace(path)
 
 
-def environment(arm: str, host_mask: bool, run_root: str) -> dict[str, str]:
+def environment(arm: str, host_mask: bool, run_root: str, commit: str) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if not k.startswith(("UV_", "PIP_"))}
     env.update({
         "PATH": "/opt/venvs/simct-b200/bin:/usr/local/cuda/bin:" + env.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
@@ -71,7 +71,7 @@ def environment(arm: str, host_mask: bool, run_root: str) -> dict[str, str]:
         "MP_MICRO_TRAIN_BATCH_SIZE": "1", "MP_META_MICRO_BATCH_SIZE": "4",
         "MP_SEED": "42", "MP_PARTITION_SEED": "43", "MP_MAX_SPAN_LENGTH": "2",
         "MP_FIXED_SPAN_LENGTH": "2", "MP_ATTN_IMPLEMENTATION": "eager",
-        "MP_CHECKPOINT_STEPS": "1,2", "MP_SOURCE_COMMIT": source_commit, "MP_SOURCE_DIRTY": "",
+        "MP_CHECKPOINT_STEPS": "1,2", "MP_SOURCE_COMMIT": commit, "MP_SOURCE_DIRTY": "",
         "MP_QUALIFICATION_POLICY": "p1-matched-ab", "MP_QUALIFICATION_STATUS": "diagnostic",
         "MP_ENERGY_LR": "0.001", "MP_ENERGY_EVERY": "1", "MP_RUN_ROOT": run_root,
         "MP_OPD_HOST_MASK": "1" if host_mask else "0", "MP_OPD_TIMING": "1",
@@ -105,7 +105,7 @@ def run_arm(arm: str, host_mask: bool, commit: str) -> dict[str, object]:
             Path(d).mkdir(parents=True, exist_ok=True)
         cmd = ["bash", "/opt/repo/experiments/runai/python-b200-host.sh",
                "/opt/repo/experiments/runai/run_single_gpu.py", "soft", "2", str(run_dir)]
-        env = environment(arm, host_mask, run_root)\n        env["MP_SOURCE_COMMIT"] = commit
+        env = environment(arm, host_mask, run_root, commit)
         env["MP_PAUSE_AFTER_UPDATES"] = "1"
         p1log = run_dir.parent / f"{arm}.phase1.log"
         with p1log.open("w") as out:
