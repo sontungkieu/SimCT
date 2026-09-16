@@ -74,6 +74,7 @@ opts.update(
     pause_after_updates=int(os.environ.get("MP_PAUSE_AFTER_UPDATES", "0")),
     resume_checkpoint_steps=os.environ.get("MP_CHECKPOINT_STEPS", "40,80,120,156,200,240,280,312"),
     mp_opd_offload_adam_moments=os.environ.get("MP_OFFLOAD_ADAM_MOMENTS", "0") == "1",
+    mp_opd_host_mask=os.environ.get("MP_OPD_HOST_MASK", "0") == "1",
 )
 
 if os.environ.get("MP_OFFLOAD_ADAM_MOMENTS", "0") not in {"0", "1"}:

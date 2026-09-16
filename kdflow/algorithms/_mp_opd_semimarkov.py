@@ -23,6 +23,7 @@ def semi_markov_partition(
     *,
     temperature: float = 1.0,
     valid_mask: torch.Tensor | None = None,
+    host_mask: bool = False,
 ) -> SemiMarkovResult:
     if energies.ndim != 2:
         raise ValueError("energies must have shape [n,L]")
@@ -69,9 +70,14 @@ def semi_markov_partition(
     beta = torch.stack(beta_values)
 
     marginals = score.new_zeros((n, max_length))
+    # Candidate-only metadata optimization. DP values and floating-point
+    # operations remain on the original device and in the original order.
+    mask_rows = mask.detach().cpu().tolist() if host_mask else None
     for start in range(n):
         for span_length in range(1, min(max_length, n - start) + 1):
-            if mask[start, span_length - 1]:
+            allowed = (mask_rows[start][span_length - 1]
+                       if mask_rows is not None else mask[start, span_length - 1])
+            if allowed:
                 end = start + span_length
                 marginals[start, span_length - 1] = torch.exp(
                     alpha[start] + score[start, span_length - 1] + beta[end] - alpha[n]

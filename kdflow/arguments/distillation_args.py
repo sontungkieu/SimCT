@@ -213,6 +213,10 @@ class DistillationArguments:
         default=False,
         metadata={"help": "Diagnostic: offload student Adam moments during full-meta mixed VJP."},
     )
+    mp_opd_host_mask: bool = field(
+        default=False,
+        metadata={"help": "Candidate-only: copy semi-Markov boolean mask metadata to host once per partition."},
+    )
 
     def __post_init__(self):
         # Validate teacher parallel size settings

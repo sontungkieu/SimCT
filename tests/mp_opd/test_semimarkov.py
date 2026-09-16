@@ -52,3 +52,35 @@ def test_long_chain_full_coverage_and_gradient():
     result.log_z.backward()
     assert torch.isfinite(energies.grad).all()
     assert torch.allclose(energies.grad.double(), result.marginals, atol=1e-6)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+@pytest.mark.parametrize("temperature", [0.7, 1.0, 1.6])
+def test_host_mask_preserves_outputs_and_first_gradient(dtype, temperature):
+    energies = torch.randn(7, 4, dtype=dtype, requires_grad=True)
+    valid = torch.tensor(
+        [[1, 1, 0, 0], [1, 0, 1, 0], [1, 1, 1, 0], [1, 0, 0, 0],
+         [1, 1, 0, 0], [1, 1, 1, 0], [1, 0, 0, 0]], dtype=torch.bool
+    )
+    ref = semi_markov_partition(energies, temperature=temperature, valid_mask=valid)
+    cand = semi_markov_partition(energies, temperature=temperature, valid_mask=valid, host_mask=True)
+    for left, right in zip(ref.__dict__.values(), cand.__dict__.values()):
+        assert torch.equal(left, right), (left, right)
+    ref_grad = torch.autograd.grad(ref.log_z, energies, create_graph=True)[0]
+    cand_grad = torch.autograd.grad(cand.log_z, energies, create_graph=True)[0]
+    assert torch.equal(ref_grad, cand_grad)
+
+
+def test_host_mask_preserves_higher_order_derivative_and_failure_semantics():
+    values = torch.randn(4, 3, dtype=torch.float64, requires_grad=True)
+    ref = semi_markov_partition(values, valid_mask=torch.ones(4, 3, dtype=torch.bool))
+    cand = semi_markov_partition(values, valid_mask=torch.ones(4, 3, dtype=torch.bool), host_mask=True)
+    ref_g = torch.autograd.grad(ref.log_z, values, create_graph=True)[0]
+    cand_g = torch.autograd.grad(cand.log_z, values, create_graph=True)[0]
+    ref_h = torch.autograd.grad((ref_g.square()).sum(), values)[0]
+    cand_h = torch.autograd.grad((cand_g.square()).sum(), values)[0]
+    assert torch.equal(ref_h, cand_h)
+    invalid = torch.zeros(3, 2, dtype=torch.bool)
+    for host in (False, True):
+        with pytest.raises(ValueError, match="masked"):
+            semi_markov_partition(torch.zeros(3, 2), valid_mask=invalid, host_mask=host)

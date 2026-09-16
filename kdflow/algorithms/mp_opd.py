@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import os
 import random
 import time
 from pathlib import Path
@@ -174,6 +175,8 @@ class MetaPartitionedOPD:
         self.max_span_length = int(self.args.kd.mp_opd_max_span_length)
         self.fixed_span_length = int(self.args.kd.mp_opd_fixed_span_length)
         self.temperature = float(self.args.kd.mp_opd_partition_temperature)
+        self.host_mask = bool(getattr(self.args.kd, "mp_opd_host_mask", False))
+        self.timing_enabled = os.environ.get("MP_OPD_TIMING", "0") == "1"
         self.random_seed = int(self.args.kd.mp_opd_random_seed)
         self.energy = None
         self.energy_optimizer = None
@@ -325,9 +328,12 @@ class MetaPartitionedOPD:
         if self.mode == "soft":
             features = atom_features(atoms, credits)
             energies = self.energy(features, self.max_span_length)
+            partition_started = time.perf_counter() if self.timing_enabled else None
             distribution = semi_markov_partition(
-                energies, temperature=self.temperature, valid_mask=valid
+                energies, temperature=self.temperature, valid_mask=valid, host_mask=self.host_mask
             )
+            partition_seconds = (time.perf_counter() - partition_started
+                                 if partition_started is not None else None)
             if not torch.isfinite(distribution.coverage_max_error) or distribution.coverage_max_error > 1e-6:
                 raise RuntimeError("MP-OPD partition coverage failed after FP64 DP; inspect before retry")
             rates_per_atom = expected_atom_rates(distribution.marginals, rates)
@@ -343,6 +349,10 @@ class MetaPartitionedOPD:
                     ).detach(),
                 }
             )
+            if partition_seconds is not None:
+                metrics["mp_opd_semimarkov_wall_seconds"] = torch.tensor(
+                    partition_seconds, device=distribution.log_z.device, dtype=torch.float64
+                )
             # Student path treats q_phi as fixed; phi has its own optimizer.
             if self._meta_gradient:
                 return (credits.current_nll*rates_per_atom).sum(), metrics
