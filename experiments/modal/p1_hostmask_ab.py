@@ -402,3 +402,26 @@ def main() -> None:
         print("P1_ARM_RESULT=" + json.dumps(result, sort_keys=True), flush=True)
         if result.get("status") != "completed":
             raise SystemExit(1)
+
+@app.function(image=image, cpu=8, memory=32768, timeout=1800, retries=0,
+              volumes={"/assets": assets, "/runs": runs, "/prep": prepvol})
+def resume_preflight_remote() -> dict[str, object]:
+    """CPU-only exact resume provenance/preflight; never enters Ray training."""
+    prep = json.loads(Path("/prep/startup-provenance.json").read_text())
+    commit = prep["source_commit"]
+    receipt_sha256 = prep["receipt_sha256"]
+    for d in ("/tmp/runtime/runtime-host-libs", "/tmp/ray", "/tmp/cache"):
+        Path(d).mkdir(parents=True, exist_ok=True)
+    run_dir = Path("/runs/p1-hostmask-ab-20260916-r5-resume-control")
+    cmd = ["bash", "/opt/repo/experiments/runai/python-b200-host.sh",
+           "/opt/repo/experiments/runai/run_single_gpu.py", "soft", "2", str(run_dir)]
+    env = environment("control", False, "/runs", commit)
+    env.update({"MP_RESUME": "1", "MP_PREFLIGHT_ONLY": "1",
+                "MP_PAUSE_AFTER_UPDATES": "0", "MP_PREPARED_RECEIPT_SHA256": receipt_sha256})
+    p = subprocess.run(cmd, cwd=str(REMOTE_ROOT), env=env, text=True, capture_output=True)
+    output = p.stdout + p.stderr
+    result = {"status": "passed" if p.returncode == 0 else "blocked",
+              "returncode": p.returncode, "executable": "/opt/venvs/simct-b200/bin/python",
+              "output_tail": output[-16000:]}
+    print(json.dumps(result, sort_keys=True), flush=True)
+    return result
