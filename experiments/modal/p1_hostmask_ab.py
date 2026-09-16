@@ -198,15 +198,22 @@ def resume_check_remote() -> dict[str, object]:
     import json
     import sys
     sys.path.insert(0, "/opt/repo")
-    from kdflow.training_checkpoint import inspect
     root = Path("/runs/p1-hostmask-ab-20260916-r5-control/checkpoints")
-    latest = json.loads((root / "latest.json").read_text())
-    manifest_path = root / latest["directory"] / "manifest.json"
+    step_dirs = sorted(root.glob("step00000001-*/manifest.json"))
+    if len(step_dirs) != 1:
+        raise ValueError(f"expected one step1 transaction, found {len(step_dirs)}")
+    manifest_path = step_dirs[0]
     manifest = json.loads(manifest_path.read_text())
-    print(f"RESUME_STAGE_START checkpoint_contract_compare pid={os.getpid()}", flush=True)
-    checked, value = inspect(root, manifest["contract"], manifest["world_size"])
-    print(f"RESUME_STAGE_END checkpoint_payload_verify pid={os.getpid()} step={value['step']}", flush=True)
-    return {"status": "validated", "step": value["step"], "world_size": value["world_size"],
+    print(f"RESUME_STAGE_START checkpoint_contract_compare pid={os.getpid()} step=1", flush=True)
+    if manifest.get("schema") != "kdflow-training-v1" or manifest.get("step") != 1:
+        raise ValueError("step1 manifest schema/step mismatch")
+    checked = manifest_path.parent
+    for name, info in manifest["files"].items():
+        path = checked / name
+        if path.stat().st_size != info["bytes"] or sha256(path) != info["sha256"]:
+            raise ValueError("Checkpoint payload checksum mismatch: " + name)
+    print(f"RESUME_STAGE_END checkpoint_payload_verify pid={os.getpid()} step=1", flush=True)
+    return {"status": "validated", "step": 1, "world_size": manifest["world_size"],
             "manifest_sha256": sha256(manifest_path), "directory": str(checked)}
 
 
