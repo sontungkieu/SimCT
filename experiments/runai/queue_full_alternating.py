@@ -157,7 +157,9 @@ def run_command(case,config,out,limit=312,pause=0,resume=False):
         MP_ENERGY_EVERY=str(config['energy_every']),MP_RESUME=str(int(resume)),
         MP_OFFLOAD_ADAM_MOMENTS=offload_env(c.get('offload_adam_moments', False)),
         MP_PAUSE_AFTER_UPDATES=str(pause),MP_SOURCE_COMMIT=c['commit'],MP_SOURCE_DIRTY='',
-        MP_RAY_TMP=f'/var/tmp/alt-ray-{os.getpid()}-{time.time_ns()}',
+        # Ray appends a timestamped session and socket names below this path.
+        # Keep the node-local root short enough for AF_UNIX's 107-byte limit.
+        MP_RAY_TMP=f'/tmp/ar{os.getpid()}-{time.time_ns()%1000000}',
         MP_CHECKPOINT_STEPS=','.join(map(str,STEPS)))
     record=out.parent/(out.name+'.qualification.json')
     if record.exists():
