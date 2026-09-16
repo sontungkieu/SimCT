@@ -31,6 +31,8 @@ image = (
                     "/opt/repo/experiments/modal/mp_opd_phi_gemma_50.py", copy=True)
     .add_local_file(str(LOCAL_ROOT / "experiments/modal/provenance_prepare.py"),
                     "/opt/repo/experiments/modal/provenance_prepare.py", copy=True)
+    .add_local_file(str(LOCAL_ROOT / "experiments/modal/recover_soft_alternatives.py"),
+                    "/opt/repo/experiments/modal/recover_soft_alternatives.py", copy=True)
     .add_local_dir(str(LOCAL_ROOT / "experiments/modal/vendor"),
                    "/opt/repo/experiments/modal/vendor", copy=True)
     .add_local_dir(str(LOCAL_ROOT / "tests"), "/opt/repo/tests", copy=True)
