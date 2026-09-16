@@ -17,6 +17,7 @@ IMAGE_REF = "docker.io/codemaivanngu/simct-b200@sha256:33b2b55874b34447a13953289
 ASSET_VOLUME = "simct-qwen7b-gemma2-assets-20260916"
 RUN_VOLUME = "simct-qwen7b-gemma2-runs-20260916-main"
 APP_NAME = "simct-p1-hostmask-ab-20260916"
+RUN_TAG = "p1-hostmask-ab-20260916-r2"
 
 
 image = (
@@ -93,7 +94,7 @@ def environment(arm: str, host_mask: bool, run_root: str, commit: str) -> dict[s
 )
 def run_arm(arm: str, host_mask: bool, commit: str, receipt_sha256: str) -> dict[str, object]:
     run_root = "/runs"
-    run_dir = Path(run_root) / f"p1-hostmask-{arm}-20260916"
+    run_dir = Path(run_root) / f"{RUN_TAG}-{arm}"
     result: dict[str, object] = {
         "run_id": f"simct-p1-{arm}-2update-20260916",
         "arm": arm, "host_mask": host_mask, "source_commit": commit,
@@ -141,7 +142,7 @@ def run_arm(arm: str, host_mask: bool, commit: str, receipt_sha256: str) -> dict
                       error=str(ex), traceback="".join(traceback.format_exception_only(type(ex), ex)).strip())
     finally:
         result["finished_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
-        atomic_json(Path(run_root) / f"p1-hostmask-{arm}-20260916.result.json", result)
+        atomic_json(Path(run_root) / f"{RUN_TAG}-{arm}.result.json", result)
         runs.commit()
     return result
 
