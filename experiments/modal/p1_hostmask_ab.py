@@ -33,6 +33,7 @@ image = (
                     "/opt/repo/experiments/modal/provenance_prepare.py", copy=True)
     .add_local_dir(str(LOCAL_ROOT / "experiments/modal/vendor"),
                    "/opt/repo/experiments/modal/vendor", copy=True)
+    .add_local_dir(str(LOCAL_ROOT / "tests"), "/opt/repo/tests", copy=True)
 )
 app = modal.App(APP_NAME)
 assets = modal.Volume.from_name(ASSET_VOLUME, create_if_missing=False)
@@ -333,6 +334,27 @@ def compare_r5_remote() -> dict[str, object]:
             "control": str(control), "candidate": str(candidate)}
 
 
+@app.function(image=image, cpu=8, memory=32768, timeout=1800, retries=0)
+def runtime_test_receipt_remote() -> dict[str, object]:
+    """Run CPU-eligible regression/collection in the pinned training image."""
+    import importlib.util
+    import importlib.metadata
+    import sys
+    py = "/opt/venvs/simct-b200/bin/python"
+    tests = [
+        "tests/modal/test_provenance_prepare.py",
+        "tests/modal/test_recover_soft_alternatives.py",
+        "tests/mp_opd/test_semimarkov.py",
+        "tests/mp_opd/test_energy_and_integration.py",
+    ]
+    probe = subprocess.run([py, "-c", "import importlib.util,importlib.metadata,sys,transformers; print(\"EXEC=\"+sys.executable); print(\"VERSION=\"+sys.version); print(\"PREFIX=\"+sys.prefix); print(\"PATH=\"+repr(sys.path)); print(\"TRANSFORMERS=\"+importlib.metadata.version(\"transformers\")); print(\"SPEC=\"+repr(importlib.util.find_spec(\"transformers\")))"], cwd=str(REMOTE_ROOT), text=True, capture_output=True)
+    test = subprocess.run([py, "-m", "pytest", "-q", *tests, "--disable-warnings", "-p", "no:cacheprovider"], cwd=str(REMOTE_ROOT), text=True, capture_output=True)
+    output = probe.stdout + probe.stderr + test.stdout + test.stderr
+    result = {"status": "passed" if probe.returncode == 0 and test.returncode == 0 else "blocked", "executable": py, "probe_returncode": probe.returncode, "pytest_returncode": test.returncode, "tests": tests, "output_tail": output[-12000:]}
+    print(json.dumps(result, sort_keys=True), flush=True)
+    return result
+
+
 @app.local_entrypoint()
 def main() -> None:
     commit = subprocess.check_output(["git", "-C", str(LOCAL_ROOT), "rev-parse", "HEAD"], text=True).strip()
@@ -342,6 +364,12 @@ def main() -> None:
         print("RESUME_CHECK_RESULT=" + json.dumps(result, sort_keys=True), flush=True)
         return
     prep = json.loads(Path("/mnt/d/dev/codex/research_vdt/remote_artifacts/p1-startup-prep-20260916/prep.receipt.json").read_text())
+    if gate == "runtime_tests":
+        result = runtime_test_receipt_remote.remote()
+        print("RUNTIME_TEST_RESULT=" + json.dumps(result, sort_keys=True), flush=True)
+        if result.get("status") != "passed":
+            raise SystemExit(1)
+        return
     if gate == "compare":
         result = compare_r5_remote.remote()
         print("COMPARE_R5_RESULT=" + json.dumps(result, sort_keys=True), flush=True)
