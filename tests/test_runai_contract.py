@@ -69,3 +69,53 @@ def test_soft_preflight_propagates_adam_moment_offload(tmp_path):
     config = json.loads((tmp_path / 'out/launch-config.json').read_text())
     assert config['options']['mp_opd_offload_adam_moments'] is True
     assert 'EFFECTIVE_MP_OPD_OFFLOAD_ADAM_MOMENTS=true' in result.stdout
+
+
+def test_full_soft_micro1_meta4_admission_preserves_production_contract(tmp_path):
+    for name in ('student', 'teacher'):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / 'config.json').write_text('{}')
+    data = tmp_path / 'prompts.parquet'
+    data.write_bytes(b'fixture')
+    energy = tmp_path / 'energy.pt'
+    meta = tmp_path / 'meta.parquet'
+    energy.write_bytes(b'energy')
+    meta.write_bytes(b'meta')
+    env = dict(
+        os.environ,
+        MP_PREFLIGHT_ONLY='1',
+        MP_STUDENT_PATH=str(tmp_path / 'student'),
+        MP_TEACHER_PATH=str(tmp_path / 'teacher'),
+        MP_DATASET_PATH=str(data),
+        MP_ENERGY_CHECKPOINT=str(energy),
+        MP_META_PATH=str(meta),
+        MP_ALTERNATING='1',
+        MP_ATTN_IMPLEMENTATION='eager',
+        MP_OFFLOAD_ADAM_MOMENTS='1',
+        MP_MICRO_TRAIN_BATCH_SIZE='1',
+        MP_META_MICRO_BATCH_SIZE='4',
+        MP_ALGORITHM='mp_opd',
+        MP_MAX_SPAN_LENGTH='2',
+        MP_FIXED_SPAN_LENGTH='2',
+        MP_ENERGY_EVERY='1',
+        MP_ENERGY_LR='0.001',
+        CUDA_VISIBLE_DEVICES='0',
+    )
+    result = subprocess.run(
+        [sys.executable, str(ROOT / 'experiments/runai/run_single_gpu.py'), 'soft', '312', str(tmp_path / 'out')],
+        env=env, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert 'ADMISSION_PASS: exact soft alternating micro1/meta4 full-run contract' in result.stdout
+    config = json.loads((tmp_path / 'out/launch-config.json').read_text())
+    options = config['options']
+    assert config['contract']['execution_updates'] == 312
+    assert config['contract']['scheduler_horizon'] == 312
+    assert options['train_batch_size'] == 64
+    assert options['micro_train_batch_size'] == 1
+    assert options['mp_opd_meta_batch_size'] == 16
+    assert options['mp_opd_meta_microbatch_size'] == 4
+    assert options['max_len'] == 4096
+    assert options['generate_max_len'] == 4096
+    assert options['attn_implementation'] == 'eager'
+    assert options['mp_opd_offload_adam_moments'] is True

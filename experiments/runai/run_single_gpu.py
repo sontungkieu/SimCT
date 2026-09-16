@@ -105,8 +105,28 @@ if opts['micro_train_batch_size'] not in (1,2,4,8,16,32,64):
     raise ValueError('Student microbatch must be a positive divisor of B64')
 if opts.get('mp_opd_meta_microbatch_size', 4) not in (1,2,4,8,16):
     raise ValueError('Meta microbatch must be a positive divisor of M16')
-if (opts['micro_train_batch_size'],opts.get('mp_opd_meta_microbatch_size',4)) not in ((4,4),(1,1),(2,4)) and not (0 < limit <= 30):
-    raise ValueError('Microbatch overrides are restricted to short diagnostics (1-30 updates)')
+micro_recipe = (opts['micro_train_batch_size'], opts.get('mp_opd_meta_microbatch_size', 4))
+exact_soft_alternating_full = (
+    mode == 'soft'
+    and limit in (0, 312)
+    and micro_recipe == (1, 4)
+    and opts.get('kd_algorithm') == 'mp_opd'
+    and opts.get('mp_opd_mode') == 'soft'
+    and opts.get('mp_opd_alternating') is True
+    and opts.get('mp_opd_offload_adam_moments') is True
+    and opts.get('attn_implementation') == 'eager'
+    and opts.get('train_batch_size') == 64
+    and opts.get('max_len') == 4096
+    and opts.get('rollout_batch_size') == 64
+    and opts.get('generate_max_len') == 4096
+    and opts.get('lr_scheduler_horizon_steps') == 312
+    and opts.get('exact_token_trajectory') is True
+    and opts.get('enforce_max_sequence_length') is True
+)
+if micro_recipe not in ((4,4),(1,1),(2,4)) and not (0 < limit <= 30) and not exact_soft_alternating_full:
+    raise ValueError('Microbatch overrides are restricted to short diagnostics or the exact soft alternating micro1/meta4 full-run contract')
+if exact_soft_alternating_full:
+    print('ADMISSION_PASS: exact soft alternating micro1/meta4 full-run contract', flush=True)
 
 if opts["kd_algorithm"] not in {"mp_opd", "span_ctkd", "xtoken"}:
     raise ValueError("MP_ALGORITHM must be mp_opd, span_ctkd or xtoken")
