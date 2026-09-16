@@ -9,7 +9,7 @@ q=importlib.util.module_from_spec(spec);spec.loader.exec_module(q)
 
 def test_six_runs_exact_order_and_budget():
     configs=q.configurations()
-    assert all(x['micro_B']==2 and x['micro_M']==4 for x in configs)
+    assert all(x['micro_B']==1 and x['micro_M']==4 for x in configs)
     assert [x['id'] for x in configs]==['ALT-main-s42','ALT-lowLR-s42','ALT-every4-s42',
         'ALT-main-s43','ALT-lowLR-s43','ALT-every4-s43']
     assert all(x['student_updates']==312 and x['B']==64 and x['M']==16 and x['student']=='full' for x in configs)
@@ -30,7 +30,7 @@ def test_run_command_forwards_pinned_microbatch_not_shell(tmp_path,monkeypatch):
     monkeypatch.setattr(q.subprocess,'run',run)
     monkeypatch.setattr(q,'write',lambda *args:None)
     q.run_command(tmp_path,q.configurations()[0],tmp_path/'run')
-    assert captured['MP_MICRO_TRAIN_BATCH_SIZE']=='2'
+    assert captured['MP_MICRO_TRAIN_BATCH_SIZE']=='1'
     assert captured['MP_META_MICRO_BATCH_SIZE']=='4'
     assert captured['MP_OFFLOAD_ADAM_MOMENTS']=='1'
 
