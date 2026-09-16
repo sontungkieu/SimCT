@@ -17,7 +17,7 @@ IMAGE_REF = "docker.io/codemaivanngu/simct-b200@sha256:33b2b55874b34447a13953289
 ASSET_VOLUME = "simct-qwen7b-gemma2-assets-20260916"
 RUN_VOLUME = "simct-qwen7b-gemma2-runs-20260916-main"
 APP_NAME = "simct-p1-hostmask-ab-20260916"
-RUN_TAG = "p1-hostmask-ab-20260916-r2"
+RUN_TAG = "p1-hostmask-ab-20260916-r3"
 
 
 image = (
