@@ -296,9 +296,40 @@ def compare_r5_remote() -> dict[str, object]:
     control = Path("/runs/p1-hostmask-ab-20260916-r5-control")
     candidate = Path("/runs/p1-hostmask-ab-20260916-r5-candidate")
     print(f"COMPARE_STAGE_START control_candidate_step2 pid={os.getpid()}", flush=True)
-    compare_checkpoint(control, candidate, expected_rollout_files=2)
-    print(f"COMPARE_STAGE_END exact_state_trajectory_step2 pid={os.getpid()}", flush=True)
-    return {"status": "exact_match", "step": 2, "rollout_files": 2,
+    state_status = "exact_match"
+    state_error = None
+    try:
+        compare_checkpoint(control, candidate, expected_rollout_files=2)
+    except ValueError as exc:
+        state_status = "mismatch"
+        state_error = str(exc)
+    # The existing comparator stops at the first state mismatch. Preserve that
+    # evidence, then independently compare the saved trajectory rows.
+    def trajectory(path):
+        rows = []
+        for line in path.read_text().splitlines():
+            row = json.loads(line)
+            info = row.pop("meta_info", {})
+            row["behavior_logprobs"] = {k: v for k, v in info.items() if "logprob" in k}
+            rows.append(row)
+        return rows
+    control_files = sorted((control / "checkpoint/rollout_data").glob("*.jsonl"))
+    candidate_files = sorted((candidate / "checkpoint/rollout_data").glob("*.jsonl"))
+    trajectory_status = "exact_match"
+    trajectory_error = None
+    if len(control_files) != 2 or [p.name for p in control_files] != [p.name for p in candidate_files]:
+        trajectory_status = "incomplete"
+        trajectory_error = f"control={len(control_files)} candidate={len(candidate_files)}"
+    else:
+        for left in control_files:
+            if trajectory(left) != trajectory(candidate / left.name):
+                trajectory_status = "mismatch"
+                trajectory_error = left.name
+                break
+    print(f"COMPARE_STAGE_END state={state_status} trajectory={trajectory_status} pid={os.getpid()}", flush=True)
+    return {"status": "completed", "step": 2, "rollout_files": 2,
+            "state_status": state_status, "state_error": state_error,
+            "trajectory_status": trajectory_status, "trajectory_error": trajectory_error,
             "control": str(control), "candidate": str(candidate)}
 
 
