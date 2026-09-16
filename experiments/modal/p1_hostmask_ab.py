@@ -192,6 +192,8 @@ def run_arm(arm: str, host_mask: bool, commit: str, receipt_sha256: str, *, cont
 def resume_check_remote() -> dict[str, object]:
     """CPU-only transactional validation of the pinned control step1."""
     import json
+    import sys
+    sys.path.insert(0, "/opt/repo")
     from kdflow.training_checkpoint import inspect
     root = Path("/runs/p1-hostmask-ab-20260916-r3-control/checkpoints")
     latest = json.loads((root / "latest.json").read_text())
