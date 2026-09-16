@@ -342,6 +342,10 @@ def main() -> None:
         print("RESUME_CHECK_RESULT=" + json.dumps(result, sort_keys=True), flush=True)
         return
     prep = json.loads(Path("/mnt/d/dev/codex/research_vdt/remote_artifacts/p1-startup-prep-20260916/prep.receipt.json").read_text())
+    if gate == "compare":
+        result = compare_r5_remote.remote()
+        print("COMPARE_R5_RESULT=" + json.dumps(result, sort_keys=True), flush=True)
+        return
     if gate == "resume_production":
         if prep.get("status") != "ready":
             raise SystemExit("P1_PREP_NOT_READY")
