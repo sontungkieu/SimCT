@@ -15,9 +15,11 @@ def test_fit_saves_existing_progress_before_next_rollout(tmp_path, monkeypatch):
     tree = ast.parse((root/'kdflow/trainer/on_policy_kd_trainer.py').read_text())
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'OnPolicyKDTrainer')
     method = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == 'fit')
+    helpers = [n for n in tree.body if isinstance(n, ast.FunctionDef)
+               and n.name in {'progress_metrics', 'format_eta'}]
     namespace = dict(time=time, os=os, json=json, timedelta=timedelta,
                      stop_before_rollout=stop_before_rollout, torch=NS(manual_seed=lambda x:None,Generator=lambda: NS(manual_seed=lambda x:None)), ray=NS(get=lambda x:x))
-    exec(compile(ast.Module(body=[method], type_ignores=[]), '<real trainer fit>', 'exec'), namespace)
+    exec(compile(ast.Module(body=helpers + [method], type_ignores=[]), '<real trainer fit>', 'exec'), namespace)
     saved=[]
     def save_model(path):
         Path(path).mkdir(parents=True, exist_ok=True)
@@ -41,3 +43,11 @@ def test_fit_saves_existing_progress_before_next_rollout(tmp_path, monkeypatch):
     assert summary['status']=='stopped'
     assert summary['stop_reason']=='deadline_checkpoint_reserve'
     assert summary['optimizer_updates']==7
+    assert summary['session_start_optimizer_updates'] == 7
+    assert summary['session_completed_updates'] == 0
+    assert summary['scientific_total_updates'] == 312
+    assert summary['diagnostic_stop_target'] == 50
+    assert summary['campaign_progress'] == 7 / 312
+    assert summary['diagnostic_progress'] == 7 / 50
+    assert summary['eta_campaign_seconds'] is None
+    assert summary['eta_diagnostic_seconds'] is None

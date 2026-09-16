@@ -25,6 +25,44 @@ from kdflow.utils.utils import zero_pad_sequences
 
 logger = init_logger(__name__)
 
+
+def progress_metrics(*, current_updates, session_start_updates, session_elapsed_seconds,
+                     campaign_target_updates, diagnostic_target_updates):
+    """Return cumulative and session-scoped progress/ETA values."""
+    current = max(0, int(current_updates))
+    session_start = max(0, int(session_start_updates))
+    campaign_target = max(0, int(campaign_target_updates))
+    diagnostic_target = max(0, int(diagnostic_target_updates))
+    session_completed = max(0, current - session_start)
+    elapsed = max(0.0, float(session_elapsed_seconds))
+    def ratio(target):
+        return min(1.0, max(0.0, current / target)) if target else 0.0
+    def eta(target):
+        if target <= 0 or current >= target:
+            return 0.0
+        if session_completed <= 0 or elapsed <= 0:
+            return None
+        return (target - current) * elapsed / session_completed
+    return {
+        "current_optimizer_updates": current,
+        "session_start_optimizer_updates": session_start,
+        "session_completed_updates": session_completed,
+        "session_fit_seconds": elapsed,
+        "campaign_target_updates": campaign_target,
+        "diagnostic_stop_target": diagnostic_target,
+        "scientific_total_updates": campaign_target,
+        "campaign_progress": ratio(campaign_target),
+        "diagnostic_progress": ratio(diagnostic_target),
+        "scientific_progress": ratio(campaign_target),
+        "eta_campaign_seconds": eta(campaign_target),
+        "eta_diagnostic_seconds": eta(diagnostic_target),
+    }
+
+
+def format_eta(seconds):
+    return "unknown" if seconds is None else str(timedelta(seconds=int(max(0.0, seconds)))).split(".")[0]
+
+
 class OnPolicyKDTrainer:
     """
     Ray-based trainer for on-policy knowledge distillation.
@@ -304,7 +342,11 @@ class OnPolicyKDTrainer:
             from kdflow.training_checkpoint import restore_rng
             restore_rng(restored_rng)
         
-        self.start_time = time.time()
+        self.session_start_optimizer_updates = int(self.completed_optimizer_updates)
+        self.session_start_time = time.time()
+        self.start_time = self.session_start_time
+        self.campaign_target_updates = int(self.max_rollout_iters)
+        self.diagnostic_stop_target = int(expected_updates)
         self._start_resource_logger()
         num_micro_batches = self.args.train.train_batch_size // self.args.train.micro_train_batch_size
         
@@ -469,7 +511,12 @@ class OnPolicyKDTrainer:
             if self.stop_reason or self.completed_optimizer_updates >= expected_updates:
                 break
 
-        total_time = time.time() - self.start_time
+        total_time = time.time() - self.session_start_time
+        final_progress = progress_metrics(current_updates=self.completed_optimizer_updates,
+            session_start_updates=self.session_start_optimizer_updates,
+            session_elapsed_seconds=total_time,
+            campaign_target_updates=self.campaign_target_updates,
+            diagnostic_target_updates=self.diagnostic_stop_target)
         self.strategy.log(f"Training done, totally cost {str(timedelta(seconds=total_time)).split('.')[0]}")
 
         if not self.stop_reason and self.completed_optimizer_updates != expected_updates:
@@ -488,6 +535,7 @@ class OnPolicyKDTrainer:
                     "optimizer_updates": self.completed_optimizer_updates,
                     "energy_updates": self.completed_energy_updates,
                     "total_time_seconds": total_time,
+                    **final_progress,
                     "kd_algorithm": self.args.kd.kd_algorithm,
                     "student": self.args.model.student_name_or_path,
                     "teacher": self.args.model.teacher_name_or_path,
@@ -508,6 +556,8 @@ class OnPolicyKDTrainer:
             self._wandb.run.summary["stop_reason"] = self.stop_reason or ("diagnostic_limit_reached" if diagnostic_limit else "completed")
             self._wandb.run.summary["total_time_seconds"] = total_time
             self._wandb.run.summary["resource_samples"] = self._resource_sample_index
+            for key, value in final_progress.items():
+                self._wandb.run.summary[key] = value
             self._wandb.finish()
         if self._tensorboard is not None:
             self._tensorboard.log(
@@ -517,6 +567,8 @@ class OnPolicyKDTrainer:
                     "summary/training_completed": int(not bool(self.stop_reason)),
                     "summary/total_time_seconds": total_time,
                     "summary/resource_samples": self._resource_sample_index,
+                    **{f"summary/{key}": (0.0 if value is None else value)
+                       for key, value in final_progress.items()},
                 },
                 step=self.global_step,
             )
@@ -831,21 +883,36 @@ class OnPolicyKDTrainer:
 
     def logging(self):
         if self.global_step % self.args.log.logging_steps == 0:
-            progress = self.global_step / self.num_rollout_iters_per_epoch / self.epochs
-            eta = int(time.time() - self.start_time) * (1 - progress) / progress
-            progress_str = "epoch [{current_epoch}/{total_epoch}], " \
-                "step [{current_step}/{total_step}], " \
-                "train_progress [{progress:.2f}%], " \
-                "Elapsed: {elapsed}, " \
-                "ETA: {eta}, ".format(
-                current_epoch=self.current_epoch + 1, 
-                total_epoch=self.epochs, 
-                current_step=self.global_step, 
-                total_step=self.num_rollout_iters_per_epoch * self.epochs, 
-                progress=progress * 100,
-                elapsed=str(timedelta(seconds=(time.time() - self.start_time))).split(".")[0],
-                eta=str(timedelta(seconds=eta)).split(".")[0]
-            )
+            now = time.time()
+            session_start = getattr(self, "session_start_optimizer_updates", 0)
+            current_updates = getattr(self, "completed_optimizer_updates", 0)
+            session_start_time = getattr(self, "session_start_time", getattr(self, "start_time", now))
+            fallback_target = getattr(self, "max_rollout_iters", self.num_rollout_iters_per_epoch * self.epochs)
+            campaign_target = getattr(self, "campaign_target_updates", fallback_target)
+            diagnostic_target = getattr(self, "diagnostic_stop_target", campaign_target)
+            metrics = progress_metrics(current_updates=current_updates,
+                session_start_updates=session_start,
+                session_elapsed_seconds=now - session_start_time,
+                campaign_target_updates=campaign_target,
+                diagnostic_target_updates=diagnostic_target)
+            progress_str = ("epoch [{current_epoch}/{total_epoch}], "
+                "step [{current_step}/{total_step}], "
+                "optimizer_updates [{updates}/{campaign_target}], "
+                "train_progress [{campaign_progress:.2f}%], "
+                "campaign_progress [{campaign_progress:.2f}%], "
+                "diagnostic_progress [{diagnostic_progress:.2f}%], "
+                "Elapsed: {elapsed}, ETA: {eta_campaign}, "
+                "ETA_campaign: {eta_campaign}, ETA_diagnostic: {eta_diagnostic}, ").format(
+                current_epoch=self.current_epoch + 1, total_epoch=self.epochs,
+                current_step=self.global_step,
+                total_step=self.num_rollout_iters_per_epoch * self.epochs,
+                updates=metrics["current_optimizer_updates"],
+                campaign_target=metrics["campaign_target_updates"],
+                campaign_progress=metrics["campaign_progress"] * 100,
+                diagnostic_progress=metrics["diagnostic_progress"] * 100,
+                elapsed=str(timedelta(seconds=int(metrics["session_fit_seconds"]))).split(".")[0],
+                eta_campaign=format_eta(metrics["eta_campaign_seconds"]),
+                eta_diagnostic=format_eta(metrics["eta_diagnostic_seconds"]))
             active_log_state = {}
             for k, value in self.log_state.items():
                 if isinstance(value, list):
@@ -860,18 +927,17 @@ class OnPolicyKDTrainer:
                     log_info.append(f"{k}: {value:.9e}")
                 else:
                     log_info.append(f"{k}: {value:.6f}")
-            # Append average phase times
-            log_str = ", ".join(log_info)
-            log_str = progress_str + log_str
-            self.strategy.log(log_str)
-
+            self.strategy.log(progress_str + ", ".join(log_info))
             if self._wandb is not None or self._tensorboard is not None:
                 logs = {"train/global_step": self.global_step}
+                for key, value in metrics.items():
+                    if value is not None:
+                        logs[f"train/{key}"] = value
                 for k, value in active_log_state.items():
                     logs[f"train/{k}"] = value
             if self._wandb is not None:
                 self._wandb.log(logs)
             if self._tensorboard is not None:
                 self._tensorboard.log(logs, step=self.global_step)
-
             self.log_state.clear()
+
