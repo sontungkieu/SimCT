@@ -10,6 +10,7 @@ PREP_VOLUME = "simct-p1-startup-prep-20260916"
 APP_NAME = "simct-p1-startup-prep-20260916"
 
 image = (modal.Image.from_registry(IMAGE_REF).entrypoint([])
+    .add_local_dir(str(LOCAL_ROOT / "kdflow"), "/opt/repo/kdflow", copy=True)
     .add_local_dir(str(LOCAL_ROOT / "experiments/modal"), "/opt/repo/experiments/modal", copy=True))
 app = modal.App(APP_NAME)
 assets = modal.Volume.from_name(ASSET_VOLUME, create_if_missing=False)

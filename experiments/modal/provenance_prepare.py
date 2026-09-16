@@ -47,7 +47,7 @@ def _view_digest(value):
 def prepare(*, roots: dict, source_root: str | None = None,
             source_commit: str | None = None, snapshot_id: str | None = None,
             progress=None, interpreter: str | None = None):
-    started = time.time(); root_map = {str(k): str(Path(v).resolve()) for k, v in roots.items()}
+    started = time.time(); root_map = {str(k): str(v) for k, v in roots.items()}
     launcher_models = {}; pipeline_inputs = {}; counts = {"files": 0, "bytes": 0}
     for role, raw in root_map.items():
         entries = _entries(Path(raw), model_view=role in {"student", "teacher"},
