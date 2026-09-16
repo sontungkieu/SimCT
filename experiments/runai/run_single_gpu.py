@@ -108,7 +108,7 @@ if opts.get('mp_opd_meta_microbatch_size', 4) not in (1,2,4,8,16):
 micro_recipe = (opts['micro_train_batch_size'], opts.get('mp_opd_meta_microbatch_size', 4))
 exact_soft_alternating_full = (
     mode == 'soft'
-    and limit in (0, 312)
+    and limit in (0, opts.get('lr_scheduler_horizon_steps'))
     and micro_recipe == (1, 4)
     and opts.get('kd_algorithm') == 'mp_opd'
     and opts.get('mp_opd_mode') == 'soft'
