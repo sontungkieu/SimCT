@@ -110,6 +110,8 @@ def prepared_entries(receipt, role, raw_path):
     if role in {"student", "teacher"}:
         values = receipt.get("launcher_models", {}).get(role)
     else:
-        values = receipt.get("pipeline_inputs", {}).get(str(Path(raw_path).resolve()))
+        values = receipt.get("pipeline_inputs", {}).get(str(raw_path))
+        if values is None:
+            values = receipt.get("pipeline_inputs", {}).get(str(Path(raw_path).resolve()))
     if values is None: raise PreparationError(f"missing provenance coverage for {role or raw_path}")
     return values
