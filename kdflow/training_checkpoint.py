@@ -36,8 +36,20 @@ def pipeline_contract(args, dataset_size):
     for key in ("load_checkpoint", "pause_after_updates", "save_path", "ckpt_path", "local_rank"):
         config["train"].pop(key, None)
     config.pop("log", None)
+    prepared = None
+    receipt_path = os.environ.get("MP_PREPARED_RECEIPT")
+    if receipt_path:
+        from experiments.modal.provenance_prepare import load_receipt, prepared_entries, PreparationError
+        try:
+            prepared = load_receipt(receipt_path,
+                expected_sha256=os.environ.get("MP_PREPARED_RECEIPT_SHA256") or None,
+                expected_source_commit=os.environ.get("MP_SOURCE_COMMIT") or None,
+                expected_snapshot_id=os.environ.get("MP_SNAPSHOT_ID") or None, verify_files=False)
+        except PreparationError as exc:
+            raise ValueError("Prepared provenance cache miss; refusing pipeline rehash: " + str(exc)) from exc
     source = Path(__file__).parent
-    files = {str(p.relative_to(source)): digest(p) for p in sorted(source.rglob("*.py"))}
+    files = ({str(p.relative_to(source)): digest(p) for p in sorted(source.rglob("*.py"))}
+             if prepared is None else prepared["source"])
     paths = [args.data.train_dataset_path, args.model.student_name_or_path,
              args.model.teacher_name_or_path]
     for name in ("mp_opd_energy_checkpoint", "mp_opd_meta_path"):
@@ -49,6 +61,10 @@ def pipeline_contract(args, dataset_size):
         path = Path(raw)
         if not path.exists():
             raise ValueError("Reliable resume requires pinned local inputs: " + raw)
+        if prepared is not None:
+            entries = prepared_entries(prepared, "dataset" if raw == args.data.train_dataset_path else ("student" if raw == args.model.student_name_or_path else ("teacher" if raw == args.model.teacher_name_or_path else "energy")), raw)
+            data[raw] = {key: value["sha256"] for key, value in entries.items()}
+            continue
         selected = [path] if path.is_file() else sorted(p for p in path.rglob("*") if p.is_file())
         if not selected:
             raise ValueError("Empty provenance input: " + raw)

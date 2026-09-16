@@ -155,14 +155,27 @@ def file_hash(path):
             h.update(chunk)
     return h.hexdigest()
 
+prepared_receipt = None
+receipt_path = os.environ.get("MP_PREPARED_RECEIPT")
+if receipt_path:
+    from experiments.modal.provenance_prepare import load_receipt, prepared_entries, PreparationError
+    try:
+        prepared_receipt = load_receipt(receipt_path, expected_sha256=os.environ.get("MP_PREPARED_RECEIPT_SHA256") or None, expected_source_commit=os.environ.get("MP_SOURCE_COMMIT") or None, expected_snapshot_id=os.environ.get("MP_SNAPSHOT_ID") or None, verify_files=False)
+    except PreparationError as exc:
+        raise ValueError("Prepared provenance cache miss; refusing GPU rehash: " + str(exc)) from exc
+    print("PREPARED_HASH_REUSE=validated", flush=True)
+
 model_manifest = {}
 for role in ("student", "teacher"):
     path = Path(opts[role + "_name_or_path"])
     print(f"Hashing {role} model files for provenance", flush=True)
-    model_manifest[role] = {
-        str(p.relative_to(path)): file_hash(p) for p in sorted(path.rglob("*"))
-        if p.is_file() and p.suffix in {".json", ".safetensors", ".bin", ".model", ".txt", ".tiktoken"}
-    }
+    if prepared_receipt is not None:
+        model_manifest[role] = {k: v["sha256"] for k, v in prepared_entries(prepared_receipt, role, path).items()}
+    else:
+        model_manifest[role] = {
+            str(p.relative_to(path)): file_hash(p) for p in sorted(path.rglob("*"))
+            if p.is_file() and p.suffix in {".json", ".safetensors", ".bin", ".model", ".txt", ".tiktoken"}
+        }
     if not model_manifest[role]:
         raise ValueError("model directory contains no identifiable model files")
 versions = {}
@@ -181,12 +194,12 @@ manifest = {
     "source_dirty": os.environ.get("MP_SOURCE_DIRTY"),
     "cuda_visible_devices": os.environ["CUDA_VISIBLE_DEVICES"],
     "variant": mode,
-    "energy_sha256": file_hash(energy_path) if mode == "soft" else None,
+    "energy_sha256": (prepared_entries(prepared_receipt, "energy", energy_path)[energy_path.name]["sha256"] if prepared_receipt is not None else file_hash(energy_path)) if mode == "soft" else None,
     "partition_dp_dtype": "float64" if mode == "soft" else None,
     "cooperative_stop_at": os.environ.get("MP_TRAIN_STOP_AT"),
     "checkpoint_reserve_seconds": os.environ.get("MP_CHECKPOINT_RESERVE_SECONDS", "300"),
     "models_sha256": model_manifest,
-    "dataset_sha256": file_hash(Path(opts["train_dataset_path"])),
+    "dataset_sha256": (prepared_entries(prepared_receipt, "dataset", opts["train_dataset_path"])[Path(opts["train_dataset_path"]).name]["sha256"] if prepared_receipt is not None else file_hash(Path(opts["train_dataset_path"]))),
     "runtime_versions": versions,
     "contract": {
         "schema": "mp-runai-v2", "algorithm": opts["kd_algorithm"],
