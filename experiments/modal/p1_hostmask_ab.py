@@ -286,6 +286,22 @@ def resume_control_from_step1(commit: str, receipt_sha256: str) -> dict[str, obj
     return result
 
 
+@app.function(image=image, cpu=16, memory=65536, timeout=1800, retries=0,
+              volumes={"/runs": runs})
+def compare_r5_remote() -> dict[str, object]:
+    """Run the existing exact comparator on the two-update diagnostic artifacts."""
+    import sys
+    sys.path.insert(0, "/opt/repo")
+    from experiments.runai.queue_full_alternating import compare_checkpoint
+    control = Path("/runs/p1-hostmask-ab-20260916-r5-control")
+    candidate = Path("/runs/p1-hostmask-ab-20260916-r5-candidate")
+    print(f"COMPARE_STAGE_START control_candidate_step2 pid={os.getpid()}", flush=True)
+    compare_checkpoint(control, candidate, expected_rollout_files=2)
+    print(f"COMPARE_STAGE_END exact_state_trajectory_step2 pid={os.getpid()}", flush=True)
+    return {"status": "exact_match", "step": 2, "rollout_files": 2,
+            "control": str(control), "candidate": str(candidate)}
+
+
 @app.local_entrypoint()
 def main() -> None:
     commit = subprocess.check_output(["git", "-C", str(LOCAL_ROOT), "rev-parse", "HEAD"], text=True).strip()

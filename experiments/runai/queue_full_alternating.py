@@ -175,7 +175,7 @@ def run_command(case,config,out,limit=312,pause=0,resume=False):
     if result.returncode:raise subprocess.CalledProcessError(result.returncode,result.args)
 
 
-def compare_checkpoint(a,b):
+def compare_checkpoint(a,b, expected_rollout_files=4):
     import numpy as np
     import torch
     def equal(x,y,path):
@@ -203,7 +203,7 @@ def compare_checkpoint(a,b):
     equal(cx,cy,'driver')
     # Tokens, behavior logprobs and IDs must replay as well, not just weights.
     files=sorted((a/'checkpoint/rollout_data').glob('*.jsonl'))
-    if len(files)!=4 or {p.name for p in files}!={p.name for p in (b/'checkpoint/rollout_data').glob('*.jsonl')}:
+    if len(files)!=expected_rollout_files or {p.name for p in files}!={p.name for p in (b/'checkpoint/rollout_data').glob('*.jsonl')}:
         raise ValueError('Incomplete qualification rollout evidence')
     def trajectory(path):
         result=[]
