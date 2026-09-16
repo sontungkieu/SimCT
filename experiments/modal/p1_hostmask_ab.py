@@ -195,7 +195,7 @@ def resume_check_remote() -> dict[str, object]:
     import sys
     sys.path.insert(0, "/opt/repo")
     from kdflow.training_checkpoint import inspect
-    root = Path("/runs/p1-hostmask-ab-20260916-r3-control/checkpoints")
+    root = Path("/runs/p1-hostmask-ab-20260916-r5-control/checkpoints")
     latest = json.loads((root / "latest.json").read_text())
     manifest_path = root / latest["directory"] / "manifest.json"
     manifest = json.loads(manifest_path.read_text())
