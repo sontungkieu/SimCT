@@ -5,6 +5,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import traceback
 import time
@@ -206,6 +207,85 @@ def resume_check_remote() -> dict[str, object]:
             "manifest_sha256": sha256(manifest_path), "directory": str(checked)}
 
 
+@app.function(
+    image=image, gpu="B200", cpu=12, memory=65536, ephemeral_disk=524288,
+    timeout=3600, retries=0, max_containers=1, single_use_containers=True,
+    volumes={"/assets": assets, "/runs": runs, "/prep": prepvol},
+)
+def resume_control_from_step1(commit: str, receipt_sha256: str) -> dict[str, object]:
+    """Resume control from the immutable r5 step1 transaction into a new root."""
+    source = Path("/runs/p1-hostmask-ab-20260916-r5-control")
+    run_dir = Path("/runs/p1-hostmask-ab-20260916-r5-resume-control")
+    result: dict[str, object] = {
+        "run_id": "simct-p1-control-resume-step1-to-step2-20260916",
+        "arm": "control", "host_mask": False, "source_commit": commit,
+        "source_transaction": str(source / "checkpoints"),
+        "status": "starting", "target_updates": 2,
+    }
+    try:
+        if run_dir.exists():
+            raise RuntimeError(f"resume output already exists: {run_dir}")
+        source_dirs = sorted((source / "checkpoints").glob("step00000001-*"))
+        if len(source_dirs) != 1:
+            raise RuntimeError(f"expected one r5 step1 transaction, found {len(source_dirs)}")
+        source_step = source_dirs[0]
+        destination = run_dir / "checkpoints" / source_step.name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source_step, destination)
+        atomic_json(run_dir / "checkpoints" / "latest.json", {
+            "directory": destination.name,
+            "manifest_sha256": sha256(destination / "manifest.json"),
+        })
+        previous = json.loads((source / "launch-config.json").read_text())
+        options = previous.get("options", {})
+        for key in ("save_path", "ckpt_path"):
+            if key in options:
+                options[key] = str(options[key]).replace(
+                    "p1-hostmask-ab-20260916-r5-control",
+                    "p1-hostmask-ab-20260916-r5-resume-control")
+        atomic_json(run_dir / "launch-config.json", previous)
+        import torch
+        driver = torch.load(destination / "driver.pt", map_location="cpu", weights_only=False)
+        result["start_optimizer_updates"] = int(driver["optimizer_updates"])
+        result["start_energy_updates"] = int(driver["energy_updates"])
+        cmd = ["bash", "/opt/repo/experiments/runai/python-b200-host.sh",
+               "/opt/repo/experiments/runai/run_single_gpu.py", "soft", "2", str(run_dir)]
+        env = environment("control", False, "/runs", commit)
+        env.update({
+            "MP_RESUME": "1", "MP_PAUSE_AFTER_UPDATES": "0",
+            "MP_PREPARED_RECEIPT_SHA256": receipt_sha256,
+        })
+        log_path = Path("/runs/r5-resume-control.phase.log")
+        with log_path.open("w") as out:
+            out.write(f"RESUME_STAGE_START child_spawn pid=pending source_step={source_step.name}\n")
+            out.flush()
+            rc = run_logged(cmd, cwd=str(REMOTE_ROOT), env=env, log=out,
+                            timeout=1500, stage="resume_production")
+        result["resume_exit"] = rc
+        summary = run_dir / "checkpoint" / "run-summary.json"
+        result["summary_present"] = summary.is_file()
+        if rc != 0 or not summary.is_file():
+            raise RuntimeError(f"resume failed rc={rc} summary={summary.is_file()}")
+        final = json.loads(summary.read_text())
+        result["final_summary"] = final
+        result["actual_update_delta"] = int(final.get("optimizer_updates", -1)) - result["start_optimizer_updates"]
+        if (result["start_optimizer_updates"] != 1
+                or final.get("optimizer_updates") != 2
+                or result["actual_update_delta"] != 1
+                or final.get("rollout_iterations") != 1):
+            raise RuntimeError(f"resume did not execute exactly one update: {final}")
+        result["status"] = "completed"
+        result["timing_log"] = str(log_path)
+    except BaseException as ex:
+        result.update(status="stopped", error_type=type(ex).__name__,
+                      error=str(ex), traceback="".join(traceback.format_exception_only(type(ex), ex)).strip())
+    finally:
+        result["finished_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+        atomic_json(Path("/runs/p1-hostmask-ab-20260916-r5-resume-control.result.json"), result)
+        runs.commit()
+    return result
+
+
 @app.local_entrypoint()
 def main() -> None:
     commit = subprocess.check_output(["git", "-C", str(LOCAL_ROOT), "rev-parse", "HEAD"], text=True).strip()
@@ -215,6 +295,14 @@ def main() -> None:
         print("RESUME_CHECK_RESULT=" + json.dumps(result, sort_keys=True), flush=True)
         return
     prep = json.loads(Path("/mnt/d/dev/codex/research_vdt/remote_artifacts/p1-startup-prep-20260916/prep.receipt.json").read_text())
+    if gate == "resume_production":
+        if prep.get("status") != "ready":
+            raise SystemExit("P1_PREP_NOT_READY")
+        result = resume_control_from_step1.remote(prep["source_commit"], prep["receipt_sha256"])
+        print("RESUME_PRODUCTION_RESULT=" + json.dumps(result, sort_keys=True), flush=True)
+        if result.get("status") != "completed":
+            raise SystemExit(1)
+        return
     if prep.get("status") != "ready" or prep.get("source_commit") != commit:
         raise SystemExit("P1_PREP_NOT_READY_OR_SOURCE_MISMATCH")
     receipt_sha256 = prep["receipt_sha256"]
