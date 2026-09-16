@@ -284,7 +284,7 @@ def resume_control_from_step1(commit: str, receipt_sha256: str) -> dict[str, obj
         if (result["start_optimizer_updates"] != 1
                 or final.get("optimizer_updates") != 2
                 or result["actual_update_delta"] != 1
-                or final.get("rollout_iterations") != 1):
+                or final.get("session_completed_updates") != 1):
             raise RuntimeError(f"resume did not execute exactly one update: {final}")
         result["status"] = "completed"
         result["timing_log"] = str(log_path)
@@ -425,5 +425,63 @@ def resume_preflight_remote() -> dict[str, object]:
     result = {"status": "passed" if p.returncode == 0 else "blocked",
               "returncode": p.returncode, "executable": "/opt/venvs/simct-b200/bin/python",
               "output_tail": output[-16000:]}
+    print(json.dumps(result, sort_keys=True), flush=True)
+    return result
+
+
+
+@app.function(image=image, cpu=16, memory=65536, timeout=1800, retries=0,
+              volumes={"/runs": runs})
+def compare_resume_r5_remote() -> dict[str, object]:
+    """Compare resumed control step2 with continuous control step2 separately."""
+    import numpy as np
+    import torch
+    from kdflow.training_checkpoint import inspect
+    a = Path("/runs/p1-hostmask-ab-20260916-r5-control")
+    b = Path("/runs/p1-hostmask-ab-20260916-r5-resume-control-attempt3")
+    def load(root):
+        pointer = json.loads((root / "checkpoints/latest.json").read_text())
+        folder = root / "checkpoints" / pointer["directory"]
+        manifest = json.loads((folder / "manifest.json").read_text())
+        folder, manifest = inspect(root / "checkpoints", manifest["contract"], 1)
+        return torch.load(folder / "rank0.pt", map_location="cpu", weights_only=False), torch.load(folder / "driver.pt", map_location="cpu", weights_only=False), sha256(folder / "manifest.json")
+    left, ldriver, lmanifest = load(a)
+    right, rdriver, rmanifest = load(b)
+    def equal(x, y, path):
+        if torch.is_tensor(x):
+            if not torch.equal(x, y): raise ValueError(path)
+        elif isinstance(x, np.ndarray):
+            if not np.array_equal(x, y): raise ValueError(path)
+        elif isinstance(x, dict):
+            if x.keys() != y.keys(): raise ValueError(path)
+            for k in x: equal(x[k], y[k], path + "/" + str(k))
+        elif isinstance(x, (list, tuple)):
+            if len(x) != len(y): raise ValueError(path)
+            for i, (u, v) in enumerate(zip(x, y)): equal(u, v, path + "/" + str(i))
+        elif x != y: raise ValueError(path)
+    for d in (ldriver, rdriver): d.pop("resource_sample_index", None)
+    state_status, state_error = "exact_match", None
+    try:
+        equal(left, right, "actor")
+        equal(ldriver, rdriver, "driver")
+    except ValueError as exc:
+        state_status, state_error = "mismatch", str(exc)
+    def trajectory(path):
+        rows=[]
+        for line in path.read_text().splitlines():
+            row=json.loads(line); info=row.pop("meta_info", {})
+            row["behavior_logprobs"]={k:v for k,v in info.items() if "logprob" in k}; rows.append(row)
+        return rows
+    common = a / "checkpoint/rollout_data/2.jsonl"
+    resumed = b / "checkpoint/rollout_data/2.jsonl"
+    trajectory_status, trajectory_error = "exact_match", None
+    try:
+        if trajectory(common) != trajectory(resumed): raise ValueError("2.jsonl")
+    except (ValueError, FileNotFoundError) as exc:
+        trajectory_status, trajectory_error = "mismatch", str(exc)
+    result={"status":"completed", "state_status":state_status, "state_error":state_error,
+            "trajectory_status":trajectory_status, "trajectory_error":trajectory_error,
+            "continuous_manifest_sha256":lmanifest, "resumed_manifest_sha256":rmanifest,
+            "continuous":str(a), "resumed":str(b)}
     print(json.dumps(result, sort_keys=True), flush=True)
     return result
