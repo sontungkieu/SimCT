@@ -18,9 +18,8 @@ ASSET_VOLUME = "simct-qwen7b-gemma2-assets-20260916"
 RUN_VOLUME = "simct-qwen7b-gemma2-runs-20260916-main"
 APP_NAME = "simct-p1-hostmask-ab-20260916"
 
-source_commit = subprocess.check_output(
-    ["git", "-C", str(LOCAL_ROOT), "rev-parse", "HEAD"], text=True
-).strip()
+# Resolved on the Modal client before deployment; the container has no git checkout.
+source_commit = "4e863d5474790b1944cef9c3bb880a99ac40f33b"
 
 image = (
     modal.Image.from_registry(IMAGE_REF)
