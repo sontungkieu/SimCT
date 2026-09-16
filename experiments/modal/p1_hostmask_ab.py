@@ -26,12 +26,15 @@ image = (
     .add_local_dir(str(LOCAL_ROOT / "experiments/runai"), "/opt/repo/experiments/runai", copy=True)
     .add_local_file(str(LOCAL_ROOT / "experiments/modal/mp_opd_phi_gemma_50.py"),
                     "/opt/repo/experiments/modal/mp_opd_phi_gemma_50.py", copy=True)
+    .add_local_file(str(LOCAL_ROOT / "experiments/modal/provenance_prepare.py"),
+                    "/opt/repo/experiments/modal/provenance_prepare.py", copy=True)
     .add_local_dir(str(LOCAL_ROOT / "experiments/modal/vendor"),
                    "/opt/repo/experiments/modal/vendor", copy=True)
 )
 app = modal.App(APP_NAME)
 assets = modal.Volume.from_name(ASSET_VOLUME, create_if_missing=False)
 runs = modal.Volume.from_name(RUN_VOLUME, create_if_missing=False)
+prepvol = modal.Volume.from_name("simct-p1-startup-prep-20260916", create_if_missing=False)
 
 
 def sha256(path: Path) -> str:
@@ -75,6 +78,9 @@ def environment(arm: str, host_mask: bool, run_root: str, commit: str) -> dict[s
         "MP_QUALIFICATION_POLICY": "p1-matched-ab", "MP_QUALIFICATION_STATUS": "diagnostic",
         "MP_ENERGY_LR": "0.001", "MP_ENERGY_EVERY": "1", "MP_RUN_ROOT": run_root,
         "MP_OPD_HOST_MASK": "1" if host_mask else "0", "MP_OPD_TIMING": "1",
+        "MP_PREPARED_RECEIPT": "/prep/startup-provenance.json",
+        "MP_PREPARED_RECEIPT_SHA256": os.environ.get("MP_PREPARED_RECEIPT_SHA256", ""),
+        "MP_SNAPSHOT_ID": "assets-20260916",
         "WANDB_MODE": "offline", "WANDB_DISABLED": "true",
     })
     return env
@@ -83,9 +89,9 @@ def environment(arm: str, host_mask: bool, run_root: str, commit: str) -> dict[s
 @app.function(
     image=image, gpu="B200", cpu=12, memory=65536, ephemeral_disk=524288,
     timeout=3600, retries=0, max_containers=1, single_use_containers=True,
-    volumes={"/assets": assets, "/runs": runs},
+    volumes={"/assets": assets, "/runs": runs, "/prep": prepvol},
 )
-def run_arm(arm: str, host_mask: bool, commit: str) -> dict[str, object]:
+def run_arm(arm: str, host_mask: bool, commit: str, receipt_sha256: str) -> dict[str, object]:
     run_root = "/runs"
     run_dir = Path(run_root) / f"p1-hostmask-{arm}-20260916"
     result: dict[str, object] = {
@@ -106,6 +112,7 @@ def run_arm(arm: str, host_mask: bool, commit: str) -> dict[str, object]:
         cmd = ["bash", "/opt/repo/experiments/runai/python-b200-host.sh",
                "/opt/repo/experiments/runai/run_single_gpu.py", "soft", "2", str(run_dir)]
         env = environment(arm, host_mask, run_root, commit)
+        env["MP_PREPARED_RECEIPT_SHA256"] = receipt_sha256
         env["MP_PAUSE_AFTER_UPDATES"] = "1"
         p1log = run_dir.parent / f"{arm}.phase1.log"
         with p1log.open("w") as out:
@@ -142,9 +149,13 @@ def run_arm(arm: str, host_mask: bool, commit: str) -> dict[str, object]:
 @app.local_entrypoint()
 def main() -> None:
     commit = subprocess.check_output(["git", "-C", str(LOCAL_ROOT), "rev-parse", "HEAD"], text=True).strip()
+    prep = json.loads(Path("/mnt/d/dev/codex/research_vdt/remote_artifacts/p1-startup-prep-20260916/prep.receipt.json").read_text())
+    if prep.get("status") != "ready" or prep.get("source_commit") != commit:
+        raise SystemExit("P1_PREP_NOT_READY_OR_SOURCE_MISMATCH")
+    receipt_sha256 = prep["receipt_sha256"]
     for arm, host_mask in (("control", False), ("candidate", True)):
         print("START_ARM=" + arm, flush=True)
-        result = run_arm.remote(arm, host_mask, commit)
+        result = run_arm.remote(arm, host_mask, commit, receipt_sha256)
         print("P1_ARM_RESULT=" + json.dumps(result, sort_keys=True), flush=True)
         if result.get("status") != "completed":
             raise SystemExit(1)
