@@ -585,6 +585,10 @@ def _checkpoint_digests(root: Path) -> dict:
               volumes={"/assets": assets, "/runs": runs, "/prep": prepvol})
 def training_reference_remote(commit: str, prepared_sha: str) -> dict:
     """Fresh 2-update reference under the deterministic Triton serving contract."""
+    import sys
+
+    if "/opt/repo" not in sys.path:
+        sys.path.insert(0, "/opt/repo")
     from kdflow.run_counters import classify_terminal
 
     _worker_dirs()
@@ -630,6 +634,10 @@ def training_reference_remote(commit: str, prepared_sha: str) -> dict:
               volumes={"/assets": assets, "/runs": runs, "/prep": prepvol})
 def training_resume_remote(commit: str, prepared_sha: str) -> dict:
     """Resume from the reference step1 transaction in a fresh process, one update."""
+    import sys
+
+    if "/opt/repo" not in sys.path:
+        sys.path.insert(0, "/opt/repo")
     from kdflow.run_counters import classify_terminal
 
     _worker_dirs()
