@@ -16,6 +16,30 @@ from kdflow.utils.distributed_sampler import DistributedSampler
 from kdflow.utils.utils import get_tokenizer
 
 
+def build_extra_server_args(args) -> dict:
+    """Serving flags handed verbatim to SGLang ServerArgs.
+
+    Only serving-contract switches belong here: request-level sampling stays in
+    the per-request sampling params. Defaults keep the historical launch dict.
+    """
+    extra: dict = {}
+    if args.rollout.rollout_disable_piecewise_cuda_graph:
+        extra["disable_piecewise_cuda_graph"] = True
+    backend = str(getattr(args.rollout, "rollout_attention_backend", "") or "")
+    if backend:
+        extra["attention_backend"] = backend
+    if getattr(args.rollout, "rollout_deterministic_inference", False):
+        extra["enable_deterministic_inference"] = True
+        if getattr(args.rollout, "rollout_random_seed", -1) >= 0:
+            extra["random_seed"] = int(args.rollout.rollout_random_seed)
+        # SGLang raises when deterministic inference meets an unsupported backend
+        # that the model handler already filled in (Gemma2/B200 -> trtllm_mha).
+        # Mirror SGLang's own Blackwell fallback unless the user chose one.
+        if not backend:
+            extra["attention_backend"] = "flashinfer"
+    return extra
+
+
 def train(args):
     if args.kd.mp_opd_alternating:
         if (args.kd.kd_algorithm!='mp_opd' or args.kd.mp_opd_mode!='soft'
@@ -46,7 +70,7 @@ def train(args):
     pg, reordered_bundle_indices, reordered_gpu_ids = create_placement_group(num_gpus)
     rollout_group = RolloutActorGroup(
         model_path=args.model.student_name_or_path,
-        extra_server_args={"disable_piecewise_cuda_graph": True} if args.rollout.rollout_disable_piecewise_cuda_graph else None,
+        extra_server_args=build_extra_server_args(args) or None,
         num_actors=args.rollout.rollout_num_engines,
         tp_size=args.rollout.rollout_tp_size,
         num_gpus_per_node=args.train.num_gpus_per_node,

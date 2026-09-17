@@ -75,10 +75,15 @@ opts.update(
     resume_checkpoint_steps=os.environ.get("MP_CHECKPOINT_STEPS", "40,80,120,156,200,240,280,312"),
     mp_opd_offload_adam_moments=os.environ.get("MP_OFFLOAD_ADAM_MOMENTS", "0") == "1",
     mp_opd_host_mask=os.environ.get("MP_OPD_HOST_MASK", "0") == "1",
+    rollout_deterministic_inference=os.environ.get("MP_ROLLOUT_DETERMINISTIC", "0") == "1",
+    rollout_random_seed=int(os.environ.get("MP_ROLLOUT_SEED", "-1")),
+    rollout_attention_backend=os.environ.get("MP_ROLLOUT_ATTENTION_BACKEND", ""),
 )
 
 if os.environ.get("MP_OFFLOAD_ADAM_MOMENTS", "0") not in {"0", "1"}:
     raise ValueError("MP_OFFLOAD_ADAM_MOMENTS must be 0 or 1")
+if os.environ.get("MP_ROLLOUT_DETERMINISTIC", "0") not in {"0", "1"}:
+    raise ValueError("MP_ROLLOUT_DETERMINISTIC must be 0 or 1")
 if opts["mp_opd_offload_adam_moments"] and (
     opts["kd_algorithm"] != "mp_opd"
     or mode != "soft"
@@ -234,6 +239,11 @@ if os.environ.get("MP_PREFLIGHT_ONLY") == "1":
     print(
         "EFFECTIVE_MP_OPD_OFFLOAD_ADAM_MOMENTS="
         + str(opts["mp_opd_offload_adam_moments"]).lower(),
+        flush=True,
+    )
+    print(
+        "EFFECTIVE_MP_ROLLOUT_DETERMINISTIC="
+        + str(opts["rollout_deterministic_inference"]).lower(),
         flush=True,
     )
     print(f"PREFLIGHT_READY={run_dir / 'launch-config.json'}")

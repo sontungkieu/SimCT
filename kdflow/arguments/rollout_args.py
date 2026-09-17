@@ -7,6 +7,9 @@ class RolloutArguments:
     """ Arguments for rollout (on-policy distillation)."""
     
     rollout_disable_piecewise_cuda_graph: bool = field(default=False, metadata={"help": "Disable experimental SGLang piecewise graph capture for incompatible models."})
+    rollout_deterministic_inference: bool = field(default=False, metadata={"help": "Enable SGLang deterministic inference (seeded sampler) in the rollout serving processes."})
+    rollout_random_seed: int = field(default=-1, metadata={"help": "Server-level random seed for deterministic rollout serving; -1 keeps the SGLang default."})
+    rollout_attention_backend: str = field(default="", metadata={"help": "Explicit SGLang attention backend for rollout serving; empty keeps the model default. Deterministic inference requires a supported backend, so it defaults to flashinfer."})
     enforce_max_sequence_length: bool = field(default=False, metadata={"help": "Bound sampled response plus prompt and terminal sentinel by data.max_len."})
     exact_token_trajectory: bool = field(default=False, metadata={"help": "Text-only sampled-ID and teacher-ID contract."})
     diagnostic_max_updates: int = field(default=0, metadata={"help": "Stop after this many updates without changing the scheduler horizon."})
