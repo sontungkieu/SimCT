@@ -1099,7 +1099,15 @@ def every4_compare_remote() -> dict:
     try:
         print(f"EVERY4_COMPARE_START pid={os.getpid()}", flush=True)
         result["step3_pause_vs_continuous"] = compare(3, ["1.jsonl", "2.jsonl", "3.jsonl"])
-        result["step4_resume_vs_continuous"] = compare(4, ["4.jsonl"])
+        step4_ready = (continuous / "checkpoint/rollout_data/4.jsonl").is_file() and \
+            (paused / "checkpoint/rollout_data/4.jsonl").is_file()
+        if step4_ready:
+            result["step4_resume_vs_continuous"] = compare(4, ["4.jsonl"])
+        else:
+            result["step4_resume_vs_continuous"] = {
+                "status": "not_run",
+                "reason": "resume segment has not produced 4.jsonl yet; step3 comparison still valid",
+            }
         result["continuous_counters"] = json.loads(
             (continuous / "checkpoint/run-summary.json").read_text())
         result["paused_counters"] = json.loads((paused / "checkpoint/run-summary.json").read_text())
