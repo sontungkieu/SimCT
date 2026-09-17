@@ -73,11 +73,12 @@ def test_extra_server_args_helper_is_the_only_source_of_serving_flags():
     from kdflow.cli.train_kd_on_policy import build_extra_server_args
 
     class _Rollout:
-        def __init__(self, deterministic, seed, disable_graph=True, backend=""):
+        def __init__(self, deterministic, seed, disable_graph=True, backend="", radix=False):
             self.rollout_disable_piecewise_cuda_graph = disable_graph
             self.rollout_deterministic_inference = deterministic
             self.rollout_random_seed = seed
             self.rollout_attention_backend = backend
+            self.rollout_disable_radix_cache = radix
 
     class _Args:
         def __init__(self, rollout):
@@ -86,9 +87,18 @@ def test_extra_server_args_helper_is_the_only_source_of_serving_flags():
     assert build_extra_server_args(_Args(_Rollout(False, -1))) == {"disable_piecewise_cuda_graph": True}
     assert build_extra_server_args(_Args(_Rollout(True, 42))) == {
         "disable_piecewise_cuda_graph": True,
+        "disable_radix_cache": True,
         "enable_deterministic_inference": True,
         "random_seed": 42,
         "attention_backend": "flashinfer",
+    }
+    triton = build_extra_server_args(_Args(_Rollout(True, 42, backend="triton")))
+    assert triton["attention_backend"] == "triton"
+    assert triton["disable_radix_cache"] is True
+    assert triton["enable_deterministic_inference"] is True
+    assert build_extra_server_args(_Args(_Rollout(False, -1, radix=True))) == {
+        "disable_piecewise_cuda_graph": True,
+        "disable_radix_cache": True,
     }
     explicit = build_extra_server_args(_Args(_Rollout(True, 42, backend="triton")))
     assert explicit["attention_backend"] == "triton"

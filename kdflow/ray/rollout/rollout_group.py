@@ -1,6 +1,9 @@
 import asyncio
 import base64
+import hashlib
 import io
+import json
+import os
 import logging
 import multiprocessing
 import random
@@ -40,6 +43,34 @@ SGLANG_ENV_VARS = {
     "SGLANG_ENABLE_HEALTH_ENDPOINT_GENERATION": "false",
     "SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_IDLE": "false",
 }
+
+
+_PAYLOAD_DUMP_STATE = {"count": 0, "limit": 8}
+
+
+def _redact_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Wire-payload evidence with prompt tokens replaced by a hash."""
+    redacted = {key: value for key, value in payload.items() if key != "input_ids"}
+    redacted["top_level_keys"] = sorted(payload.keys())
+    ids = payload.get("input_ids")
+    if ids is not None:
+        joined = ",".join(str(item) for item in ids)
+        redacted["input_ids_len"] = len(ids)
+        redacted["input_ids_sha256"] = hashlib.sha256(joined.encode()).hexdigest()
+    return redacted
+
+
+def _dump_wire_payload(payload: Dict[str, Any]) -> None:
+    """Opt-in evidence hook: KDFLOW_PAYLOAD_DUMP=<path> writes real payloads."""
+    target = os.environ.get("KDFLOW_PAYLOAD_DUMP")
+    if not target or _PAYLOAD_DUMP_STATE["count"] >= _PAYLOAD_DUMP_STATE["limit"]:
+        return
+    try:
+        with open(target, "a") as handle:
+            handle.write(json.dumps(_redact_payload(payload), sort_keys=True, default=str) + "\n")
+        _PAYLOAD_DUMP_STATE["count"] += 1
+    except OSError:
+        pass
 
 
 class RolloutActorGroup:
@@ -237,8 +268,13 @@ class RolloutActorGroup:
         sampling_params: Optional[Dict[str, Any]] = None,
         image_data: Optional[List] = None,
         input_ids: Optional[List[List[int]]] = None,
+        logprob_start_len: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
-        """Generate responses for a batch of prompts via the SGLang router."""
+        """Generate responses for a batch of prompts via the SGLang router.
+
+        logprob_start_len stays at the production default (-1, output logprobs
+        only) unless a diagnostic explicitly asks for prompt logprobs (0).
+        """
         if sampling_params is None:
             sampling_params = {
                 "temperature": 1.0,
@@ -256,6 +292,7 @@ class RolloutActorGroup:
                     max_concurrent=self.max_concurrent,
                     image_data=image_data,
                     input_ids=input_ids,
+                    logprob_start_len=logprob_start_len,
                 )
             )
         finally:
@@ -374,6 +411,7 @@ class RolloutActorGroup:
         max_concurrent: int = 64,
         image_data: Optional[List] = None,
         input_ids: Optional[List[List[int]]] = None,
+        logprob_start_len: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """Send generation requests to the SGLang router asynchronously."""
         import aiohttp
@@ -390,7 +428,10 @@ class RolloutActorGroup:
                 payload.pop("text")
                 payload["input_ids"] = input_ids[idx]
                 payload["return_logprob"] = True
-                payload["logprob_start_len"] = -1
+                payload["logprob_start_len"] = (
+                    -1 if logprob_start_len is None else int(logprob_start_len)
+                )
+            _dump_wire_payload(payload)
             if image_data and image_data[idx] is not None:
                 img = image_data[idx]
                 if isinstance(img, list):

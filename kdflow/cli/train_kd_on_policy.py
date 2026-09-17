@@ -28,7 +28,12 @@ def build_extra_server_args(args) -> dict:
     backend = str(getattr(args.rollout, "rollout_attention_backend", "") or "")
     if backend:
         extra["attention_backend"] = backend
-    if getattr(args.rollout, "rollout_deterministic_inference", False):
+    deterministic = bool(getattr(args.rollout, "rollout_deterministic_inference", False))
+    if deterministic or getattr(args.rollout, "rollout_disable_radix_cache", False):
+        # Pinned off so a backend swap stays a single-variable comparison: the
+        # deterministic FlashInfer path already normalises to radix cache off.
+        extra["disable_radix_cache"] = True
+    if deterministic:
         extra["enable_deterministic_inference"] = True
         if getattr(args.rollout, "rollout_random_seed", -1) >= 0:
             extra["random_seed"] = int(args.rollout.rollout_random_seed)

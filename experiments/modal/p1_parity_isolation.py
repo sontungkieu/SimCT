@@ -47,6 +47,8 @@ image = (
                     "/opt/repo/experiments/modal/_sampler_audit_probe.py", copy=True)
     .add_local_file(str(LOCAL_ROOT / "experiments/modal/_rollout_aa_probe.py"),
                     "/opt/repo/experiments/modal/_rollout_aa_probe.py", copy=True)
+    .add_local_file(str(LOCAL_ROOT / "experiments/modal/_triton_audit_probe.py"),
+                    "/opt/repo/experiments/modal/_triton_audit_probe.py", copy=True)
     .add_local_file(str(LOCAL_ROOT / "experiments/modal/p1_parity_isolation.py"),
                     "/opt/repo/experiments/modal/p1_parity_isolation.py", copy=True)
 )
@@ -417,6 +419,26 @@ def sampler_audit_remote() -> dict:
     return result
 
 
+@app.function(image=image, cpu=4, memory=16384, timeout=1800, retries=0,
+              volumes={"/assets": assets, "/runs": runs})
+def triton_audit_remote() -> dict:
+    """CPU-only audit of installed Triton backend + Gemma2 semantics."""
+    py = "/opt/venvs/simct-b200/bin/python"
+    probe = "/opt/repo/experiments/modal/_triton_audit_probe.py"
+    proc = subprocess.run([py, probe], cwd=str(REMOTE_ROOT), text=True, capture_output=True)
+    payload = None
+    for line in (proc.stdout or "").splitlines():
+        if line.startswith("TRITON_AUDIT_JSON="):
+            payload = json.loads(line.split("=", 1)[1])
+    result = {"status": "completed" if proc.returncode == 0 and payload else "failed",
+              "returncode": proc.returncode, "report": payload,
+              "stderr_tail": (proc.stderr or "")[-3000:]}
+    atomic_json(Path(OUT_DIR) / "triton-audit.json", result)
+    runs.commit()
+    print("TRITON_AUDIT_STATUS=" + result["status"], flush=True)
+    return result
+
+
 @app.function(image=image, cpu=8, memory=32768, timeout=1800, retries=0,
               volumes={"/runs": runs})
 def pinned_tests_remote(paths: list) -> dict:
@@ -461,7 +483,9 @@ def main() -> None:
         # Fire-and-forget: the client only has to live for the spawn call, so a
         # dropped heartbeat cannot lose the result. Receipts land on the volume.
         target = os.environ.get("P1_SPAWN_FN", "sampler_audit")
-        if target == "pinned_tests":
+        if target == "triton_audit":
+            call = triton_audit_remote.spawn()
+        elif target == "pinned_tests":
             paths = [item for item in os.environ.get(
                 "P1_TEST_PATHS",
                 "/opt/repo/tests/mp_opd/test_rollout_deterministic_args.py,/opt/repo/tests/test_runai_contract.py",
@@ -494,10 +518,17 @@ def main() -> None:
         print("ROLLOUT_AA_GATE_STATUS=" + str(result.get("status")), flush=True)
         print("ROLLOUT_AA_GATE_MARKER=" + json.dumps(sanitize(result.get("marker")), sort_keys=True)[:4000], flush=True)
         return
+    if gate == "triton_audit":
+        result = triton_audit_remote.remote()
+        atomic_json(out_dir / "triton-audit.receipt.json", result)
+        print("TRITON_AUDIT_GATE=" + str(result.get("status")), flush=True)
+        return
     if gate == "pinned_tests":
         paths = [item for item in os.environ.get(
             "P1_TEST_PATHS",
-            "/opt/repo/tests/mp_opd/test_rollout_deterministic_args.py,/opt/repo/tests/test_runai_contract.py",
+            "/opt/repo/tests/mp_opd/test_rollout_deterministic_args.py,"
+            "/opt/repo/tests/mp_opd/test_logprob_probe.py,"
+            "/opt/repo/tests/test_runai_contract.py",
         ).split(",") if item]
         result = pinned_tests_remote.remote(paths)
         atomic_json(out_dir / "pinned-tests.receipt.json", result)
@@ -533,6 +564,7 @@ def driver_environment(mode: str) -> dict:
         "KDFLOW_ROLLOUT_PORT_BASE": "15000", "KDFLOW_ROUTER_PORT_BASE": "16000",
         "MP_SHARED_ROOT": "/assets", "MP_STUDENT_PATH": "/assets/student",
         "P1_AA_MODE": mode,
+        "KDFLOW_PAYLOAD_DUMP": f"{OUT_DIR}/wire-payload-{mode}.jsonl",
         "P1_AA_ROWS": os.environ.get("P1_AA_ROWS", "64"),
         "P1_AA_REPLAYS": os.environ.get("P1_AA_REPLAYS", "2"),
         "P1_AA_RESTART": os.environ.get("P1_AA_RESTART", "1"),
@@ -574,6 +606,26 @@ def rollout_aa_remote(mode: str) -> dict:
         result["marker"] = marker
         result["log_path"] = str(log_path)
         result["log_tail"] = tail[-6000:]
+        payload_path = Path(OUT_DIR) / f"wire-payload-{mode}.jsonl"
+        if payload_path.is_file():
+            samples = [json.loads(line) for line in payload_path.read_text().splitlines() if line.strip()]
+            result["wire_payloads"] = samples[:4]
+            result["wire_payload_count"] = len(samples)
+        v2_path = Path(OUT_DIR) / f"rollout-aa-{mode}-v2.json"
+        if v2_path.is_file():
+            v2 = json.loads(v2_path.read_text())
+            result["stage_summaries"] = [
+                {"stage": stage.get("stage"), "comparison": stage.get("comparison")}
+                for stage in v2.get("stages", [])
+            ]
+            result["probe_verdicts"] = [
+                {"tag": probe.get("tag"), "verdict": (probe.get("verdict") or {}).get("status"),
+                 "reason": (probe.get("verdict") or {}).get("reason"),
+                 "entries": probe.get("entries"), "fingerprint": probe.get("fingerprint")}
+                for probe in v2.get("probes", [])
+            ]
+            result["backend_consistency"] = v2.get("backend_consistency")
+            result["stopped_at"] = v2.get("stopped_at_first_failed_stage")
         result["status"] = "completed" if proc.returncode == 0 and marker else "failed"
     except BaseException as exc:
         result.update(status="failed", error_type=type(exc).__name__, error=str(exc),

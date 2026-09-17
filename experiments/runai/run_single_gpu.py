@@ -78,12 +78,15 @@ opts.update(
     rollout_deterministic_inference=os.environ.get("MP_ROLLOUT_DETERMINISTIC", "0") == "1",
     rollout_random_seed=int(os.environ.get("MP_ROLLOUT_SEED", "-1")),
     rollout_attention_backend=os.environ.get("MP_ROLLOUT_ATTENTION_BACKEND", ""),
+    rollout_disable_radix_cache=os.environ.get("MP_ROLLOUT_DISABLE_RADIX_CACHE", "0") == "1",
 )
 
 if os.environ.get("MP_OFFLOAD_ADAM_MOMENTS", "0") not in {"0", "1"}:
     raise ValueError("MP_OFFLOAD_ADAM_MOMENTS must be 0 or 1")
 if os.environ.get("MP_ROLLOUT_DETERMINISTIC", "0") not in {"0", "1"}:
     raise ValueError("MP_ROLLOUT_DETERMINISTIC must be 0 or 1")
+if os.environ.get("MP_ROLLOUT_DISABLE_RADIX_CACHE", "0") not in {"0", "1"}:
+    raise ValueError("MP_ROLLOUT_DISABLE_RADIX_CACHE must be 0 or 1")
 if opts["mp_opd_offload_adam_moments"] and (
     opts["kd_algorithm"] != "mp_opd"
     or mode != "soft"
