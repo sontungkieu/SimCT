@@ -734,31 +734,106 @@ def checkpoint_inspect_remote(step: int) -> dict:
 
 @app.function(image=image, cpu=16, memory=65536, timeout=2400, retries=0, volumes={"/runs": runs})
 def training_compare_remote() -> dict:
-    """CPU comparison of reference step2 against resumed step2 (state + trajectories)."""
+    """Compare reference step2 with resumed step2: state tensors AND trajectories.
+
+    The 1+1 diagnostic legitimately has different rollout file sets (the resume
+    session only produces its update-2 rollout), so the production file-set gate
+    is not reused here; state and policy evidence are compared directly.
+    """
     import sys
 
-    sys.path.insert(0, "/opt/repo")
-    from experiments.runai.queue_full_alternating import compare_checkpoint
+    if "/opt/repo" not in sys.path:
+        sys.path.insert(0, "/opt/repo")
+    import numpy as np
+    import torch
+    from kdflow.training_checkpoint import inspect
 
     reference = Path(REFERENCE_ROOT)
     resumed = Path(RESUME_ROOT)
     result: dict = {"schema": "simct-p1-training-compare-v1", "status": "starting",
                     "reference": str(reference), "resumed": str(resumed)}
+
+    def load(root: Path):
+        pointer = json.loads((root / "checkpoints/latest.json").read_text())
+        folder = root / "checkpoints" / pointer["directory"]
+        manifest = json.loads((folder / "manifest.json").read_text())
+        folder, manifest = inspect(root / "checkpoints", manifest["contract"], manifest["world_size"])
+        return (folder, manifest,
+                torch.load(folder / "rank0.pt", map_location="cpu", weights_only=False),
+                torch.load(folder / "driver.pt", map_location="cpu", weights_only=False))
+
+    def equal(x, y, path, problems):
+        if torch.is_tensor(x):
+            if not torch.equal(x, y):
+                problems.append(path)
+        elif isinstance(x, np.ndarray):
+            if not np.array_equal(x, y):
+                problems.append(path)
+        elif isinstance(x, dict):
+            if x.keys() != y.keys():
+                problems.append(path + "/keys")
+                return
+            for key in x:
+                equal(x[key], y[key], f"{path}/{key}", problems)
+        elif isinstance(x, (list, tuple)):
+            if len(x) != len(y):
+                problems.append(path + "/length")
+                return
+            for index, (u, v) in enumerate(zip(x, y)):
+                equal(u, v, f"{path}/{index}", problems)
+        elif x != y:
+            problems.append(path)
+
+    def trajectory(path: Path) -> list:
+        rows = []
+        for line in path.read_text().splitlines():
+            row = json.loads(line)
+            info = row.pop("meta_info", {})
+            row["behavior_logprobs"] = {k: v for k, v in info.items() if "logprob" in k}
+            row["finish_reason"] = info.get("finish_reason")
+            rows.append(row)
+        return rows
+
     try:
-        print(f"COMPARE_STAGE_START state_and_trajectory pid={os.getpid()}", flush=True)
-        try:
-            compare_checkpoint(reference, resumed, expected_rollout_files=2)
-            result["state_status"] = "exact_match"
-            result["trajectory_status"] = "exact_match"
-            result["state_error"] = None
-        except ValueError as exc:
-            result["state_status"] = "mismatch"
-            result["state_error"] = str(exc)
-            result["trajectory_status"] = "unknown"
-        result["reference_counters"] = json.loads(
-            (reference / "checkpoint/run-summary.json").read_text())
-        result["resumed_counters"] = json.loads(
-            (resumed / "checkpoint/run-summary.json").read_text())
+        print(f"COMPARE_STAGE_START reference_resumed_step2 pid={os.getpid()}", flush=True)
+        ref_folder, ref_manifest, ref_actor, ref_driver = load(reference)
+        res_folder, res_manifest, res_actor, res_driver = load(resumed)
+        result["reference_checkpoint"] = {"directory": ref_folder.name,
+                                          "manifest_sha256": sha256(ref_folder / "manifest.json")}
+        result["resumed_checkpoint"] = {"directory": res_folder.name,
+                                        "manifest_sha256": sha256(res_folder / "manifest.json")}
+        problems: list = []
+        for driver in (ref_driver, res_driver):
+            driver.pop("resource_sample_index", None)
+        equal(ref_actor, res_actor, "actor", problems)
+        equal(ref_driver, res_driver, "driver", problems)
+        result["state_status"] = "exact_match" if not problems else "mismatch"
+        result["state_problems"] = problems[:20]
+        result["state_problem_count"] = len(problems)
+        result["state_keys_compared"] = sorted(ref_actor.keys())[:8]
+
+        left = reference / "checkpoint/rollout_data/2.jsonl"
+        right = resumed / "checkpoint/rollout_data/2.jsonl"
+        traj_problems: list = []
+        left_rows, right_rows = trajectory(left), trajectory(right)
+        if len(left_rows) != len(right_rows):
+            traj_problems.append(f"row_count:{len(left_rows)}!={len(right_rows)}")
+        for index, (a, b) in enumerate(zip(left_rows, right_rows)):
+            if a.get("prompt_ids") != b.get("prompt_ids"):
+                traj_problems.append(f"row{index}/prompt_ids")
+            if a.get("output_ids") != b.get("output_ids"):
+                traj_problems.append(f"row{index}/output_ids")
+                continue
+            if a.get("behavior_logprobs") != b.get("behavior_logprobs"):
+                traj_problems.append(f"row{index}/behavior_logprobs")
+            if a.get("finish_reason") != b.get("finish_reason"):
+                traj_problems.append(f"row{index}/finish_reason")
+        result["trajectory_status"] = "exact_match" if not traj_problems else "mismatch"
+        result["trajectory_problems"] = traj_problems[:20]
+        result["trajectory_problem_count"] = len(traj_problems)
+        result["trajectory_rows"] = len(left_rows)
+        result["reference_counters"] = json.loads((reference / "checkpoint/run-summary.json").read_text())
+        result["resumed_counters"] = json.loads((resumed / "checkpoint/run-summary.json").read_text())
         result["status"] = "completed"
     except BaseException as exc:
         result.update(status="failed", error_type=type(exc).__name__, error=str(exc),
@@ -767,6 +842,8 @@ def training_compare_remote() -> dict:
         atomic_json(Path(OUT_DIR) / "training-compare.receipt.json", result)
         runs.commit()
     print("TRAINING_COMPARE_STATUS=" + str(result.get("status")), flush=True)
+    print("TRAINING_COMPARE_STATE=" + str(result.get("state_status")), flush=True)
+    print("TRAINING_COMPARE_TRAJECTORY=" + str(result.get("trajectory_status")), flush=True)
     return result
 
 
