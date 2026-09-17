@@ -693,6 +693,45 @@ def training_resume_remote(commit: str, prepared_sha: str) -> dict:
     return result
 
 
+@app.function(image=image, cpu=8, memory=32768, timeout=1800, retries=0, volumes={"/runs": runs})
+def checkpoint_inspect_remote(step: int) -> dict:
+    """CPU-only transactional verification of one reference checkpoint step."""
+    import sys
+
+    if "/opt/repo" not in sys.path:
+        sys.path.insert(0, "/opt/repo")
+    from kdflow.training_checkpoint import inspect
+
+    root = Path(REFERENCE_ROOT) / "checkpoints"
+    out: dict = {"status": "starting", "step": step, "root": str(root)}
+    try:
+        folders = sorted(root.glob(f"step{step:08d}-*"))
+        if len(folders) != 1:
+            raise ValueError(f"expected one step{step} transaction, found {len(folders)}")
+        manifest_path = folders[0] / "manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        print(f"CHECKPOINT_STAGE_START step={step} pid={os.getpid()}", flush=True)
+        checked, value = inspect(root, manifest["contract"], manifest["world_size"])
+        out.update({
+            "status": "verified",
+            "directory": folders[0].name,
+            "manifest_sha256": sha256(manifest_path),
+            "world_size": value["world_size"],
+            "inspected_directory": str(checked),
+            "files": sorted(manifest.get("files", {}).keys()),
+            "contract_schema": manifest.get("contract", {}).get("schema"),
+        })
+        print(f"CHECKPOINT_STAGE_END step={step} pid={os.getpid()}", flush=True)
+    except BaseException as exc:
+        out.update(status="failed", error_type=type(exc).__name__, error=str(exc),
+                   traceback=traceback.format_exc()[-2000:])
+    finally:
+        atomic_json(Path(OUT_DIR) / f"checkpoint-inspect-step{step}.json", out)
+        runs.commit()
+    print("CHECKPOINT_INSPECT_STATUS=" + str(out.get("status")), flush=True)
+    return out
+
+
 @app.function(image=image, cpu=16, memory=65536, timeout=2400, retries=0, volumes={"/runs": runs})
 def training_compare_remote() -> dict:
     """CPU comparison of reference step2 against resumed step2 (state + trajectories)."""
@@ -776,7 +815,9 @@ def main() -> None:
         # Fire-and-forget: the client only has to live for the spawn call, so a
         # dropped heartbeat cannot lose the result. Receipts land on the volume.
         target = os.environ.get("P1_SPAWN_FN", "sampler_audit")
-        if target == "training_reference":
+        if target == "checkpoint_inspect":
+            call = checkpoint_inspect_remote.spawn(int(os.environ.get("P1_STEP", "1")))
+        elif target == "training_reference":
             call = training_reference_remote.spawn(os.environ.get("P1_COMMIT", ""),
                                                    os.environ.get("P1_PREPARED_SHA", ""))
         elif target == "training_resume":
@@ -820,6 +861,11 @@ def main() -> None:
         atomic_json(out_dir / f"rollout-aa-{mode}.receipt.json", result)
         print("ROLLOUT_AA_GATE_STATUS=" + str(result.get("status")), flush=True)
         print("ROLLOUT_AA_GATE_MARKER=" + json.dumps(sanitize(result.get("marker")), sort_keys=True)[:4000], flush=True)
+        return
+    if gate == "checkpoint_inspect":
+        result = checkpoint_inspect_remote.remote(int(os.environ.get("P1_STEP", "1")))
+        atomic_json(out_dir / f"checkpoint-inspect-step{os.environ.get('P1_STEP', '1')}.receipt.json", result)
+        print("CHECKPOINT_INSPECT_GATE=" + str(result.get("status")), flush=True)
         return
     if gate == "training_reference":
         result = training_reference_remote.remote(os.environ.get("P1_COMMIT", ""),
