@@ -17,6 +17,7 @@ from pathlib import Path
 import torch
 
 from kdflow.algorithms import register_algorithm
+from kdflow.energy_cadence import energy_update_due
 from kdflow.loss.cross_entropy import compute_cross_entropy
 
 from ._mp_opd_atoms import SimCTAtomizer
@@ -220,7 +221,7 @@ class MetaPartitionedOPD:
     def update_energy_full(self, batches, meta_rows, optimizer, *, batch_loader=lambda batch:batch):
         from ._mp_opd_full_meta import full_meta_step, ForwardParameterBridge, memory_event, streamed_inner_losses
         args=self.args.kd
-        if (self.student_updates+1) % args.mp_opd_energy_every:
+        if not energy_update_due(self.student_updates, args.mp_opd_energy_every):
             return {"mp_opd_energy_updates_total":float(self.energy_updates)}
         device=next(self.student.parameters()).device
         tok=self.student_tokenizer

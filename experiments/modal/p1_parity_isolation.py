@@ -847,6 +847,267 @@ def training_compare_remote() -> dict:
     return result
 
 
+# --------------------------------------------------------------------------- #
+# GPU gate 5: EVERY4 qualification package (continuous4 vs pause3+resume1)
+# --------------------------------------------------------------------------- #
+def _every4_worker(run_dir, commit, prepared_sha, *, updates: int, pause_after: int,
+                   resume: bool, log_name: str) -> tuple:
+    env = training_environment(str(run_dir), commit, prepared_sha, energy_every="4")
+    env["MP_PAUSE_AFTER_UPDATES"] = str(pause_after)
+    if resume:
+        env["MP_RESUME"] = "1"
+    log_path = Path(OUT_DIR) / log_name
+    started = time.time()
+    cmd = ["bash", "/opt/repo/experiments/runai/python-b200-host.sh",
+           "/opt/repo/experiments/runai/run_single_gpu.py", "soft", str(updates), str(run_dir)]
+    with log_path.open("w") as sink:
+        sink.write(f"WORKER_START arm={log_name} resume={resume} pause_after={pause_after}\n")
+        sink.flush()
+        try:
+            proc = subprocess.run(cmd, cwd=str(REMOTE_ROOT), env=env, stdout=sink,
+                                  stderr=subprocess.STDOUT, text=True, timeout=4200)
+            rc = proc.returncode
+        except subprocess.TimeoutExpired:
+            rc = 124
+    with log_path.open("a") as sink:
+        sink.write(f"WORKER_END rc={rc} seconds={time.time() - started:.3f}\n")
+    return rc, log_path
+
+
+def _every4_receipt(arm: str, run_dir: Path, rc: int, log_path: Path,
+                    *, expected_start: int, expected_total: int,
+                    expected_delta: int, expected_energy: int) -> dict:
+    import sys
+
+    if "/opt/repo" not in sys.path:
+        sys.path.insert(0, "/opt/repo")
+    from kdflow.run_counters import classify_terminal
+    from kdflow.step_timing import parse_step_records, summarize
+
+    summary_path = run_dir / "checkpoint" / "run-summary.json"
+    summary = json.loads(summary_path.read_text()) if summary_path.is_file() else None
+    verdict = classify_terminal(app_state="completed", child_exit=rc, summary=summary,
+                                expected_start=expected_start, expected_total=expected_total,
+                                expected_session_delta=expected_delta)
+    if summary is not None:
+        energy = summary.get("energy_updates_total", summary.get("energy_updates"))
+        if energy is None or int(energy) != expected_energy:
+            verdict["reasons"].append(f"energy={energy}!={expected_energy}")
+            verdict["verdict"] = "fail"
+    text = log_path.read_text() if log_path.is_file() else ""
+    timing = summarize(parse_step_records(text), 4,
+                       resumed_step=(expected_delta if expected_start else None))
+    launch = run_dir / "launch-config.json"
+    return {
+        "arm": arm, "run_dir": str(run_dir), "child_exit": rc,
+        "summary_present": summary is not None, "verdict": verdict,
+        "energy_updates_total": (summary or {}).get("energy_updates_total"),
+        "timing": timing,
+        "checkpoints": _checkpoint_digests(run_dir),
+        "serving": (json.loads(launch.read_text()).get("serving") if launch.is_file() else None),
+        "launch_config_sha256": sha256(launch) if launch.is_file() else None,
+        "log_path": str(log_path),
+    }
+
+
+@app.function(image=image, gpu="B200", cpu=12, memory=65536, ephemeral_disk=524288,
+              timeout=5400, retries=0, max_containers=1, single_use_containers=True,
+              volumes={"/assets": assets, "/runs": runs, "/prep": prepvol})
+def every4_continuous_remote(commit: str, prepared_sha: str) -> dict:
+    """fresh -> update1..4 with energy_every=4, no pause; energy updates == 1."""
+    _worker_dirs()
+    run_dir = Path(EVERY4_CONTINUOUS)
+    result: dict = {"schema": "simct-p1-every4-continuous-v1", "status": "starting",
+                    "run_dir": str(run_dir), "source_commit": commit}
+    try:
+        if run_dir.exists():
+            raise RuntimeError(f"run dir already exists: {run_dir}")
+        rc, log_path = _every4_worker(run_dir, commit, prepared_sha, updates=4, pause_after=0,
+                                      resume=False, log_name="every4-continuous.log")
+        result.update(_every4_receipt("every4-continuous", run_dir, rc, log_path,
+                                      expected_start=0, expected_total=4,
+                                      expected_delta=4, expected_energy=1))
+        result["status"] = "completed" if result["verdict"]["verdict"] == "pass" else "failed"
+    except BaseException as exc:
+        result.update(status="failed", error_type=type(exc).__name__, error=str(exc),
+                      traceback=traceback.format_exc()[-3000:])
+    finally:
+        result["finished_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+        atomic_json(Path(OUT_DIR) / "every4-continuous.receipt.json", result)
+        runs.commit()
+    print("EVERY4_CONTINUOUS_STATUS=" + str(result.get("status")), flush=True)
+    return result
+
+
+@app.function(image=image, gpu="B200", cpu=12, memory=65536, ephemeral_disk=524288,
+              timeout=5400, retries=0, max_containers=1, single_use_containers=True,
+              volumes={"/assets": assets, "/runs": runs, "/prep": prepvol})
+def every4_pause_remote(commit: str, prepared_sha: str) -> dict:
+    """fresh -> update1..3 then checkpoint_pause; energy updates == 0."""
+    _worker_dirs()
+    run_dir = Path(EVERY4_PAUSED)
+    result: dict = {"schema": "simct-p1-every4-pause-v1", "status": "starting",
+                    "run_dir": str(run_dir), "source_commit": commit}
+    try:
+        if run_dir.exists():
+            raise RuntimeError(f"run dir already exists: {run_dir}")
+        rc, log_path = _every4_worker(run_dir, commit, prepared_sha, updates=4, pause_after=3,
+                                      resume=False, log_name="every4-pause.log")
+        result.update(_every4_receipt("every4-paused", run_dir, rc, log_path,
+                                      expected_start=0, expected_total=3,
+                                      expected_delta=3, expected_energy=0))
+        result["status"] = "completed" if result["verdict"]["verdict"] == "pass" else "failed"
+    except BaseException as exc:
+        result.update(status="failed", error_type=type(exc).__name__, error=str(exc),
+                      traceback=traceback.format_exc()[-3000:])
+    finally:
+        result["finished_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+        atomic_json(Path(OUT_DIR) / "every4-pause.receipt.json", result)
+        runs.commit()
+    print("EVERY4_PAUSE_STATUS=" + str(result.get("status")), flush=True)
+    return result
+
+
+@app.function(image=image, gpu="B200", cpu=12, memory=65536, ephemeral_disk=524288,
+              timeout=5400, retries=0, max_containers=1, single_use_containers=True,
+              volumes={"/assets": assets, "/runs": runs, "/prep": prepvol})
+def every4_resume_remote(commit: str, prepared_sha: str) -> dict:
+    """resume the paused root from its step3 transaction; student delta == 1."""
+    _worker_dirs()
+    run_dir = Path(EVERY4_PAUSED)
+    result: dict = {"schema": "simct-p1-every4-resume-v1", "status": "starting",
+                    "run_dir": str(run_dir), "source_commit": commit}
+    try:
+        steps = sorted((run_dir / "checkpoints").glob("step00000003-*"))
+        if len(steps) != 1:
+            raise RuntimeError(f"expected one paused step3 transaction, found {len(steps)}")
+        result["restored_manifest_sha256"] = sha256(steps[0] / "manifest.json")
+        result["restored_directory"] = steps[0].name
+        rc, log_path = _every4_worker(run_dir, commit, prepared_sha, updates=4, pause_after=0,
+                                      resume=True, log_name="every4-resume.log")
+        result.update(_every4_receipt("every4-resume", run_dir, rc, log_path,
+                                      expected_start=3, expected_total=4,
+                                      expected_delta=1, expected_energy=1))
+        result["status"] = "completed" if result["verdict"]["verdict"] == "pass" else "failed"
+    except BaseException as exc:
+        result.update(status="failed", error_type=type(exc).__name__, error=str(exc),
+                      traceback=traceback.format_exc()[-3000:])
+    finally:
+        result["finished_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+        atomic_json(Path(OUT_DIR) / "every4-resume.receipt.json", result)
+        runs.commit()
+    print("EVERY4_RESUME_STATUS=" + str(result.get("status")), flush=True)
+    return result
+
+
+@app.function(image=image, cpu=16, memory=65536, timeout=2400, retries=0, volumes={"/runs": runs})
+def every4_compare_remote() -> dict:
+    """Compare both EVERY4 paths: step3 (pause) and step4 (resume) versus continuous."""
+    import sys
+
+    if "/opt/repo" not in sys.path:
+        sys.path.insert(0, "/opt/repo")
+    import numpy as np
+    import torch
+    from kdflow.training_checkpoint import inspect
+
+    continuous = Path(EVERY4_CONTINUOUS)
+    paused = Path(EVERY4_PAUSED)
+    result: dict = {"schema": "simct-p1-every4-compare-v1", "status": "starting",
+                    "continuous": str(continuous), "paused": str(paused)}
+
+    def load_step(root: Path, step: int):
+        folders = sorted((root / "checkpoints").glob(f"step{step:08d}-*"))
+        if len(folders) != 1:
+            raise ValueError(f"expected one step{step} transaction in {root}, found {len(folders)}")
+        folder, manifest = folders[0], json.loads((folders[0] / "manifest.json").read_text())
+        folder, manifest = inspect(root / "checkpoints", manifest["contract"], manifest["world_size"])
+        return (folder, manifest,
+                torch.load(folder / "rank0.pt", map_location="cpu", weights_only=False),
+                torch.load(folder / "driver.pt", map_location="cpu", weights_only=False))
+
+    def equal(x, y, path, problems):
+        if torch.is_tensor(x):
+            if not torch.equal(x, y):
+                problems.append(path)
+        elif isinstance(x, np.ndarray):
+            if not np.array_equal(x, y):
+                problems.append(path)
+        elif isinstance(x, dict):
+            if x.keys() != y.keys():
+                problems.append(path + "/keys")
+                return
+            for key in x:
+                equal(x[key], y[key], f"{path}/{key}", problems)
+        elif isinstance(x, (list, tuple)):
+            if len(x) != len(y):
+                problems.append(path + "/length")
+                return
+            for index, (u, v) in enumerate(zip(x, y)):
+                equal(u, v, f"{path}/{index}", problems)
+        elif x != y:
+            problems.append(path)
+
+    def trajectory(path: Path) -> list:
+        rows = []
+        for line in path.read_text().splitlines():
+            row = json.loads(line)
+            info = row.pop("meta_info", {})
+            row["behavior_logprobs"] = {k: v for k, v in info.items() if "logprob" in k}
+            row["finish_reason"] = info.get("finish_reason")
+            rows.append(row)
+        return rows
+
+    def compare(step: int, rollout_names: list) -> dict:
+        left = load_step(continuous, step)
+        right = load_step(paused, step)
+        problems: list = []
+        for driver in (left[3], right[3]):
+            driver.pop("resource_sample_index", None)
+        equal(left[2], right[2], "actor", problems)
+        equal(left[3], right[3], "driver", problems)
+        traj_problems: list = []
+        for name in rollout_names:
+            left_rows = trajectory(continuous / "checkpoint/rollout_data" / name)
+            right_rows = trajectory(paused / "checkpoint/rollout_data" / name)
+            if len(left_rows) != len(right_rows):
+                traj_problems.append(f"{name}/row_count:{len(left_rows)}!={len(right_rows)}")
+                continue
+            for index, (a, b) in enumerate(zip(left_rows, right_rows)):
+                for field in ("prompt_ids", "output_ids", "behavior_logprobs", "finish_reason"):
+                    if a.get(field) != b.get(field):
+                        traj_problems.append(f"{name}/row{index}/{field}")
+        return {
+            "step": step,
+            "rollout_files": rollout_names,
+            "state_status": "exact_match" if not problems else "mismatch",
+            "state_problems": problems[:20],
+            "state_problem_count": len(problems),
+            "trajectory_status": "exact_match" if not traj_problems else "mismatch",
+            "trajectory_problems": traj_problems[:20],
+            "trajectory_problem_count": len(traj_problems),
+            "continuous_manifest_sha256": sha256(left[0] / "manifest.json"),
+            "paused_manifest_sha256": sha256(right[0] / "manifest.json"),
+        }
+
+    try:
+        print(f"EVERY4_COMPARE_START pid={os.getpid()}", flush=True)
+        result["step3_pause_vs_continuous"] = compare(3, ["1.jsonl", "2.jsonl", "3.jsonl"])
+        result["step4_resume_vs_continuous"] = compare(4, ["4.jsonl"])
+        result["continuous_counters"] = json.loads(
+            (continuous / "checkpoint/run-summary.json").read_text())
+        result["paused_counters"] = json.loads((paused / "checkpoint/run-summary.json").read_text())
+        result["status"] = "completed"
+    except BaseException as exc:
+        result.update(status="failed", error_type=type(exc).__name__, error=str(exc),
+                      traceback=traceback.format_exc()[-3000:])
+    finally:
+        atomic_json(Path(OUT_DIR) / "every4-compare.receipt.json", result)
+        runs.commit()
+    print("EVERY4_COMPARE_STATUS=" + str(result.get("status")), flush=True)
+    return result
+
+
 @app.function(image=image, cpu=8, memory=32768, timeout=1800, retries=0,
               volumes={"/runs": runs})
 def pinned_tests_remote(paths: list) -> dict:
@@ -892,7 +1153,18 @@ def main() -> None:
         # Fire-and-forget: the client only has to live for the spawn call, so a
         # dropped heartbeat cannot lose the result. Receipts land on the volume.
         target = os.environ.get("P1_SPAWN_FN", "sampler_audit")
-        if target == "checkpoint_inspect":
+        if target == "every4_continuous":
+            call = every4_continuous_remote.spawn(os.environ.get("P1_COMMIT", ""),
+                                                  os.environ.get("P1_PREPARED_SHA", ""))
+        elif target == "every4_pause":
+            call = every4_pause_remote.spawn(os.environ.get("P1_COMMIT", ""),
+                                             os.environ.get("P1_PREPARED_SHA", ""))
+        elif target == "every4_resume":
+            call = every4_resume_remote.spawn(os.environ.get("P1_COMMIT", ""),
+                                              os.environ.get("P1_PREPARED_SHA", ""))
+        elif target == "every4_compare":
+            call = every4_compare_remote.spawn()
+        elif target == "checkpoint_inspect":
             call = checkpoint_inspect_remote.spawn(int(os.environ.get("P1_STEP", "1")))
         elif target == "training_reference":
             call = training_reference_remote.spawn(os.environ.get("P1_COMMIT", ""),
@@ -943,6 +1215,29 @@ def main() -> None:
         result = checkpoint_inspect_remote.remote(int(os.environ.get("P1_STEP", "1")))
         atomic_json(out_dir / f"checkpoint-inspect-step{os.environ.get('P1_STEP', '1')}.receipt.json", result)
         print("CHECKPOINT_INSPECT_GATE=" + str(result.get("status")), flush=True)
+        return
+    if gate == "every4_continuous":
+        result = every4_continuous_remote.remote(os.environ.get("P1_COMMIT", ""),
+                                                 os.environ.get("P1_PREPARED_SHA", ""))
+        atomic_json(out_dir / "every4-continuous.receipt.json", result)
+        print("EVERY4_CONTINUOUS_GATE=" + str(result.get("status")), flush=True)
+        return
+    if gate == "every4_pause":
+        result = every4_pause_remote.remote(os.environ.get("P1_COMMIT", ""),
+                                            os.environ.get("P1_PREPARED_SHA", ""))
+        atomic_json(out_dir / "every4-pause.receipt.json", result)
+        print("EVERY4_PAUSE_GATE=" + str(result.get("status")), flush=True)
+        return
+    if gate == "every4_resume":
+        result = every4_resume_remote.remote(os.environ.get("P1_COMMIT", ""),
+                                             os.environ.get("P1_PREPARED_SHA", ""))
+        atomic_json(out_dir / "every4-resume.receipt.json", result)
+        print("EVERY4_RESUME_GATE=" + str(result.get("status")), flush=True)
+        return
+    if gate == "every4_compare":
+        result = every4_compare_remote.remote()
+        atomic_json(out_dir / "every4-compare.receipt.json", result)
+        print("EVERY4_COMPARE_GATE=" + str(result.get("status")), flush=True)
         return
     if gate == "training_reference":
         result = training_reference_remote.remote(os.environ.get("P1_COMMIT", ""),
