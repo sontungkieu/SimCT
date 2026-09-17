@@ -501,7 +501,13 @@ REFERENCE_ROOT = f"/runs/{TRAIN_TAG}-reference"
 RESUME_ROOT = f"/runs/{TRAIN_TAG}-resume"
 
 
-def training_environment(run_root: str, commit: str, prepared_sha: str) -> dict:
+EVERY4_TAG = "p1-triton-every4-20260917"
+EVERY4_CONTINUOUS = f"/runs/{EVERY4_TAG}-continuous"
+EVERY4_PAUSED = f"/runs/{EVERY4_TAG}-paused"
+
+
+def training_environment(run_root: str, commit: str, prepared_sha: str,
+                         *, energy_every: str = "1") -> dict:
     env = {k: v for k, v in os.environ.items() if not k.startswith(("UV_", "PIP_"))}
     env.update({
         "PATH": "/opt/venvs/simct-b200/bin:/usr/local/cuda-13.0/bin:" + env.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
@@ -529,7 +535,7 @@ def training_environment(run_root: str, commit: str, prepared_sha: str) -> dict:
         "MP_SOURCE_COMMIT": commit, "MP_SOURCE_DIRTY": "",
         "MP_QUALIFICATION_POLICY": "p1-triton-training-pair",
         "MP_QUALIFICATION_STATUS": "diagnostic",
-        "MP_ENERGY_LR": "0.001", "MP_ENERGY_EVERY": "1",
+        "MP_ENERGY_LR": "0.001", "MP_ENERGY_EVERY": energy_every,
         "MP_RUN_ROOT": run_root, "MP_OPD_TIMING": "1", "MP_OPD_HOST_MASK": "0",
         "MP_PREPARED_RECEIPT": "/prep/startup-provenance.json",
         "MP_PREPARED_RECEIPT_SHA256": prepared_sha,
