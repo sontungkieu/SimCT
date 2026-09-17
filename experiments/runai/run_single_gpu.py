@@ -148,7 +148,11 @@ if opts["kd_algorithm"] == "xtoken":
     if actual != expected:
         raise ValueError("X-Token projection checksum mismatch")
     opts.update(xtoken_projection_path=str(projection), xtoken_projection_sha256=expected)
+import sys as _sys
 from types import SimpleNamespace
+
+if str(root) not in _sys.path:
+    _sys.path.insert(0, str(root))
 from kdflow.rollout_serving import assert_serving_contract, build_extra_server_args, serving_marker
 
 _serving_namespace = SimpleNamespace(rollout=SimpleNamespace(**{

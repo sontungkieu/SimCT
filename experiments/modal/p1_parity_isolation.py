@@ -496,9 +496,10 @@ def triton_audit_remote() -> dict:
 def pinned_tests_remote(paths: list) -> dict:
     """Run CPU-eligible regression with the pinned interpreter inside the pinned image."""
     py = "/opt/venvs/simct-b200/bin/python"
+    env = dict(os.environ, PYTHONPATH="/opt/repo/experiments/modal/vendor:/opt/repo")
     proc = subprocess.run(
         [py, "-m", "pytest", "-q", *paths, "--disable-warnings", "-p", "no:cacheprovider"],
-        cwd=str(REMOTE_ROOT), text=True, capture_output=True,
+        cwd=str(REMOTE_ROOT), env=env, text=True, capture_output=True,
     )
     result = {
         "status": "passed" if proc.returncode == 0 else "failed",

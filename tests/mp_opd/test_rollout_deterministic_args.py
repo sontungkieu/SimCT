@@ -70,7 +70,7 @@ def test_invalid_flag_fails_closed(tmp_path):
 
 
 def test_extra_server_args_helper_is_the_only_source_of_serving_flags():
-    from kdflow.cli.train_kd_on_policy import build_extra_server_args
+    from kdflow.rollout_serving import build_extra_server_args
 
     class _Rollout:
         def __init__(self, deterministic, seed, disable_graph=True, backend="", radix=False):
@@ -112,4 +112,7 @@ def test_extra_server_args_helper_is_the_only_source_of_serving_flags():
 
 def test_cli_uses_the_helper_for_the_rollout_group():
     source = (ROOT / "kdflow/cli/train_kd_on_policy.py").read_text()
-    assert "extra_server_args=build_extra_server_args(args) or None" in source
+    assert "from kdflow.rollout_serving import" in source
+    assert "serving_args = build_extra_server_args(args)" in source
+    assert "extra_server_args=serving_args or None" in source
+    assert "assert_serving_contract(" in source

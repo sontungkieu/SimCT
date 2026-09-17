@@ -67,7 +67,14 @@ def test_null_summary_fails():
     verdict = classify_terminal(app_state="completed", child_exit=0, summary={"status": None},
                                 expected_total=2)
     assert verdict["verdict"] == "fail"
-    assert "total=None!=2" in verdict["reasons"]
+    assert "total_absent" in verdict["reasons"]
+
+
+def test_summary_without_counters_never_passes():
+    verdict = classify_terminal(app_state="completed", child_exit=0, summary={},
+                                expected_start=1, expected_total=2, expected_session_delta=1)
+    assert verdict["verdict"] == "fail"
+    assert {"start_absent", "total_absent", "session_delta_absent"} <= set(verdict["reasons"])
 
 
 def test_child_exit_and_app_state_stay_independent():

@@ -62,11 +62,17 @@ def classify_terminal(*, app_state: str, child_exit: Optional[int], summary: Any
         reasons.append(f"child_exit={child_exit}")
     if summary is None:
         reasons.append("summary_missing")
-    if expected_start is not None and start is not None and int(start) != expected_start:
+    if expected_start is not None and start is None:
+        reasons.append("start_absent")
+    elif expected_start is not None and start is not None and int(start) != expected_start:
         reasons.append(f"start={start}!={expected_start}")
-    if expected_total is not None and total is not None and total != expected_total:
+    if expected_total is not None and total is None:
+        reasons.append("total_absent")
+    elif expected_total is not None and total is not None and total != expected_total:
         reasons.append(f"total={total}!={expected_total}")
-    if expected_session_delta is not None and delta != expected_session_delta:
+    if expected_session_delta is not None and delta is None:
+        reasons.append("session_delta_absent")
+    elif expected_session_delta is not None and delta != expected_session_delta:
         reasons.append(f"session_delta={delta}!={expected_session_delta}")
     return {
         "app_state": app_state,
