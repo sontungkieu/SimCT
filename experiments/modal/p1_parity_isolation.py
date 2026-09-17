@@ -1098,15 +1098,23 @@ def every4_compare_remote() -> dict:
 
     try:
         print(f"EVERY4_COMPARE_START pid={os.getpid()}", flush=True)
-        result["step3_pause_vs_continuous"] = compare(3, ["1.jsonl", "2.jsonl", "3.jsonl"])
-        step4_ready = (continuous / "checkpoint/rollout_data/4.jsonl").is_file() and \
-            (paused / "checkpoint/rollout_data/4.jsonl").is_file()
-        if step4_ready:
+        def has_step(root: Path, step: int) -> bool:
+            return len(sorted((root / "checkpoints").glob(f"step{step:08d}-*"))) == 1
+
+        if has_step(continuous, 3) and has_step(paused, 3):
+            result["step3_pause_vs_continuous"] = compare(3, ["1.jsonl", "2.jsonl", "3.jsonl"])
+        else:
+            result["step3_pause_vs_continuous"] = {
+                "status": "not_available",
+                "reason": "specimen did not persist a step3 transaction in both lineages; "
+                          "the pinned MP_CHECKPOINT_STEPS saves 1,2 plus the final/latest transaction",
+            }
+        if has_step(continuous, 4) and has_step(paused, 4):
             result["step4_resume_vs_continuous"] = compare(4, ["4.jsonl"])
         else:
             result["step4_resume_vs_continuous"] = {
                 "status": "not_run",
-                "reason": "resume segment has not produced 4.jsonl yet; step3 comparison still valid",
+                "reason": "resume segment has not produced a step4 transaction yet",
             }
         result["continuous_counters"] = json.loads(
             (continuous / "checkpoint/run-summary.json").read_text())
