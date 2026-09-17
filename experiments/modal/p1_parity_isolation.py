@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import os
+import shutil
 import subprocess
 import time
 import traceback
@@ -491,6 +492,237 @@ def triton_audit_remote() -> dict:
     return result
 
 
+
+# --------------------------------------------------------------------------- #
+# GPU gate 4: reference2 + resume1 under the deterministic Triton contract
+# --------------------------------------------------------------------------- #
+TRAIN_TAG = "p1-triton-training-20260917"
+REFERENCE_ROOT = f"/runs/{TRAIN_TAG}-reference"
+RESUME_ROOT = f"/runs/{TRAIN_TAG}-resume"
+
+
+def training_environment(run_root: str, commit: str, prepared_sha: str) -> dict:
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("UV_", "PIP_"))}
+    env.update({
+        "PATH": "/opt/venvs/simct-b200/bin:/usr/local/cuda-13.0/bin:" + env.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
+        "PYTHONPATH": "/opt/repo/experiments/modal/vendor:/opt/repo",
+        "PYTHONUNBUFFERED": "1", "HF_HUB_OFFLINE": "1", "HF_DATASETS_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1", "TOKENIZERS_PARALLELISM": "false",
+        "KDFLOW_TRUST_REMOTE_CODE": "0",
+        "RAY_USAGE_STATS_ENABLED": "0", "NCCL_CUMEM_HOST_ENABLE": "0", "OMP_NUM_THREADS": "4",
+        "CUDA_VISIBLE_DEVICES": "0", "CUDA_HOME": "/usr/local/cuda-13.0",
+        "CPATH": "/opt/venvs/simct-b200/lib/python3.12/site-packages/nvidia/cu13/include",
+        "LD_LIBRARY_PATH": "/tmp/runtime-host-libs:/opt/simct-portable-libs:/usr/local/cuda-13.0/lib64",
+        "MP_RUNTIME_DIR": "/tmp/runtime", "MP_RAY_TMP": "/tmp/ray",
+        "XDG_CACHE_HOME": "/tmp/cache", "TRITON_CACHE_DIR": "/tmp/cache/triton",
+        "TORCH_EXTENSIONS_DIR": "/tmp/cache/torch", "FLASHINFER_WORKSPACE_BASE": "/tmp/cache",
+        "KDFLOW_ROLLOUT_PORT_BASE": "15000", "KDFLOW_ROUTER_PORT_BASE": "16000",
+        "KDFLOW_ROUTER_PROMETHEUS_PORT": "20000",
+        "MP_SHARED_ROOT": "/assets", "MP_STUDENT_PATH": "/assets/student",
+        "MP_TEACHER_PATH": "/assets/teacher", "MP_DATASET_PATH": "/assets/prompts.parquet",
+        "MP_META_PATH": "/assets/selected.parquet", "MP_ENERGY_CHECKPOINT": "/assets/energy-select-4.pt",
+        "MP_ALGORITHM": "mp_opd", "MP_ALTERNATING": "1", "MP_OFFLOAD_ADAM_MOMENTS": "1",
+        "MP_MICRO_TRAIN_BATCH_SIZE": "1", "MP_META_MICRO_BATCH_SIZE": "4",
+        "MP_SEED": "42", "MP_PARTITION_SEED": "43",
+        "MP_MAX_SPAN_LENGTH": "2", "MP_FIXED_SPAN_LENGTH": "2",
+        "MP_ATTN_IMPLEMENTATION": "eager", "MP_CHECKPOINT_STEPS": "1,2",
+        "MP_SOURCE_COMMIT": commit, "MP_SOURCE_DIRTY": "",
+        "MP_QUALIFICATION_POLICY": "p1-triton-training-pair",
+        "MP_QUALIFICATION_STATUS": "diagnostic",
+        "MP_ENERGY_LR": "0.001", "MP_ENERGY_EVERY": "1",
+        "MP_RUN_ROOT": run_root, "MP_OPD_TIMING": "1", "MP_OPD_HOST_MASK": "0",
+        "MP_PREPARED_RECEIPT": "/prep/startup-provenance.json",
+        "MP_PREPARED_RECEIPT_SHA256": prepared_sha,
+        "MP_SNAPSHOT_ID": "assets-20260916",
+        "WANDB_MODE": "offline", "WANDB_DISABLED": "true",
+        # Deterministic Triton serving contract, pinned for reference AND resume.
+        "MP_ROLLOUT_DETERMINISTIC": "1", "MP_ROLLOUT_SEED": "42",
+        "MP_ROLLOUT_ATTENTION_BACKEND": "triton", "MP_ROLLOUT_DISABLE_RADIX_CACHE": "1",
+    })
+    return env
+
+
+def _worker_dirs() -> None:
+    for directory in ("/tmp/runtime/runtime-host-libs", "/tmp/ray", "/tmp/cache/triton",
+                      "/tmp/cache/torch"):
+        Path(directory).mkdir(parents=True, exist_ok=True)
+
+
+def _run_worker(run_dir: Path, env: dict, log_path: Path, timeout: int) -> int:
+    cmd = ["bash", "/opt/repo/experiments/runai/python-b200-host.sh",
+           "/opt/repo/experiments/runai/run_single_gpu.py", "soft", "2", str(run_dir)]
+    started = time.time()
+    with log_path.open("w") as sink:
+        sink.write(f"WORKER_START run_dir={run_dir} pid=pending resume={env.get('MP_RESUME', '0')}\n")
+        sink.flush()
+        try:
+            proc = subprocess.run(cmd, cwd=str(REMOTE_ROOT), env=env, stdout=sink,
+                                  stderr=subprocess.STDOUT, text=True, timeout=timeout)
+            rc = proc.returncode
+        except subprocess.TimeoutExpired:
+            rc = 124
+    with log_path.open("a") as sink:
+        sink.write(f"WORKER_END rc={rc} seconds={time.time() - started:.3f}\n")
+    return rc
+
+
+def _checkpoint_digests(root: Path) -> dict:
+    pointer = root / "checkpoints/latest.json"
+    if not pointer.is_file():
+        return {}
+    latest = json.loads(pointer.read_text())
+    manifest = root / "checkpoints" / latest["directory"] / "manifest.json"
+    return {
+        "latest": latest,
+        "manifest_sha256": sha256(manifest) if manifest.is_file() else None,
+        "directory": latest["directory"],
+        "rollout_files": sorted(p.name for p in (root / "checkpoint/rollout_data").glob("*.jsonl")),
+    }
+
+
+@app.function(image=image, gpu="B200", cpu=12, memory=65536, ephemeral_disk=524288,
+              timeout=5400, retries=0, max_containers=1, single_use_containers=True,
+              volumes={"/assets": assets, "/runs": runs, "/prep": prepvol})
+def training_reference_remote(commit: str, prepared_sha: str) -> dict:
+    """Fresh 2-update reference under the deterministic Triton serving contract."""
+    from kdflow.run_counters import classify_terminal
+
+    _worker_dirs()
+    run_dir = Path(REFERENCE_ROOT)
+    result: dict = {"schema": "simct-p1-training-reference-v1", "arm": "reference",
+                    "source_commit": commit, "run_dir": str(run_dir), "status": "starting"}
+    try:
+        if run_dir.exists():
+            raise RuntimeError(f"reference run dir already exists: {run_dir}")
+        env = training_environment(str(run_dir), commit, prepared_sha)
+        log_path = Path(OUT_DIR) / "training-reference.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        rc = _run_worker(run_dir, env, log_path, timeout=4200)
+        result["child_exit"] = rc
+        summary_path = run_dir / "checkpoint" / "run-summary.json"
+        summary = json.loads(summary_path.read_text()) if summary_path.is_file() else None
+        result["summary_present"] = summary is not None
+        result["verdict"] = classify_terminal(app_state="completed", child_exit=rc, summary=summary,
+                                              expected_start=0, expected_total=2,
+                                              expected_session_delta=2)
+        launch = run_dir / "launch-config.json"
+        if launch.is_file():
+            manifest = json.loads(launch.read_text())
+            result["serving"] = manifest.get("serving")
+            result["launch_config_sha256"] = sha256(launch)
+        result["checkpoints"] = _checkpoint_digests(run_dir)
+        result["log_path"] = str(log_path)
+        result["status"] = "completed" if result["verdict"]["verdict"] == "pass" else "failed"
+    except BaseException as exc:
+        result.update(status="failed", error_type=type(exc).__name__, error=str(exc),
+                      traceback=traceback.format_exc()[-3000:])
+    finally:
+        result["finished_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+        atomic_json(Path(OUT_DIR) / "training-reference.receipt.json", result)
+        runs.commit()
+    print("TRAINING_REFERENCE_STATUS=" + str(result.get("status")), flush=True)
+    print("TRAINING_REFERENCE_VERDICT=" + json.dumps(result.get("verdict"), default=str), flush=True)
+    return result
+
+
+@app.function(image=image, gpu="B200", cpu=12, memory=65536, ephemeral_disk=524288,
+              timeout=5400, retries=0, max_containers=1, single_use_containers=True,
+              volumes={"/assets": assets, "/runs": runs, "/prep": prepvol})
+def training_resume_remote(commit: str, prepared_sha: str) -> dict:
+    """Resume from the reference step1 transaction in a fresh process, one update."""
+    from kdflow.run_counters import classify_terminal
+
+    _worker_dirs()
+    source = Path(REFERENCE_ROOT)
+    run_dir = Path(RESUME_ROOT)
+    result: dict = {"schema": "simct-p1-training-resume-v1", "arm": "resume",
+                    "source_commit": commit, "run_dir": str(run_dir),
+                    "source_transaction": str(source / "checkpoints"), "status": "starting"}
+    try:
+        if run_dir.exists():
+            raise RuntimeError(f"resume run dir already exists: {run_dir}")
+        steps = sorted((source / "checkpoints").glob("step00000001-*"))
+        if len(steps) != 1:
+            raise RuntimeError(f"expected exactly one step1 transaction, found {len(steps)}")
+        destination = run_dir / "checkpoints" / steps[0].name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(steps[0], destination)
+        atomic_json(run_dir / "checkpoints/latest.json", {
+            "directory": destination.name,
+            "manifest_sha256": sha256(destination / "manifest.json"),
+        })
+        previous = json.loads((source / "launch-config.json").read_text())
+        options = previous.get("options", {})
+        for key in ("save_path", "ckpt_path"):
+            if key in options:
+                options[key] = str(options[key]).replace(Path(REFERENCE_ROOT).name,
+                                                         Path(RESUME_ROOT).name)
+        atomic_json(run_dir / "launch-config.json", previous)
+        result["restored_manifest_sha256"] = sha256(destination / "manifest.json")
+        env = training_environment(str(run_dir), commit, prepared_sha)
+        env.update({"MP_RESUME": "1", "MP_PAUSE_AFTER_UPDATES": "0"})
+        log_path = Path(OUT_DIR) / "training-resume.log"
+        rc = _run_worker(run_dir, env, log_path, timeout=3600)
+        result["child_exit"] = rc
+        summary_path = run_dir / "checkpoint" / "run-summary.json"
+        summary = json.loads(summary_path.read_text()) if summary_path.is_file() else None
+        result["summary_present"] = summary is not None
+        result["verdict"] = classify_terminal(app_state="completed", child_exit=rc, summary=summary,
+                                              expected_start=1, expected_total=2,
+                                              expected_session_delta=1)
+        result["checkpoints"] = _checkpoint_digests(run_dir)
+        result["log_path"] = str(log_path)
+        result["status"] = "completed" if result["verdict"]["verdict"] == "pass" else "failed"
+    except BaseException as exc:
+        result.update(status="failed", error_type=type(exc).__name__, error=str(exc),
+                      traceback=traceback.format_exc()[-3000:])
+    finally:
+        result["finished_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+        atomic_json(Path(OUT_DIR) / "training-resume.receipt.json", result)
+        runs.commit()
+    print("TRAINING_RESUME_STATUS=" + str(result.get("status")), flush=True)
+    print("TRAINING_RESUME_VERDICT=" + json.dumps(result.get("verdict"), default=str), flush=True)
+    return result
+
+
+@app.function(image=image, cpu=16, memory=65536, timeout=2400, retries=0, volumes={"/runs": runs})
+def training_compare_remote() -> dict:
+    """CPU comparison of reference step2 against resumed step2 (state + trajectories)."""
+    import sys
+
+    sys.path.insert(0, "/opt/repo")
+    from experiments.runai.queue_full_alternating import compare_checkpoint
+
+    reference = Path(REFERENCE_ROOT)
+    resumed = Path(RESUME_ROOT)
+    result: dict = {"schema": "simct-p1-training-compare-v1", "status": "starting",
+                    "reference": str(reference), "resumed": str(resumed)}
+    try:
+        print(f"COMPARE_STAGE_START state_and_trajectory pid={os.getpid()}", flush=True)
+        try:
+            compare_checkpoint(reference, resumed, expected_rollout_files=2)
+            result["state_status"] = "exact_match"
+            result["trajectory_status"] = "exact_match"
+            result["state_error"] = None
+        except ValueError as exc:
+            result["state_status"] = "mismatch"
+            result["state_error"] = str(exc)
+            result["trajectory_status"] = "unknown"
+        result["reference_counters"] = json.loads(
+            (reference / "checkpoint/run-summary.json").read_text())
+        result["resumed_counters"] = json.loads(
+            (resumed / "checkpoint/run-summary.json").read_text())
+        result["status"] = "completed"
+    except BaseException as exc:
+        result.update(status="failed", error_type=type(exc).__name__, error=str(exc),
+                      traceback=traceback.format_exc()[-3000:])
+    finally:
+        atomic_json(Path(OUT_DIR) / "training-compare.receipt.json", result)
+        runs.commit()
+    print("TRAINING_COMPARE_STATUS=" + str(result.get("status")), flush=True)
+    return result
+
+
 @app.function(image=image, cpu=8, memory=32768, timeout=1800, retries=0,
               volumes={"/runs": runs})
 def pinned_tests_remote(paths: list) -> dict:
@@ -536,7 +768,15 @@ def main() -> None:
         # Fire-and-forget: the client only has to live for the spawn call, so a
         # dropped heartbeat cannot lose the result. Receipts land on the volume.
         target = os.environ.get("P1_SPAWN_FN", "sampler_audit")
-        if target == "manifest_supplement":
+        if target == "training_reference":
+            call = training_reference_remote.spawn(os.environ.get("P1_COMMIT", ""),
+                                                   os.environ.get("P1_PREPARED_SHA", ""))
+        elif target == "training_resume":
+            call = training_resume_remote.spawn(os.environ.get("P1_COMMIT", ""),
+                                                os.environ.get("P1_PREPARED_SHA", ""))
+        elif target == "training_compare":
+            call = training_compare_remote.spawn()
+        elif target == "manifest_supplement":
             call = manifest_supplement_remote.spawn(os.environ.get("P1_PREDECESSOR_SHA", ""))
         elif target == "triton_audit":
             call = triton_audit_remote.spawn()
@@ -572,6 +812,23 @@ def main() -> None:
         atomic_json(out_dir / f"rollout-aa-{mode}.receipt.json", result)
         print("ROLLOUT_AA_GATE_STATUS=" + str(result.get("status")), flush=True)
         print("ROLLOUT_AA_GATE_MARKER=" + json.dumps(sanitize(result.get("marker")), sort_keys=True)[:4000], flush=True)
+        return
+    if gate == "training_reference":
+        result = training_reference_remote.remote(os.environ.get("P1_COMMIT", ""),
+                                                  os.environ.get("P1_PREPARED_SHA", ""))
+        atomic_json(out_dir / "training-reference.receipt.json", result)
+        print("TRAINING_REFERENCE_GATE=" + str(result.get("status")), flush=True)
+        return
+    if gate == "training_resume":
+        result = training_resume_remote.remote(os.environ.get("P1_COMMIT", ""),
+                                               os.environ.get("P1_PREPARED_SHA", ""))
+        atomic_json(out_dir / "training-resume.receipt.json", result)
+        print("TRAINING_RESUME_GATE=" + str(result.get("status")), flush=True)
+        return
+    if gate == "training_compare":
+        result = training_compare_remote.remote()
+        atomic_json(out_dir / "training-compare.receipt.json", result)
+        print("TRAINING_COMPARE_GATE=" + str(result.get("status")), flush=True)
         return
     if gate == "manifest_supplement":
         result = manifest_supplement_remote.remote(os.environ.get("P1_PREDECESSOR_SHA", ""))
