@@ -55,6 +55,7 @@ image = (
 app = modal.App(APP_NAME)
 assets = modal.Volume.from_name(ASSET_VOLUME, create_if_missing=False)
 runs = modal.Volume.from_name(RUN_VOLUME, create_if_missing=False)
+prepvol = modal.Volume.from_name("simct-p1-startup-prep-20260916", create_if_missing=False)
 
 
 # --------------------------------------------------------------------------- #
@@ -420,6 +421,57 @@ def sampler_audit_remote() -> dict:
 
 
 @app.function(image=image, cpu=4, memory=16384, timeout=1800, retries=0,
+              volumes={"/assets": assets, "/runs": runs, "/prep": prepvol})
+def manifest_supplement_remote(predecessor_sha: str) -> dict:
+    """64-row request manifest + asset identity lifted from the existing prep receipt."""
+    import sys
+
+    sys.path.insert(0, "/opt/repo")
+    from kdflow.trajectory import bounded_sampling_params
+    from kdflow.training_checkpoint import seeded_sampling
+
+    source = Path("/runs/p1-hostmask-ab-20260916-r5-control/checkpoint/rollout_data/1.jsonl")
+    records = [json.loads(line) for line in source.read_text().splitlines() if line.strip()]
+    prompt_ids = [record["prompt_ids"] for record in records]
+    params = seeded_sampling(
+        bounded_sampling_params(
+            prompt_ids,
+            {"max_new_tokens": 4096, "temperature": 0.6, "top_p": 0.95},
+            4096,
+        ),
+        seed=42, step=1, count=len(prompt_ids),
+    )
+    prep_path = Path("/prep/startup-provenance.json")
+    prep = json.loads(prep_path.read_text()) if prep_path.is_file() else {}
+    result = {
+        "status": "completed",
+        "predecessor_sha256": predecessor_sha,
+        "source": str(source),
+        "source_sha256": sha256(source),
+        "rows": len(prompt_ids),
+        "manifest": [
+            {
+                "original_index": index,
+                "prompt_len": len(ids),
+                "prompt_sha256": hashlib.sha256(
+                    ",".join(str(item) for item in ids).encode()).hexdigest(),
+                "sampling_seed": params[index]["sampling_seed"],
+                "max_new_tokens": params[index]["max_new_tokens"],
+                "temperature": params[index]["temperature"],
+                "top_p": params[index]["top_p"],
+            }
+            for index, ids in enumerate(prompt_ids)
+        ],
+        "prep_receipt": prep,
+        "prep_receipt_sha256": sha256(prep_path) if prep_path.is_file() else None,
+    }
+    atomic_json(Path(OUT_DIR) / "reference-manifest-supplement.json", result)
+    runs.commit()
+    print("MANIFEST_SUPPLEMENT_ROWS=" + str(result["rows"]), flush=True)
+    return result
+
+
+@app.function(image=image, cpu=4, memory=16384, timeout=1800, retries=0,
               volumes={"/assets": assets, "/runs": runs})
 def triton_audit_remote() -> dict:
     """CPU-only audit of installed Triton backend + Gemma2 semantics."""
@@ -483,7 +535,9 @@ def main() -> None:
         # Fire-and-forget: the client only has to live for the spawn call, so a
         # dropped heartbeat cannot lose the result. Receipts land on the volume.
         target = os.environ.get("P1_SPAWN_FN", "sampler_audit")
-        if target == "triton_audit":
+        if target == "manifest_supplement":
+            call = manifest_supplement_remote.spawn(os.environ.get("P1_PREDECESSOR_SHA", ""))
+        elif target == "triton_audit":
             call = triton_audit_remote.spawn()
         elif target == "pinned_tests":
             paths = [item for item in os.environ.get(
@@ -518,6 +572,11 @@ def main() -> None:
         print("ROLLOUT_AA_GATE_STATUS=" + str(result.get("status")), flush=True)
         print("ROLLOUT_AA_GATE_MARKER=" + json.dumps(sanitize(result.get("marker")), sort_keys=True)[:4000], flush=True)
         return
+    if gate == "manifest_supplement":
+        result = manifest_supplement_remote.remote(os.environ.get("P1_PREDECESSOR_SHA", ""))
+        atomic_json(out_dir / "reference-manifest-supplement.receipt.json", result)
+        print("MANIFEST_SUPPLEMENT_ROWS=" + str(result.get("rows")), flush=True)
+        return
     if gate == "triton_audit":
         result = triton_audit_remote.remote()
         atomic_json(out_dir / "triton-audit.receipt.json", result)
@@ -528,6 +587,7 @@ def main() -> None:
             "P1_TEST_PATHS",
             "/opt/repo/tests/mp_opd/test_rollout_deterministic_args.py,"
             "/opt/repo/tests/mp_opd/test_logprob_probe.py,"
+            "/opt/repo/tests/mp_opd/test_run_counters.py,"
             "/opt/repo/tests/test_runai_contract.py",
         ).split(",") if item]
         result = pinned_tests_remote.remote(paths)

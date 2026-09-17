@@ -14,35 +14,7 @@ from kdflow.backend import get_strategy
 from kdflow.arguments import init_args
 from kdflow.utils.distributed_sampler import DistributedSampler
 from kdflow.utils.utils import get_tokenizer
-
-
-def build_extra_server_args(args) -> dict:
-    """Serving flags handed verbatim to SGLang ServerArgs.
-
-    Only serving-contract switches belong here: request-level sampling stays in
-    the per-request sampling params. Defaults keep the historical launch dict.
-    """
-    extra: dict = {}
-    if args.rollout.rollout_disable_piecewise_cuda_graph:
-        extra["disable_piecewise_cuda_graph"] = True
-    backend = str(getattr(args.rollout, "rollout_attention_backend", "") or "")
-    if backend:
-        extra["attention_backend"] = backend
-    deterministic = bool(getattr(args.rollout, "rollout_deterministic_inference", False))
-    if deterministic or getattr(args.rollout, "rollout_disable_radix_cache", False):
-        # Pinned off so a backend swap stays a single-variable comparison: the
-        # deterministic FlashInfer path already normalises to radix cache off.
-        extra["disable_radix_cache"] = True
-    if deterministic:
-        extra["enable_deterministic_inference"] = True
-        if getattr(args.rollout, "rollout_random_seed", -1) >= 0:
-            extra["random_seed"] = int(args.rollout.rollout_random_seed)
-        # SGLang raises when deterministic inference meets an unsupported backend
-        # that the model handler already filled in (Gemma2/B200 -> trtllm_mha).
-        # Mirror SGLang's own Blackwell fallback unless the user chose one.
-        if not backend:
-            extra["attention_backend"] = "flashinfer"
-    return extra
+from kdflow.rollout_serving import assert_serving_contract, build_extra_server_args  # noqa: F401  (re-exported)
 
 
 def train(args):
@@ -73,9 +45,14 @@ def train(args):
     # Create placement group for resource allocation
     num_gpus = args.train.num_nodes * args.train.num_gpus_per_node
     pg, reordered_bundle_indices, reordered_gpu_ids = create_placement_group(num_gpus)
+    serving_args = build_extra_server_args(args)
+    assert_serving_contract(
+        serving_args,
+        deterministic=bool(getattr(args.rollout, "rollout_deterministic_inference", False)),
+    )
     rollout_group = RolloutActorGroup(
         model_path=args.model.student_name_or_path,
-        extra_server_args=build_extra_server_args(args) or None,
+        extra_server_args=serving_args or None,
         num_actors=args.rollout.rollout_num_engines,
         tp_size=args.rollout.rollout_tp_size,
         num_gpus_per_node=args.train.num_gpus_per_node,

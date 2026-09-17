@@ -148,6 +148,18 @@ if opts["kd_algorithm"] == "xtoken":
     if actual != expected:
         raise ValueError("X-Token projection checksum mismatch")
     opts.update(xtoken_projection_path=str(projection), xtoken_projection_sha256=expected)
+from types import SimpleNamespace
+from kdflow.rollout_serving import assert_serving_contract, build_extra_server_args, serving_marker
+
+_serving_namespace = SimpleNamespace(rollout=SimpleNamespace(**{
+    key: opts.get(key) for key in (
+        "rollout_disable_piecewise_cuda_graph", "rollout_attention_backend",
+        "rollout_deterministic_inference", "rollout_disable_radix_cache", "rollout_random_seed",
+    )
+}))
+serving_extra = build_extra_server_args(_serving_namespace)
+assert_serving_contract(serving_extra, deterministic=opts["rollout_deterministic_inference"])
+
 if opts["mp_opd_fixed_span_length"] <= 0 or opts["mp_opd_max_span_length"] <= 0:
     raise ValueError("span lengths must be positive")
 if mode == "fixed" and opts["mp_opd_fixed_span_length"] > opts["mp_opd_max_span_length"]:
@@ -219,6 +231,14 @@ manifest = {
         "evaluation_contract": "external pinned eval manifest required",
     },
     "gpu_mapping": "single visible GPU maps SGLang base_gpu_id to zero",
+    "serving": {
+        "extra_server_args": serving_extra,
+        "deterministic": opts["rollout_deterministic_inference"],
+        "random_seed": opts["rollout_random_seed"],
+        "attention_backend": opts["rollout_attention_backend"] or "auto",
+        "disable_radix_cache": opts["rollout_disable_radix_cache"] or None,
+        "request_seed_rule": "seeded_sampling(seed, global_step, original_request_index)",
+    },
 }
 if resume:
     previous = json.loads((run_dir / "launch-config.json").read_text())
@@ -249,6 +269,7 @@ if os.environ.get("MP_PREFLIGHT_ONLY") == "1":
         + str(opts["rollout_deterministic_inference"]).lower(),
         flush=True,
     )
+    print("EFFECTIVE_SERVING_ARGS=" + serving_marker(serving_extra), flush=True)
     print(f"PREFLIGHT_READY={run_dir / 'launch-config.json'}")
     raise SystemExit(0)
 
