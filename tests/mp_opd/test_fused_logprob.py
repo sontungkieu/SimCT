@@ -169,3 +169,79 @@ def test_parity_at_production_vocab_scale():
     for chunk in (4096, 65536):
         got = masked_selected_logprobs(logits, labels, vocab_chunk=chunk)
         assert (got - production).abs().max() < 5e-5, chunk
+
+def _credit_fn():
+    from kdflow.algorithms._mp_opd_credit import realized_token_log_probs
+    return realized_token_log_probs
+
+
+def test_credit_seam_is_off_by_default_and_matches_when_enabled(monkeypatch):
+    """The seam must not move the qualified path until it is asked to."""
+    from kdflow.algorithms._mp_opd_credit import fused_credit_enabled
+    realized = _credit_fn()
+    torch.manual_seed(11)
+    labels = torch.randint(0, 64, (5,))
+    for dtype, atol in ((torch.bfloat16, 1e-4), (torch.float32, 1e-6)):
+        logits = torch.randn(5, 64).to(dtype)
+        monkeypatch.delenv("MP_OPD_FUSED_CREDIT", raising=False)
+        assert fused_credit_enabled() is False
+        production = realized(logits, labels)
+        monkeypatch.setenv("MP_OPD_FUSED_CREDIT", "1")
+        assert fused_credit_enabled() is True
+        assert torch.allclose(realized(logits, labels), production, atol=atol), dtype
+
+
+def test_credit_seam_keeps_first_and_second_derivatives(monkeypatch):
+    realized = _credit_fn()
+    torch.manual_seed(12)
+    logits = torch.randn(4, 32, dtype=torch.float64, requires_grad=True)
+    labels = torch.randint(0, 32, (4,))
+    u = torch.randn(4, dtype=torch.float64)
+
+    def second():
+        first = torch.autograd.grad(
+            realized(logits, labels).sum(), logits, create_graph=True)[0]
+        return torch.autograd.grad((first * u.unsqueeze(1)).sum(), logits)[0]
+
+    monkeypatch.delenv("MP_OPD_FUSED_CREDIT", raising=False)
+    production = second()
+    monkeypatch.setenv("MP_OPD_FUSED_CREDIT", "1")
+    assert torch.allclose(second(), production, atol=1e-6)
+
+
+def test_credit_seam_rejects_a_typo_instead_of_silently_choosing(monkeypatch):
+    from kdflow.algorithms._mp_opd_credit import (
+        fused_credit_enabled,
+        fused_credit_vocab_chunk,
+    )
+    for value in ("", "0", "off", "false"):
+        monkeypatch.setenv("MP_OPD_FUSED_CREDIT", value)
+        assert fused_credit_enabled() is False
+    for value in ("1", "true", "on", "masked"):
+        monkeypatch.setenv("MP_OPD_FUSED_CREDIT", value)
+        assert fused_credit_enabled() is True
+    monkeypatch.setenv("MP_OPD_FUSED_CREDIT", "tru")
+    with pytest.raises(ValueError):
+        fused_credit_enabled()
+    monkeypatch.setenv("MP_OPD_FUSED_CREDIT", "1")
+    monkeypatch.delenv("MP_OPD_FUSED_CREDIT_CHUNK", raising=False)
+    assert fused_credit_vocab_chunk() == 16384
+    monkeypatch.setenv("MP_OPD_FUSED_CREDIT_CHUNK", "4096")
+    assert fused_credit_vocab_chunk() == 4096
+    for bad in ("0", "-1", "abc"):
+        monkeypatch.setenv("MP_OPD_FUSED_CREDIT_CHUNK", bad)
+        with pytest.raises(ValueError):
+            fused_credit_vocab_chunk()
+
+
+def test_credit_seam_chunk_size_does_not_move_the_value(monkeypatch):
+    realized = _credit_fn()
+    torch.manual_seed(13)
+    logits = torch.randn(3, 1000).to(torch.bfloat16)
+    labels = torch.randint(0, 1000, (3,))
+    monkeypatch.setenv("MP_OPD_FUSED_CREDIT", "1")
+    monkeypatch.setenv("MP_OPD_FUSED_CREDIT_CHUNK", "1000")
+    full = realized(logits, labels)
+    for chunk in ("1", "7", "333"):
+        monkeypatch.setenv("MP_OPD_FUSED_CREDIT_CHUNK", chunk)
+        assert torch.allclose(realized(logits, labels), full, atol=1e-5), chunk

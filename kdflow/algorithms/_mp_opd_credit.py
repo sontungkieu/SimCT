@@ -5,8 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Sequence
 
+import os
+
 import torch
 
+from ..fused_logprob import masked_selected_logprobs
 from ._mp_opd_atoms import MPAtom
 
 
@@ -20,9 +23,59 @@ class AtomCreditTensors:
     current_nll: torch.Tensor
 
 
+_FUSED_CREDIT_FLAG = "MP_OPD_FUSED_CREDIT"
+_FUSED_CREDIT_CHUNK_FLAG = "MP_OPD_FUSED_CREDIT_CHUNK"
+_FUSED_OFF = frozenset({"", "0", "false", "no", "off", "none"})
+_FUSED_ON = frozenset({"1", "true", "yes", "on", "masked"})
+_DEFAULT_VOCAB_CHUNK = 16384
+
+
+def fused_credit_enabled() -> bool:
+    """Whether the credit path uses the memory-lean selected-log-prob operator.
+
+    Default off, so the qualified vehicle keeps the production log_softmax route until
+    the fused path has its own measured memory trace. A value that is neither clearly
+    on nor clearly off raises instead of silently picking a path: a typo must not let an
+    experiment be reported as evidence for code it never ran.
+    """
+    raw = os.environ.get(_FUSED_CREDIT_FLAG, "").strip().lower()
+    if raw in _FUSED_OFF:
+        return False
+    if raw in _FUSED_ON:
+        return True
+    raise ValueError(f"{_FUSED_CREDIT_FLAG}={raw!r} is not a recognised value")
+
+
+def fused_credit_vocab_chunk() -> int:
+    raw = os.environ.get(_FUSED_CREDIT_CHUNK_FLAG, "").strip()
+    if not raw:
+        return _DEFAULT_VOCAB_CHUNK
+    try:
+        chunk = int(raw)
+    except ValueError as error:
+        raise ValueError(
+            f"{_FUSED_CREDIT_CHUNK_FLAG}={raw!r} must be an integer"
+        ) from error
+    if chunk < 1:
+        raise ValueError(f"{_FUSED_CREDIT_CHUNK_FLAG} must be >= 1")
+    return chunk
+
+
 def realized_token_log_probs(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+    """log p(label) per row, from the same logits the production path consumes.
+
+    The fused branch never builds an fp32 copy of the logits and never runs a full
+    log_softmax; it keeps the value (and both derivatives the energy step needs)
+    identical in fp32 accumulation. At fp64 input it accumulates in fp64 where the
+    production route downcasts to fp32 - training logits are bf16, so both paths
+    accumulate in fp32 there.
+    """
     if logits.ndim != 2 or labels.ndim != 1 or logits.shape[0] != labels.numel():
         raise ValueError("logits must be [tokens,vocab] and labels [tokens]")
+    if fused_credit_enabled():
+        return masked_selected_logprobs(
+            logits, labels, vocab_chunk=fused_credit_vocab_chunk()
+        )
     return torch.log_softmax(logits.float(), dim=-1).gather(1, labels.long().unsqueeze(1)).squeeze(1)
 
 
