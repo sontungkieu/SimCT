@@ -18,7 +18,10 @@ def test_campaign_runs_exact_order_and_budget():
         for _ in q.VARIANTS]
     assert len(configs)==len(q.TRAIN_SEEDS)*len(q.VARIANTS)
     assert all(x['student_updates']==312 and x['B']==64 and x['M']==16 and x['student']=='full' for x in configs)
-    assert [(x['energy_lr'],x['energy_every']) for x in configs[:3]]==[(.001,1),(.0001,1),(.001,4)]
+    assert [(x['energy_lr'],x['energy_every']) for x in configs[:3]]==[(.001,4),(.0001,1),(.001,1)]
+    assert [x['id'] for x in configs[:3]]==['ALT-every4-s42','ALT-lowLR-s42','ALT-main-s42']
+    assert [x['id'] for x in configs][3:6]==['ALT-every4-s43','ALT-lowLR-s43','ALT-main-s43']
+    assert [x['id'] for x in configs][6:]==['ALT-every4-s44','ALT-lowLR-s44','ALT-main-s44']
 
 
 def test_run_command_forwards_pinned_microbatch_not_shell(tmp_path,monkeypatch):

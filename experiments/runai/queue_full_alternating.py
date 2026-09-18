@@ -19,7 +19,9 @@ sys.path.insert(0,str(ROOT))
 sys.path.insert(0,str(ROOT/'experiments/runai'))
 BASE=Path('/workspace/storage-shared/nlp/tungks/borrow8-8MgodXcM')
 STEPS=(40,80,120,156,200,240,280,312)
-VARIANTS=(('main',1e-3,1),('lowLR',1e-4,1),('every4',1e-3,4))
+# Execution order within each seed, cheapest and most memory-forgiving first: every4 pays
+# the second-order energy step once per four updates, then lowLR, then main.
+VARIANTS=(('every4',1e-3,4),('lowLR',1e-4,1),('main',1e-3,1))
 # Training seeds, paired with the two host roles by the split queue: the one-GPU owner
 # runs its seeds' variants in sequence, the many-GPU extras run theirs in parallel, one
 # variant per GPU, one seed after another on the same GPU.
@@ -433,7 +435,11 @@ def submit(args):
     from queue_alternating_followup import choose_state
     case=args.case.resolve();case.mkdir(parents=True,exist_ok=True)
     gpu=subprocess.check_output(['nvidia-smi','-i','0','--query-gpu=uuid','--format=csv,noheader'],text=True).strip()
-    if socket.gethostname()!='hieplh8-beyond-leakage-1-0-0':raise ValueError('Unexpected pod; verify new allocation before submit')
+    expected_pod=os.environ.get('MP_EXPECTED_POD','hieplh8-beyond-leakage-1-0-0')
+    if socket.gethostname()!=expected_pod:
+        raise ValueError('Unexpected pod '+socket.gethostname()
+            +'; set MP_EXPECTED_POD to the verified allocation before submit')
+    print('SUBMIT_POD='+socket.gethostname(),flush=True)
     if subprocess.check_output(['git','status','--porcelain','--untracked-files=no'],cwd=ROOT,text=True).strip():raise ValueError('Dirty source')
     E,D,Q=B.eval_modules()
     with Q.locked(case/'submission.lock'):
@@ -455,6 +461,12 @@ def submit(args):
             c['input_hashes']=paths
             write(case/'eval-template.json',template);write(config_path,c)
         checked_config(case)
+        if getattr(args,'prepare_only',False):
+            # Campaign creation and DAG construction are separate steps so the campaign-level
+            # knobs (offload, serving) can be set on campaign.json before job envs are built.
+            print('PREPARED '+str(config_path),flush=True)
+            print(json.dumps(read(config_path),indent=2),flush=True)
+            return
         jobs=specs(case,gpu);write(case/'queue-plan.json',jobs)
         args.gpu_uuid=gpu
         state=choose_state(args)
@@ -479,7 +491,7 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('action',choices=['submit','audit','qualify','train','generate','score','report','status'])
     p.add_argument('--case',type=Path,required=True);p.add_argument('--run');p.add_argument('--step',type=int,choices=STEPS)
-    p.add_argument('--manager',type=Path,default=BASE/'job-manager');p.add_argument('--state',type=Path)
+    p.add_argument('--manager',type=Path,default=BASE/'job-manager');p.add_argument('--state',type=Path);p.add_argument('--prepare-only',action='store_true')
     a=p.parse_args();case=a.case.resolve()
     if a.action=='submit':return submit(a)
     if a.action=='status':
