@@ -157,3 +157,15 @@ def test_chunked_head_rejects_labels_outside_the_vocabulary():
         chunked_head_selected_logprobs(hidden, torch.tensor([0, 9]), weight, None, vocab_chunk=4)
     with pytest.raises(ValueError):
         chunked_head_selected_logprobs(hidden, torch.tensor([-1, 4]), weight, None, vocab_chunk=4)
+
+def test_parity_at_production_vocab_scale():
+    """The real risk: a 256k vocabulary with chunked log-sum-exp must not drift."""
+    torch.manual_seed(10)
+    vocab, rows = 256000, 4
+    labels = torch.randint(0, vocab, (rows,))
+    # Production shape: the model returns bf16 logits that HF already softcapped.
+    logits = (torch.randn(rows, vocab) * 6.0).clamp(-30, 30).to(torch.bfloat16)
+    production = reference(logits, labels)  # logits.float() -> log_softmax -> gather
+    for chunk in (4096, 65536):
+        got = masked_selected_logprobs(logits, labels, vocab_chunk=chunk)
+        assert (got - production).abs().max() < 5e-5, chunk
