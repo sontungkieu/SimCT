@@ -146,6 +146,43 @@ def audit(case):
         report['pass']=True;write(case/'data-audit.json',report)
 
 
+SERVING_ATTENTION_BACKENDS = frozenset({"triton", "flashinfer", "fa3"})
+
+
+def serving_env(campaign):
+    """Rollout serving contract for one campaign, pinned in campaign.json.
+
+    Defaults reproduce the historical launch (deterministic inference off,
+    backend auto, radix cache untouched). A deterministic contract must be
+    complete: SGLang refuses an unsupported attention backend and the evidence
+    in this campaign pinned radix cache off as part of the treatment.
+    """
+    serving = campaign.get("serving") or {}
+    deterministic = bool(serving.get("deterministic", False))
+    backend = str(serving.get("attention_backend", "") or "")
+    disable_radix = bool(serving.get("disable_radix_cache", False))
+    try:
+        seed = int(serving.get("random_seed", -1))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("campaign serving.random_seed must be an integer") from exc
+    if deterministic:
+        if backend not in SERVING_ATTENTION_BACKENDS:
+            raise ValueError(
+                "deterministic rollout serving requires serving.attention_backend in "
+                + ",".join(sorted(SERVING_ATTENTION_BACKENDS))
+            )
+        if not disable_radix:
+            raise ValueError("deterministic rollout serving pins serving.disable_radix_cache=true")
+        if seed < 0:
+            raise ValueError("deterministic rollout serving requires a non-negative serving.random_seed")
+    return {
+        "MP_ROLLOUT_DETERMINISTIC": "1" if deterministic else "0",
+        "MP_ROLLOUT_SEED": str(seed),
+        "MP_ROLLOUT_ATTENTION_BACKEND": backend,
+        "MP_ROLLOUT_DISABLE_RADIX_CACHE": "1" if disable_radix else "0",
+    }
+
+
 def run_command(case,config,out,limit=312,pause=0,resume=False):
     c=checked_config(case);out=Path(out)
     # An old shell's MP_* flags must not silently alter this immutable campaign.
@@ -160,7 +197,8 @@ def run_command(case,config,out,limit=312,pause=0,resume=False):
         # Ray appends a timestamped session and socket names below this path.
         # Keep the node-local root short enough for AF_UNIX's 107-byte limit.
         MP_RAY_TMP=f'/tmp/ar{os.getpid()}-{time.time_ns()%1000000}',
-        MP_CHECKPOINT_STEPS=','.join(map(str,STEPS)))
+        MP_CHECKPOINT_STEPS=','.join(map(str,STEPS)),
+        **serving_env(c))
     record=out.parent/(out.name+'.qualification.json')
     if record.exists():
         evidence=read(record)
