@@ -99,6 +99,8 @@ def chunked_head_selected_logprobs(
     running_sum = torch.zeros((rows,), dtype=acc, device=hidden.device)
     target = torch.zeros((rows,), dtype=acc, device=hidden.device)
     labels = labels.long()
+    if labels.numel() and (int(labels.min()) < 0 or int(labels.max()) >= vocab):
+        raise ValueError('labels must be within [0, vocab)')
     for start in range(0, vocab, vocab_chunk):
         stop = min(start + vocab_chunk, vocab)
         bias_chunk = None if bias is None else bias[start:stop]
@@ -111,7 +113,11 @@ def chunked_head_selected_logprobs(
         running_max = new_max
         in_chunk = (labels >= start) & (labels < stop)
         if bool(in_chunk.any()):
-            picked = chunk.gather(1, (labels - start).clamp_min(0).unsqueeze(1)).squeeze(1)
+            # gather runs for every row, so out-of-chunk rows (label not in this
+            # chunk at all) must be clamped into range instead of indexing past
+            # the end of the chunk.
+            index = (labels - start).clamp(0, stop - start - 1).unsqueeze(1)
+            picked = chunk.gather(1, index).squeeze(1)
             target = torch.where(in_chunk, picked, target)
     log_z = running_max + torch.log(running_sum)
     return target - log_z

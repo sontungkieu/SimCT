@@ -138,3 +138,22 @@ def test_invalid_inputs_are_rejected():
         masked_selected_logprobs(torch.randn(4, 8), torch.tensor([0, 1, 2, 3]), vocab_chunk=0)
     with pytest.raises(ValueError):
         chunked_head_selected_logprobs(torch.randn(2, 4), torch.tensor([0, 1]), torch.randn(8, 5))
+
+def test_chunked_head_label_absent_from_a_chunk_does_not_index_past_it():
+    """Regression: a row whose label sits in another chunk must not index past this one."""
+    torch.manual_seed(9)
+    hidden = torch.randn(3, 5)
+    weight = torch.randn(9, 5)
+    labels = torch.tensor([8, 0, 8])  # only the first and the last chunk hold labels
+    got = chunked_head_selected_logprobs(hidden, labels, weight, None, vocab_chunk=3)
+    direct = torch.nn.functional.linear(hidden, weight)
+    assert torch.allclose(got, reference(direct, labels), atol=1e-5)
+
+
+def test_chunked_head_rejects_labels_outside_the_vocabulary():
+    hidden = torch.randn(2, 5)
+    weight = torch.randn(9, 5)
+    with pytest.raises(ValueError):
+        chunked_head_selected_logprobs(hidden, torch.tensor([0, 9]), weight, None, vocab_chunk=4)
+    with pytest.raises(ValueError):
+        chunked_head_selected_logprobs(hidden, torch.tensor([-1, 4]), weight, None, vocab_chunk=4)
