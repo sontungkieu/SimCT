@@ -25,9 +25,13 @@ VARIANTS=(('every4',1e-3,4),('lowLR',1e-4,1),('main',1e-3,1))
 # Training seeds, paired with the two host roles by the split queue: the one-GPU owner
 # runs its seeds' variants in sequence, the many-GPU extras run theirs in parallel, one
 # variant per GPU, one seed after another on the same GPU.
-OWNER_SEEDS=(42,)
-EXTRA_SEEDS=(43,44)
-TRAIN_SEEDS=OWNER_SEEDS+EXTRA_SEEDS
+# Seeds this campaign trains. One B200 runs every one of them in sequence through the
+# single-GPU full queue. The two-host split queue would place the first seed on the
+# one-GPU owner and the rest on the many-GPU extras, so a single-seed campaign has no
+# extras plan at all and must not be submitted there.
+TRAIN_SEEDS=(42,)
+OWNER_SEEDS=TRAIN_SEEDS[:1]
+EXTRA_SEEDS=TRAIN_SEEDS[1:]
 WRAPPER=Path('/workspace/storage-shared/nlp/tungks/SimCT/python-b200.sh')
 SELF=Path(__file__).resolve()
 

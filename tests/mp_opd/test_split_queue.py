@@ -11,6 +11,7 @@ q=importlib.util.module_from_spec(spec);spec.loader.exec_module(q)
 
 @pytest.mark.parametrize('host,gpus',[(q.OWNER,['GPU-owner']),(q.EXTRA,q.EXTRA_GPUS[:4])])
 def test_skip_has_no_qualification_job(tmp_path,host,gpus):
+    if host==q.EXTRA and not q.F.EXTRA_SEEDS:pytest.skip('this campaign has no extras seeds')
     jobs=q.specs(tmp_path,host,gpus,'skip')
     assert not any(j['argv'][4]=='qualify' for j in jobs)
     audit=next(j for j in jobs if j['argv'][4]=='audit')
@@ -30,6 +31,7 @@ def test_advisory_schedule_continues_after_terminal_qualification(tmp_path,statu
     if not manager.exists():pytest.skip('Local manager unavailable')
     sys.path.insert(0,str(manager))
     from job_manager.scheduler import readiness
+    if not q.F.EXTRA_SEEDS:pytest.skip('this campaign has no extras seeds')
     jobs=q.specs(tmp_path,q.EXTRA,q.EXTRA_GPUS[:4],'advisory',1800)
     qualify=next(j for j in jobs if j['argv'][4]=='qualify')
     assert qualify['timeout_seconds']==1800
@@ -69,6 +71,7 @@ def test_train_advisory_preserves_unqualified_evidence(tmp_path,monkeypatch,poli
 
 @pytest.mark.parametrize('host,gpus',[(q.OWNER,['GPU-owner']),(q.EXTRA,q.EXTRA_GPUS)])
 def test_plan_manager_contract_and_dependencies(tmp_path,host,gpus):
+    if host==q.EXTRA and not q.F.EXTRA_SEEDS:pytest.skip('this campaign has no extras seeds')
     jobs=q.specs(tmp_path,host,gpus)
     assert jobs==q.specs(tmp_path,host,gpus)
     seen=set()
@@ -138,6 +141,7 @@ def test_worker_ignores_uncommitted_and_preserves_failure(tmp_path,monkeypatch,f
 
 
 def test_producers_require_both_host_status_and_all_trains_terminal(tmp_path):
+    if not q.F.EXTRA_SEEDS:pytest.skip('this campaign has no extras seeds')
     for host,gpus in [(q.OWNER,['GPU-owner']),(q.EXTRA,q.EXTRA_GPUS)]:
         jobs=q.specs(tmp_path,host,gpus);dest=tmp_path/'nodes'/host;dest.mkdir(parents=True)
         (dest/'receipt.json').write_text(json.dumps({'jobs':jobs}))

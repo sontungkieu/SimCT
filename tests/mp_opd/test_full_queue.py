@@ -11,7 +11,7 @@ q=importlib.util.module_from_spec(spec);spec.loader.exec_module(q)
 def test_campaign_runs_exact_order_and_budget():
     configs=q.configurations()
     assert all(x['micro_B']==1 and x['micro_M']==4 for x in configs)
-    assert q.TRAIN_SEEDS==(42,43,44) and q.OWNER_SEEDS==(42,) and q.EXTRA_SEEDS==(43,44)
+    assert q.TRAIN_SEEDS==(42,) and q.OWNER_SEEDS==(42,) and q.EXTRA_SEEDS==()
     assert [x['id'] for x in configs]==[f'ALT-{name}-s{seed}' for seed in q.TRAIN_SEEDS
         for name,_,_ in q.VARIANTS]
     assert [x['train_seed'] for x in configs]==[seed for seed in q.TRAIN_SEEDS
@@ -20,8 +20,7 @@ def test_campaign_runs_exact_order_and_budget():
     assert all(x['student_updates']==312 and x['B']==64 and x['M']==16 and x['student']=='full' for x in configs)
     assert [(x['energy_lr'],x['energy_every']) for x in configs[:3]]==[(.001,4),(.0001,1),(.001,1)]
     assert [x['id'] for x in configs[:3]]==['ALT-every4-s42','ALT-lowLR-s42','ALT-main-s42']
-    assert [x['id'] for x in configs][3:6]==['ALT-every4-s43','ALT-lowLR-s43','ALT-main-s43']
-    assert [x['id'] for x in configs][6:]==['ALT-every4-s44','ALT-lowLR-s44','ALT-main-s44']
+    assert [x['id'] for x in configs]==['ALT-every4-s42','ALT-lowLR-s42','ALT-main-s42']
 
 
 def test_run_command_forwards_pinned_microbatch_not_shell(tmp_path,monkeypatch):
@@ -55,8 +54,8 @@ def test_specs_forwards_case_offload_flag(tmp_path):
 def test_dag_qualification_gate_and_eval_checkpoints(tmp_path):
     jobs=q.specs(tmp_path,'GPU-test')
     assert jobs==q.specs(tmp_path,'GPU-test')
-    assert q.eval_cells()==72 and q.expected_trains(True)==3 and q.expected_trains(False)==6
-    assert len(jobs)==156 and len({j['id'] for j in jobs})==156
+    assert q.eval_cells()==24 and q.expected_trains(True)==3 and q.expected_trains(False)==0
+    assert len(jobs)==54 and len({j['id'] for j in jobs})==54
     seen=set()
     for job in jobs:
         assert set(job['dependencies'])<=seen
