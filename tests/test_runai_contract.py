@@ -119,3 +119,86 @@ def test_full_soft_micro1_meta4_admission_preserves_production_contract(tmp_path
     assert options['generate_max_len'] == 4096
     assert options['attn_implementation'] == 'eager'
     assert options['mp_opd_offload_adam_moments'] is True
+
+OPERATIONAL_KEYS = (
+    'PYTORCH_CUDA_ALLOC_CONF', 'PYTORCH_ALLOC_CONF', 'CUDA_LAUNCH_BLOCKING',
+    'NCCL_CUMEM_HOST_ENABLE', 'NCCL_IB_DISABLE', 'NCCL_NET_GDR_LEVEL', 'NCCL_P2P_DISABLE',
+    'OMP_NUM_THREADS', 'RAY_USAGE_STATS_ENABLED', 'TOKENIZERS_PARALLELISM',
+)
+
+
+def _soft_fixture(tmp_path):
+    for name in ('student', 'teacher'):
+        (tmp_path / name).mkdir()
+        (tmp_path / name / 'config.json').write_text('{}')
+    data = tmp_path / 'prompts.parquet'
+    data.write_bytes(b'fixture')
+    energy = tmp_path / 'energy.pt'
+    meta = tmp_path / 'meta.parquet'
+    energy.write_bytes(b'energy')
+    meta.write_bytes(b'meta')
+    env = {k: v for k, v in os.environ.items() if k not in OPERATIONAL_KEYS}
+    env.update(
+        MP_PREFLIGHT_ONLY='1',
+        MP_STUDENT_PATH=str(tmp_path / 'student'),
+        MP_TEACHER_PATH=str(tmp_path / 'teacher'),
+        MP_DATASET_PATH=str(data),
+        MP_ENERGY_CHECKPOINT=str(energy),
+        MP_META_PATH=str(meta),
+        MP_ALTERNATING='1',
+        MP_ATTN_IMPLEMENTATION='eager',
+        MP_OFFLOAD_ADAM_MOMENTS='1',
+        CUDA_VISIBLE_DEVICES='0',
+    )
+    return env
+
+
+def test_operational_environment_is_empty_by_default(tmp_path):
+    env = _soft_fixture(tmp_path)
+    result = subprocess.run(
+        [sys.executable, str(ROOT / 'experiments/runai/run_single_gpu.py'), 'soft', '2', str(tmp_path / 'out')],
+        env=env, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    config = json.loads((tmp_path / 'out/launch-config.json').read_text())
+    assert config['operational_environment'] == {}
+    assert 'EFFECTIVE_OPERATIONAL_ENV={}' in result.stdout
+    assert 'OPERATIONAL_OVERRIDE' not in result.stdout
+
+
+def test_allocator_override_is_recorded_and_announced(tmp_path):
+    env = _soft_fixture(tmp_path)
+    env['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+    result = subprocess.run(
+        [sys.executable, str(ROOT / 'experiments/runai/run_single_gpu.py'), 'soft', '2', str(tmp_path / 'out')],
+        env=env, capture_output=True, text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    config = json.loads((tmp_path / 'out/launch-config.json').read_text())
+    assert config['operational_environment']['PYTORCH_CUDA_ALLOC_CONF'] == 'expandable_segments:True'
+    assert 'OPERATIONAL_OVERRIDE expandable_segments=True' in result.stdout
+    assert 'expandable_segments:True' in result.stdout
+
+
+def test_resume_tolerates_a_manifest_written_without_the_operational_record(tmp_path):
+    env = _soft_fixture(tmp_path)
+    out = tmp_path / 'out'
+    first = subprocess.run(
+        [sys.executable, str(ROOT / 'experiments/runai/run_single_gpu.py'), 'soft', '2', str(out)],
+        env=env, capture_output=True, text=True,
+    )
+    assert first.returncode == 0, first.stderr
+    manifest = json.loads((out / 'launch-config.json').read_text())
+    manifest.pop('operational_environment')  # a manifest written before this field existed
+    (out / 'launch-config.json').write_text(json.dumps(manifest))
+    (out / 'checkpoints').mkdir()
+    (out / 'checkpoints/latest.json').write_text('{}')
+    resumed = subprocess.run(
+        [sys.executable, str(ROOT / 'experiments/runai/run_single_gpu.py'), 'soft', '2', str(out)],
+        env=dict(env, MP_RESUME='1'), capture_output=True, text=True,
+    )
+    assert resumed.returncode == 0, resumed.stderr
+    attempts = sorted(out.glob('resume-attempt-*.json'))
+    assert attempts, 'resume must record what it ran under'
+    recorded = json.loads(attempts[-1].read_text())['operational_environment']
+    assert recorded == {}

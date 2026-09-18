@@ -209,6 +209,35 @@ for package in ("torch", "transformers", "sglang", "ray"):
     except importlib.metadata.PackageNotFoundError:
         versions[package] = None
 
+# Operational settings change how resources are laid out, never what the numbers
+# are. Record them verbatim in the launch manifest so a diagnostic cannot quietly
+# run under a different allocator or CUDA/NCCL configuration than the baseline it
+# is compared against.
+OPERATIONAL_KEYS = (
+    "PYTORCH_CUDA_ALLOC_CONF",
+    "PYTORCH_ALLOC_CONF",
+    "CUDA_LAUNCH_BLOCKING",
+    "NCCL_CUMEM_HOST_ENABLE",
+    "NCCL_IB_DISABLE",
+    "NCCL_NET_GDR_LEVEL",
+    "NCCL_P2P_DISABLE",
+    "OMP_NUM_THREADS",
+    "RAY_USAGE_STATS_ENABLED",
+    "TOKENIZERS_PARALLELISM",
+)
+
+
+def operational_environment(environ=None):
+    source = os.environ if environ is None else environ
+    return {key: source[key] for key in OPERATIONAL_KEYS if source.get(key)}
+
+
+def expandable_segments_enabled(recorded):
+    joined = "".join(
+        str(value) for key, value in recorded.items() if "ALLOC_CONF" in key
+    ).replace(" ", "").lower()
+    return "expandable_segments:true" in joined
+
 manifest = {
     "qualification_policy": os.environ.get('MP_QUALIFICATION_POLICY','required'),
     "qualification_status": os.environ.get('MP_QUALIFICATION_STATUS','unverified'),
@@ -225,6 +254,7 @@ manifest = {
     "models_sha256": model_manifest,
     "dataset_sha256": (prepared_entries(prepared_receipt, "dataset", opts["train_dataset_path"])[Path(opts["train_dataset_path"]).name]["sha256"] if prepared_receipt is not None else file_hash(Path(opts["train_dataset_path"]))),
     "runtime_versions": versions,
+    "operational_environment": operational_environment(),
     "contract": {
         "schema": "mp-runai-v2", "algorithm": opts["kd_algorithm"],
         "execution_updates": limit or 312, "scheduler_horizon": 312,
@@ -252,7 +282,11 @@ if resume:
         for key in ("load_checkpoint", "pause_after_updates"):
             options.pop(key, None)
         value["options"] = options
-        for key in ("cuda_visible_devices", "cooperative_stop_at", "checkpoint_reserve_seconds"):
+        # Allocator/CUDA operational settings change memory layout only, never numerics, so
+        # they stay out of resume provenance; the resume-attempt manifest records what the
+        # resume actually ran under.
+        for key in ("cuda_visible_devices", "cooperative_stop_at", "checkpoint_reserve_seconds",
+                    "operational_environment"):
             value.pop(key, None)
         return value
     if normalized(previous) != normalized(manifest):
@@ -262,6 +296,13 @@ if resume:
 else:
     (run_dir / "launch-config.json").write_text(json.dumps(manifest, indent=2))
 
+recorded_operational = manifest["operational_environment"]
+if expandable_segments_enabled(recorded_operational):
+    print(
+        "OPERATIONAL_OVERRIDE expandable_segments=True "
+        + json.dumps(recorded_operational, sort_keys=True),
+        flush=True,
+    )
 if os.environ.get("MP_PREFLIGHT_ONLY") == "1":
     print(
         "EFFECTIVE_MP_OPD_OFFLOAD_ADAM_MOMENTS="
@@ -274,6 +315,10 @@ if os.environ.get("MP_PREFLIGHT_ONLY") == "1":
         flush=True,
     )
     print("EFFECTIVE_SERVING_ARGS=" + serving_marker(serving_extra), flush=True)
+    print(
+        "EFFECTIVE_OPERATIONAL_ENV=" + json.dumps(operational_environment(), sort_keys=True),
+        flush=True,
+    )
     print(f"PREFLIGHT_READY={run_dir / 'launch-config.json'}")
     raise SystemExit(0)
 
