@@ -202,3 +202,20 @@ def test_resume_tolerates_a_manifest_written_without_the_operational_record(tmp_
     assert attempts, 'resume must record what it ran under'
     recorded = json.loads(attempts[-1].read_text())['operational_environment']
     assert recorded == {}
+
+def test_diagnostic_max_len_is_applied_and_bounded(tmp_path):
+    env = _soft_fixture(tmp_path)
+    env['MP_MAX_LEN'] = '2048'
+    short = subprocess.run(
+        [sys.executable, str(ROOT / 'experiments/runai/run_single_gpu.py'), 'soft', '2', str(tmp_path / 'out')],
+        env=env, capture_output=True, text=True,
+    )
+    assert short.returncode == 0, short.stderr
+    config = json.loads((tmp_path / 'out/launch-config.json').read_text())
+    assert config['options']['max_len'] == 2048
+    full = subprocess.run(
+        [sys.executable, str(ROOT / 'experiments/runai/run_single_gpu.py'), 'soft', '312', str(tmp_path / 'out2')],
+        env=env, capture_output=True, text=True,
+    )
+    assert full.returncode != 0
+    assert 'diagnostic-only knob' in full.stderr

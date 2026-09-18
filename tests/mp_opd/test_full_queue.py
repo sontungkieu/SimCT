@@ -106,3 +106,22 @@ def test_audit_reads_company_queue_schema_and_blocks_overlap(tmp_path,monkeypatc
         with pytest.raises(ValueError,match='audit failed'):q.audit(tmp_path)
     else:q.audit(tmp_path)
     assert json.loads((tmp_path/'data-audit.json').read_text())['pass']==(not overlap)
+
+def test_run_command_forwards_diagnostic_max_len_only_for_short_runs(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(q,'checked_config',lambda _:dict(student='s',teacher='t',
+        dataset='d',energy='e',meta='m',commit='test',offload_adam_moments=True))
+    monkeypatch.setattr(q,'write',lambda *args:None)
+    seen={}
+    def run(argv,**kwargs):
+        seen['env']=dict(kwargs['env'])
+        return SimpleNamespace(returncode=0)
+    monkeypatch.setattr(q.subprocess,'run',run)
+    monkeypatch.setenv('DIAG_MAX_LEN','2048')
+    q.run_command(tmp_path,q.configurations()[0],tmp_path/'diag',limit=2)
+    assert seen['env']['MP_MAX_LEN']=='2048'
+    q.run_command(tmp_path,q.configurations()[0],tmp_path/'full',limit=312)
+    assert 'MP_MAX_LEN' not in seen['env']
+    monkeypatch.delenv('DIAG_MAX_LEN')
+    q.run_command(tmp_path,q.configurations()[0],tmp_path/'diag-plain',limit=2)
+    assert 'MP_MAX_LEN' not in seen['env']

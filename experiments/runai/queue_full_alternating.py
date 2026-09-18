@@ -194,6 +194,12 @@ def run_command(case,config,out,limit=312,pause=0,resume=False):
     inherited=[p for p in os.environ.get('PYTHONPATH','').split(os.pathsep)
                if p and p not in (vendor,str(ROOT))]
     env['PYTHONPATH']=os.pathsep.join([vendor,str(ROOT)]+inherited)
+
+    # Diagnostic-only passthrough: a shell variable may lower the training sequence cap
+    # for a bounded diagnostic. It can never reach a full run, which stays at the recipe
+    # recorded in launch-config.json.
+    if 0 < limit <= 30 and os.environ.get('DIAG_MAX_LEN'):
+        env['MP_MAX_LEN']=os.environ['DIAG_MAX_LEN']
     env.update(MP_STUDENT_PATH=c['student'],MP_TEACHER_PATH=c['teacher'],MP_DATASET_PATH=c['dataset'],
         MP_MICRO_TRAIN_BATCH_SIZE=str(config['micro_B']),MP_META_MICRO_BATCH_SIZE=str(config['micro_M']),
         MP_ENERGY_CHECKPOINT=c['energy'],MP_SEED=str(config['train_seed']),MP_PARTITION_SEED='43',

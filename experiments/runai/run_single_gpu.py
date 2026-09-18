@@ -110,6 +110,13 @@ if mode == "soft":
             mp_opd_energy_lr=float(os.environ.get('MP_ENERGY_LR','0.001')),
             mp_opd_energy_every=int(os.environ.get('MP_ENERGY_EVERY','1')))
 
+if os.environ.get('MP_MAX_LEN'):
+    # Diagnostic-only: the campaign pins max_len 4096. A short diagnostic may lower it to
+    # test whether the padded pair, not the sample count, is what fills the card.
+    if not (0 < limit <= 30):
+        raise ValueError('MP_MAX_LEN is a diagnostic-only knob (limit 1-30)')
+    opts['max_len'] = int(os.environ['MP_MAX_LEN'])
+
 if opts['micro_train_batch_size'] not in (1,2,4,8,16,32,64):
     raise ValueError('Student microbatch must be a positive divisor of B64')
 if opts.get('mp_opd_meta_microbatch_size', 4) not in (1,2,4,8,16):
