@@ -1,4 +1,5 @@
 import importlib.util
+import os
 from pathlib import Path
 import pytest
 
@@ -33,6 +34,9 @@ def test_run_command_forwards_pinned_microbatch_not_shell(tmp_path,monkeypatch):
     assert captured['MP_MICRO_TRAIN_BATCH_SIZE']=='1'
     assert captured['MP_META_MICRO_BATCH_SIZE']=='4'
     assert captured['MP_OFFLOAD_ADAM_MOMENTS']=='1'
+    paths=captured['PYTHONPATH'].split(os.pathsep)
+    assert paths[0]==str(q.ROOT/'experiments/modal/vendor')
+    assert paths[1]==str(q.ROOT)
 
 
 def test_specs_forwards_case_offload_flag(tmp_path):

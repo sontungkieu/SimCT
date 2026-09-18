@@ -187,6 +187,13 @@ def run_command(case,config,out,limit=312,pause=0,resume=False):
     c=checked_config(case);out=Path(out)
     # An old shell's MP_* flags must not silently alter this immutable campaign.
     env={k:v for k,v in os.environ.items() if not k.startswith('MP_')}
+    # The launcher imports a vendor-only module (the xtoken aligner) plus the repo root.
+    # Queued jobs get these paths from the manager; a direct run_command call must not
+    # depend on the caller's shell having exported them.
+    vendor=str(ROOT/'experiments/modal/vendor')
+    inherited=[p for p in os.environ.get('PYTHONPATH','').split(os.pathsep)
+               if p and p not in (vendor,str(ROOT))]
+    env['PYTHONPATH']=os.pathsep.join([vendor,str(ROOT)]+inherited)
     env.update(MP_STUDENT_PATH=c['student'],MP_TEACHER_PATH=c['teacher'],MP_DATASET_PATH=c['dataset'],
         MP_MICRO_TRAIN_BATCH_SIZE=str(config['micro_B']),MP_META_MICRO_BATCH_SIZE=str(config['micro_M']),
         MP_ENERGY_CHECKPOINT=c['energy'],MP_SEED=str(config['train_seed']),MP_PARTITION_SEED='43',
