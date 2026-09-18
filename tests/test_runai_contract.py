@@ -219,3 +219,24 @@ def test_diagnostic_max_len_is_applied_and_bounded(tmp_path):
     )
     assert full.returncode != 0
     assert 'diagnostic-only knob' in full.stderr
+
+def test_launcher_binds_and_announces_the_effective_max_len():
+    """The manifest must not be able to disagree with what the rollout actually used."""
+    import ast
+    source = ROOT / 'experiments/runai/run_single_gpu.py'
+    tree = ast.parse(source.read_text())
+    init = [node for node in ast.walk(tree) if isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == 'args' for t in node.targets)
+            and isinstance(node.value, ast.Call)
+            and getattr(node.value.func, 'attr', '') == 'init_args']
+    assert len(init) == 1
+    # init_args raises max_len back to prompt_max_len + generate_max_len, so the launcher
+    # must rebind the effective value afterwards and print it for the run log.
+    rebind = [node for node in ast.walk(tree) if isinstance(node, ast.Assign)
+              and any(isinstance(t, ast.Attribute) and t.attr == 'max_len' for t in node.targets)]
+    printed = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+               and getattr(node.func, 'id', '') == 'print'
+               and 'EFFECTIVE_DATA_MAX_LEN' in ast.dump(node)]
+    assert rebind and printed
+    assert min(node.lineno for node in rebind) > init[0].lineno
+    assert min(node.lineno for node in printed) > init[0].lineno

@@ -63,6 +63,14 @@ The expandable arm sets PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True, which
 changes memory layout only; it is recorded in the launch manifest and in the
 sidecar, never inferred.
 
+A sequence cap needs more than `MP_MAX_LEN`: `init_args` raises `max_len` back to
+`prompt_max_len + generate_max_len`, so the launcher rebinds `args.data.max_len`
+afterwards and prints `EFFECTIVE_DATA_MAX_LEN`. The first attempt at this measured
+nothing - an arm with the cap and an arm without it produced byte-identical step-1
+metrics (peak allocated 123.788429 GiB, loss -0.162907, micro-batch `[2, 4096]` at
+index 17, the same second-order OOM) because the manifest recorded 2048 while the
+trainer ran 4096. Report the effective value, never the requested one.
+
 ## Equivalent preprocessing
 
 Span tables retain the same prefix-sum/subtraction operations, executed per

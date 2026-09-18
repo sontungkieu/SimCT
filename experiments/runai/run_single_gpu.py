@@ -365,6 +365,12 @@ try:
 
     # Diagnostic backend with Gemma attention softcapping.
     args = cli.init_args()
+    if os.environ.get('MP_MAX_LEN'):
+        # init_args raises max_len back to prompt_max_len + generate_max_len, so the flag
+        # alone would leave a manifest that disagrees with what actually ran. Bind the
+        # effective value once the arguments exist, before any rollout reads it.
+        args.data.max_len = int(os.environ['MP_MAX_LEN'])
+    print('EFFECTIVE_DATA_MAX_LEN=%d' % int(args.data.max_len), flush=True)
     args.model.attn_implementation = opts['attn_implementation']
     print(f"TRAIN_ATTN_OVERRIDE={opts['attn_implementation']}", flush=True)
     cli.train(args)
