@@ -8,11 +8,15 @@ spec=importlib.util.spec_from_file_location('full_queue',path)
 q=importlib.util.module_from_spec(spec);spec.loader.exec_module(q)
 
 
-def test_six_runs_exact_order_and_budget():
+def test_campaign_runs_exact_order_and_budget():
     configs=q.configurations()
     assert all(x['micro_B']==1 and x['micro_M']==4 for x in configs)
-    assert [x['id'] for x in configs]==['ALT-main-s42','ALT-lowLR-s42','ALT-every4-s42',
-        'ALT-main-s43','ALT-lowLR-s43','ALT-every4-s43']
+    assert q.TRAIN_SEEDS==(42,43,44) and q.OWNER_SEEDS==(42,) and q.EXTRA_SEEDS==(43,44)
+    assert [x['id'] for x in configs]==[f'ALT-{name}-s{seed}' for seed in q.TRAIN_SEEDS
+        for name,_,_ in q.VARIANTS]
+    assert [x['train_seed'] for x in configs]==[seed for seed in q.TRAIN_SEEDS
+        for _ in q.VARIANTS]
+    assert len(configs)==len(q.TRAIN_SEEDS)*len(q.VARIANTS)
     assert all(x['student_updates']==312 and x['B']==64 and x['M']==16 and x['student']=='full' for x in configs)
     assert [(x['energy_lr'],x['energy_every']) for x in configs[:3]]==[(.001,1),(.0001,1),(.001,4)]
 
@@ -45,10 +49,11 @@ def test_specs_forwards_case_offload_flag(tmp_path):
     assert jobs and all(j['env']['MP_OFFLOAD_ADAM_MOMENTS'] == '1' for j in jobs)
 
 
-def test_dag_qualification_gate_and_48_eval_checkpoints(tmp_path):
+def test_dag_qualification_gate_and_eval_checkpoints(tmp_path):
     jobs=q.specs(tmp_path,'GPU-test')
     assert jobs==q.specs(tmp_path,'GPU-test')
-    assert len(jobs)==105 and len({j['id'] for j in jobs})==105
+    assert q.eval_cells()==72 and q.expected_trains(True)==3 and q.expected_trains(False)==6
+    assert len(jobs)==156 and len({j['id'] for j in jobs})==156
     seen=set()
     for job in jobs:
         assert set(job['dependencies'])<=seen
@@ -59,7 +64,8 @@ def test_dag_qualification_gate_and_48_eval_checkpoints(tmp_path):
     trains=[j for j in jobs if 'train' in j['argv']]
     gens=[j for j in jobs if 'generate' in j['argv']]
     scores=[j for j in jobs if 'score' in j['argv']]
-    assert len(trains)==6 and len(gens)==len(scores)==48
+    assert len(trains)==len(q.configurations())
+    assert len(gens)==len(scores)==q.eval_cells()
     assert gens[0]['dependencies']==[trains[-1]['id']]
     assert set(jobs[-1]['dependencies'])=={j['id'] for j in scores}
     assert all(j['gpus']==['GPU-test'] for j in trains+gens)

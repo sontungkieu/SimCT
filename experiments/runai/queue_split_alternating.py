@@ -45,15 +45,22 @@ def specs(case,host,gpus,qualification_policy='required',qualification_timeout=3
         jobs.append(job);return job['id']
     audit=add('audit','audit')
     qualified=audit if qualification_policy=='skip' else add('qualify','qualify',[audit],0)
-    previous=qualified
-    for i,(name,_,_) in enumerate(F.VARIANTS):
-        run=f'ALT-{name}-s{42 if host==OWNER else 43}'
-        train=add(run,'train',[previous if host==OWNER else qualified],0 if host==OWNER else i,run)
-        if host==OWNER:previous=train
-        else:add(f'gen-{i}','generate',[train],i)
-    if host==OWNER:add('gen-0','generate',[previous],0)
+    if host==OWNER:
+        # One GPU: the owner walks its seeds' variants in sequence, then generates.
+        previous=qualified
+        for seed in F.OWNER_SEEDS:
+            for name,_,_ in F.VARIANTS:
+                previous=add(f'ALT-{name}-s{seed}','train',[previous],0,f'ALT-{name}-s{seed}')
+        add('gen-0','generate',[previous],0)
     else:
-        for i in range(3,len(gpus)):add(f'gen-{i}','generate',[audit],i)
+        # Many GPUs: one variant per GPU, its seeds one after another, then generate on it.
+        for i,(name,_,_) in enumerate(F.VARIANTS):
+            previous=qualified
+            for seed in F.EXTRA_SEEDS:
+                run=f'ALT-{name}-s{seed}'
+                previous=add(run,'train',[previous],i,run)
+            add(f'gen-{i}','generate',[previous],i)
+        for i in range(len(F.VARIANTS),len(gpus)):add(f'gen-{i}','generate',[audit],i)
     for i in range(2 if host==OWNER else 4):add(f'score-{i}','score',[audit])
     add('state-export','export')
     return jobs
@@ -180,7 +187,7 @@ def producers_done(case):
         if not (dest/'status.json').exists():return False
         status=F.read(dest/'status.json');receipt=F.read(dest/'receipt.json')
         trains=[j for j in receipt['jobs'] if j['argv'][4]=='train']
-        if len(trains)!=3 or any(status['jobs'].get(j['id']) not in TERMINAL for j in trains):return False
+        if len(trains)!=F.expected_trains(host==OWNER) or any(status['jobs'].get(j['id']) not in TERMINAL for j in trains):return False
     return True
 
 
@@ -255,7 +262,7 @@ def worker(case,phase):
                 time.sleep(10);continue
             if phase=='score':
                 done=list((case/'dispatch').glob('*/score.done.json'))
-                if len(done)==48:F.report(case)
+                if len(done)==F.eval_cells():F.report(case)
             if list((case/'dispatch').glob('*/'+phase+'.error.json')):
                 raise RuntimeError('Work drained with retained '+phase+' errors; see dispatch markers')
             return
@@ -280,7 +287,7 @@ def main():
         for node in (OWNER,EXTRA):
             path=a.case/'nodes'/node/'status.json'
             print(node,json.dumps(F.read(path)) if path.exists() else 'NOT_SUBMITTED')
-        print('EVAL_DONE',len(list((a.case/'dispatch').glob('*/score.done.json'))),'/48')
+        print('EVAL_DONE',len(list((a.case/'dispatch').glob('*/score.done.json'))),'/'+str(F.eval_cells()))
         for path in sorted((a.case/'dispatch').glob('*/*.error.json')):print('ERROR',path,F.read(path))
         return
     F.checked_config(a.case)

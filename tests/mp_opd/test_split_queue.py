@@ -15,9 +15,12 @@ def test_skip_has_no_qualification_job(tmp_path,host,gpus):
     assert not any(j['argv'][4]=='qualify' for j in jobs)
     audit=next(j for j in jobs if j['argv'][4]=='audit')
     trains=[j for j in jobs if j['argv'][4]=='train']
-    assert len(trains)==3 and trains[0]['dependencies']==[audit['id']]
+    assert len(trains)==q.F.expected_trains(host==q.OWNER)
+    assert trains[0]['dependencies']==[audit['id']]
     assert all(j['dependency_policy']=='terminal' for j in trains)
-    if host==q.EXTRA:assert all(j['dependencies']==[audit['id']] for j in trains)
+    if host==q.EXTRA:
+        assert [j['dependencies'] for j in trains]==[[audit['id']] if i%2==0
+            else [trains[i-1]['id']] for i in range(len(trains))]
     else:assert trains[1]['dependencies']==[trains[0]['id']]
 
 
@@ -31,8 +34,14 @@ def test_advisory_schedule_continues_after_terminal_qualification(tmp_path,statu
     qualify=next(j for j in jobs if j['argv'][4]=='qualify')
     assert qualify['timeout_seconds']==1800
     trains=[j for j in jobs if j['argv'][4]=='train']
-    assert all(readiness({'spec':j},{qualify['id']:{'status':status}},0,{})[0]=='ready' for j in trains)
-    assert all(readiness({'spec':j},{qualify['id']:{'status':'running'}},0,{})[0]=='waiting' for j in trains)
+    # One train per GPU starts on qualification (the first seed of each variant); the later
+    # seeds of that GPU wait for their own predecessor instead.
+    first=[j for j in trains if j['dependencies']==[qualify['id']]]
+    chained=[j for j in trains if j['dependencies']!=[qualify['id']]]
+    assert len(first)==len(q.F.VARIANTS)
+    assert len(chained)==len(trains)-len(q.F.VARIANTS)
+    assert all(readiness({'spec':j},{qualify['id']:{'status':status}},0,{})[0]=='ready' for j in first)
+    assert all(readiness({'spec':j},{qualify['id']:{'status':'running'}},0,{})[0]=='waiting' for j in first)
     assert not any(q.EXTRA_GPUS[4] in j['gpus'] for j in jobs if isinstance(j['gpus'],list))
 
 
@@ -68,15 +77,16 @@ def test_plan_manager_contract_and_dependencies(tmp_path,host,gpus):
         seen.add(j['id'])
     train=[j for j in jobs if j['argv'][4]=='train']
     qualify=next(j for j in jobs if j['argv'][4]=='qualify')
-    assert len(train)==3
+    assert len(train)==q.F.expected_trains(host==q.OWNER)
     assert train[0]['dependencies']==[qualify['id']]
     if host==q.OWNER:
-        assert train[1]['dependencies']==[train[0]['id']]
-        assert train[2]['dependencies']==[train[1]['id']]
+        assert [j['dependencies'] for j in train[1:]]==[[t['id']] for t in train[:-1]]
         assert all(j['gpus']==gpus for j in train)
     else:
-        assert all(j['dependencies']==[qualify['id']] for j in train)
-        assert [j['gpus'] for j in train]==[[g] for g in gpus[:3]]
+        # One variant per GPU, its seeds in sequence: every other train starts on qualify.
+        assert [j['gpus'] for j in train]==[[g] for g in gpus[:3] for _ in q.F.EXTRA_SEEDS]
+        assert [j['dependencies'] for j in train]==[[qualify['id']] if i%2==0
+            else [train[i-1]['id']] for i in range(len(train))]
         assert len({j['env']['KDFLOW_ROLLOUT_PORT_BASE'] for j in train})==3
         gen=[j for j in jobs if j['argv'][4]=='generate']
         assert len(gen)==5

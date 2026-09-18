@@ -1,4 +1,4 @@
-"""One-GPU full alternating campaign: qualification -> six trains -> 48 checkpoint evals.
+"""One-GPU full alternating campaign: qualification -> nine trains -> 72 checkpoint evals.
 
 Plans and job IDs are immutable/idempotent. There is no adapter or fresh-SFT
 fallback on resume failure. The full GPU qualification is a success dependency.
@@ -20,6 +20,12 @@ sys.path.insert(0,str(ROOT/'experiments/runai'))
 BASE=Path('/workspace/storage-shared/nlp/tungks/borrow8-8MgodXcM')
 STEPS=(40,80,120,156,200,240,280,312)
 VARIANTS=(('main',1e-3,1),('lowLR',1e-4,1),('every4',1e-3,4))
+# Training seeds, paired with the two host roles by the split queue: the one-GPU owner
+# runs its seeds' variants in sequence, the many-GPU extras run theirs in parallel, one
+# variant per GPU, one seed after another on the same GPU.
+OWNER_SEEDS=(42,)
+EXTRA_SEEDS=(43,44)
+TRAIN_SEEDS=OWNER_SEEDS+EXTRA_SEEDS
 WRAPPER=Path('/workspace/storage-shared/nlp/tungks/SimCT/python-b200.sh')
 SELF=Path(__file__).resolve()
 
@@ -36,7 +42,17 @@ def configurations():
     return [dict(id=f'ALT-{name}-s{seed}',train_seed=seed,student_updates=312,
         B=64,M=16,micro_B=1,micro_M=4,energy_lr=lr,energy_every=every,
         student='full',optimizer='AdamW',student_lr=1e-6,scheduler_horizon=312)
-        for seed in (42,43) for name,lr,every in VARIANTS]
+        for seed in TRAIN_SEEDS for name,lr,every in VARIANTS]
+
+
+def expected_trains(owner):
+    """Trains a host role must show in its receipt before the round counts as produced."""
+    return len(VARIANTS)*(len(OWNER_SEEDS) if owner else len(EXTRA_SEEDS))
+
+
+def eval_cells():
+    """Checkpoint evaluations the campaign schedules: every run at every checkpoint step."""
+    return len(configurations())*len(STEPS)
 
 
 def specs(case,gpu):
@@ -408,7 +424,7 @@ def report(case):
                     rows.append(dict(run=config['id'],group=config['id'].rsplit('-s',1)[0],
                         train_seed=config['train_seed'],step=step,benchmark=bench,eval_seed=seed,metrics=metric))
             if read(path/'lcbfix/summary.json')['status']!='completed':raise ValueError('LCBfix incomplete')
-    write(case/'report.json',dict(status='completed',runs=6,checkpoints=48,cells=rows,
+    write(case/'report.json',dict(status='completed',runs=len(configurations()),checkpoints=eval_cells(),cells=rows,
           eval_seeds=[42,43,44],note='Training seeds and evaluation seeds are separate axes; no imputed failed scores'))
 
 
