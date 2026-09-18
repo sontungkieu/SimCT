@@ -11,18 +11,57 @@ forward/backward boundaries. They do not reset the step peak or synchronize
 the GPU. This removes eager input staging; it does not establish that the
 remaining higher-order attention graph fits a B200. GPU validation is pending.
 
-New full alternating queues use B64/micro2/accumulation32 and M16/meta-micro4.
-The queue forwards these immutable configuration fields to the launcher.
+Current pin: B64/micro1/accumulation64 and M16/meta-micro4. The queue forwards
+these immutable configuration fields to the launcher.
 Use a new campaign directory; do not resume an old micro4 campaign with this
 configuration. The historical synthetic micro4 result below did not establish
 capacity for real company rollouts: cd1334e failed in the second-order inner
-gradient with 168.29 GiB allocated. Micro2 is a memory mitigation, not yet a
-verified real-data capacity or throughput result. Direct launcher defaults
-remain micro4 for compatibility; long runs additionally allow (1,1) and (2,4).
+gradient with 168.29 GiB allocated on real data, and a micro1 run then measured
+148.45 GiB peak allocated / 172.53 GiB peak reserved on a 178.35 GiB B200.
+A micro2/meta4 recipe was queued for one day and never completed a real-data
+run: it is a memory mitigation without capacity evidence, not a verified result.
 
 Production defaults remain full student, B64/micro4/accumulation16 and
 M16/meta-micro4. Do not use synthetic capacity results to increase an existing
 campaign's microbatch or resume it under a different accumulation contract.
+
+### Microbatch admission today
+
+`run_single_gpu.py` admits the recipes (4,4), (1,1) and (2,4) at any limit; every
+other override needs a limit of 1-30. Only the exact (micro1, meta4) soft
+alternating full contract prints ADMISSION_PASS. The campaign recipe itself lives
+in `queue_full_alternating.configurations()` and `checked_config` rejects any
+campaign whose stored runs differ from it, so changing the campaign microbatch
+requires a new case, not a flag.
+
+### Microbatch capacity accounting (2026-09-18)
+
+Marginal cost of one more sample in the student microbatch: (168.29 - 148.45) / 3
+= 6.61 GiB. A micro2 candidate therefore lands near 155 GiB allocated, and the
+allocator holds ~24 GiB above its allocated peak (reserved 172.53 - allocated
+148.45), so the reservation would need ~179 GiB on a 178.35 GiB card: short by
+about 1 GiB plus fragmentation, not by tens of GiB. The peak is the second-order
+graph, so it tracks the longest sample in the microbatch rather than the mean;
+two long samples cost more than twice one. Synthetic micro4 (length 1024, no
+teacher, no rollout, no partition DP, no company weights) passed at 127.52 GiB,
+and the 40.8 GiB gap to the real micro4 failure is the real-data tax.
+
+### Bounded microbatch diagnostic
+
+`experiments/runai/microbatch_diagnostic.py` reuses the production env builder
+(`queue_full_alternating.run_command`) and replaces only the microbatch pair, so
+an arm runs under the same serving contract, offload flag and wrapper as the
+campaign. One GPU at a time; stop on OOM and release the process.
+
+    python3.12 experiments/runai/microbatch_diagnostic.py micro2 2 4 2 plain
+    python3.12 experiments/runai/microbatch_diagnostic.py micro2-expandable 2 4 2 expandable
+
+Each arm writes `<case>/diagnostics/<arm>-<stamp>/` with its launcher log,
+launch-config.json and an operational-environment sidecar, and prints
+DIAG_SUMMARY with the peak, the FULL_META_MEMORY trace count and the run summary.
+The expandable arm sets PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True, which
+changes memory layout only; it is recorded in the launch manifest and in the
+sidecar, never inferred.
 
 ## Equivalent preprocessing
 

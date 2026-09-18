@@ -1,59 +1,64 @@
-"""Execute the launcher guards without importing GPU/model dependencies."""
-import ast
+"""The bounded microbatch diagnostic must report exactly what it ran under."""
+from __future__ import annotations
+
+import importlib.util
+import json
+import sys
 from pathlib import Path
-import pytest
 
-SOURCE = Path(__file__).parents[2]/'experiments/runai/run_single_gpu.py'
+ROOT = Path(__file__).resolve().parents[2]
+for entry in (str(ROOT), str(ROOT / "experiments/runai")):
+    if entry not in sys.path:
+        sys.path.insert(0, entry)
 
-
-def validate(micro, meta, limit):
-    tree = ast.parse(SOURCE.read_text())
-    guards = [node for node in tree.body if isinstance(node, ast.If)
-              and any(isinstance(n, ast.Constant) and isinstance(n.value, str)
-                      and n.value.startswith(('Student microbatch must', 'Meta microbatch must',
-                                             'Microbatch overrides are'))
-                      for n in ast.walk(node))]
-    assert len(guards) == 3
-    limit_guards = [node for node in tree.body if isinstance(node, ast.Assert)
-                    and isinstance(node.test, ast.Compare)
-                    and any(isinstance(n, ast.Name) and n.id == "limit"
-                            for n in ast.walk(node.test))]
-    assert len(limit_guards) == 1
-    admission_assignments = [node for node in tree.body if isinstance(node, ast.Assign)
-                             and any(isinstance(target, ast.Name)
-                                     and target.id in {"micro_recipe", "exact_soft_alternating_full"}
-                                     for target in node.targets)]
-    opts = {
-        'micro_train_batch_size': micro,
-        'mp_opd_meta_microbatch_size': meta,
-        'kd_algorithm': 'mp_opd',
-        'mp_opd_mode': 'soft',
-        'mp_opd_alternating': True,
-        'mp_opd_offload_adam_moments': True,
-        'attn_implementation': 'eager',
-        'train_batch_size': 64,
-        'max_len': 4096,
-        'rollout_batch_size': 64,
-        'generate_max_len': 4096,
-        'lr_scheduler_horizon_steps': 312,
-        'exact_token_trajectory': True,
-        'enforce_max_sequence_length': True,
-    }
-    exec(compile(ast.Module(body=admission_assignments + limit_guards + guards, type_ignores=[]),
-                 str(SOURCE), 'exec'),
-         dict(opts=opts, limit=limit, mode='soft'))
+SPEC = importlib.util.spec_from_file_location(
+    "microbatch_diagnostic", ROOT / "experiments/runai/microbatch_diagnostic.py"
+)
+D = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(D)
 
 
-@pytest.mark.parametrize('micro,meta,limit', [(4,4,312),(64,16,10),(8,8,30),(1,1,2),(1,4,312),(1,4,0)])
-def test_valid_recipe(micro, meta, limit):
-    validate(micro,meta,limit)
+def test_diag_config_changes_only_the_microbatch_pair():
+    import queue_full_alternating as F
+
+    baseline = next(r for r in F.configurations() if r["id"] == "ALT-main-s42")
+    config = D.diag_config(2, 4)
+    assert (config["micro_B"], config["micro_M"]) == (2, 4)
+    trimmed = lambda value: {k: v for k, v in value.items() if k not in ("micro_B", "micro_M")}
+    assert trimmed(config) == trimmed(baseline)
+    # The campaign recipe itself must stay pinned at micro1.
+    assert all(run["micro_B"] == 1 and run["micro_M"] == 4 for run in F.configurations())
 
 
-@pytest.mark.parametrize('micro,meta,limit', [(3,4,10),(4,3,10),(8,4,312),(4,8,0),(1,4,31)])
-def test_invalid_or_unqualified_production_override(micro, meta, limit):
-    with pytest.raises(ValueError): validate(micro,meta,limit)
+def test_summarise_reads_the_peak_and_the_full_meta_trace(tmp_path):
+    run = tmp_path / "arm"
+    (run / "checkpoint").mkdir(parents=True)
+    (run / "checkpoint/run-summary.json").write_text(json.dumps({
+        "optimizer_updates": 2, "energy_updates": 2, "status": "completed",
+        "session_fit_seconds": 500.0,
+    }))
+    log = tmp_path / "arm.attempt-1.log"
+    log.write_text(
+        "x, gpu_peak_memory_allocated_gib: 155.1, gpu_peak_memory_reserved_gib: 179.2, y\n"
+        + "FULL_META_MEMORY " + json.dumps({
+            "phase": "inner_forward", "allocated_bytes": 10,
+            "peak_allocated_bytes": int(200 * 2 ** 30),
+        }) + "\n"
+    )
+    record = D.summarise(log, run)
+    assert record["gpu_peak_memory_allocated_gib"] == 155.1
+    assert record["gpu_peak_memory_reserved_gib"] == 179.2
+    assert record["full_meta_trace_lines"] == 1
+    assert record["full_meta_arithmetic_peak_gib"] == 200.0
+    assert record["optimizer_updates"] == 2 and record["status"] == "completed"
+    assert record["launch_config"] is False
 
 
-def test_update_limit_remains_hard_cap():
-    with pytest.raises(AssertionError):
-        validate(4, 4, 313)
+def test_updates_above_the_diagnostic_bound_are_rejected(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["microbatch_diagnostic.py", "arm", "2", "4", "31"])
+    try:
+        D.main()
+    except ValueError as error:
+        assert "1-30" in str(error)
+    else:
+        raise AssertionError("31 updates must not be admitted as a diagnostic")
