@@ -18,7 +18,11 @@ export TOKENIZERS_PARALLELISM=false
 # MP-OPD: NVRTC headers and isolated FlashInfer cache
 NVRTC_INCLUDE="/opt/venvs/simct-b200/lib/python3.12/site-packages/nvidia/cu13/include"
 test -f "$NVRTC_INCLUDE/nvrtc.h"
-export CPATH="$NVRTC_INCLUDE${CPATH:+:$CPATH}"
+# System include FIRST so the CUDA compiler pairs with its own headers (CCCL
+# congruence check): on skewed nodes (e.g. nvcc 13.3 + venv cu13 13.0 headers)
+# a venv-first CPATH makes nvcc reject its own toolkit. Venv include stays
+# second as fallback for partial system toolkits. Harmless on congruent nodes.
+export CPATH="$CUDA_HOME/include:$NVRTC_INCLUDE${CPATH:+:$CPATH}"
 export FLASHINFER_WORKSPACE_BASE="${XDG_CACHE_HOME:-$TASK_DIR/.cache}"
 
 exec /opt/venvs/simct-b200/bin/python "$@"
