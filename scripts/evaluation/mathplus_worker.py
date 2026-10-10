@@ -656,7 +656,7 @@ def main():
     q = sub.add_parser("gen")
     q.add_argument("--plan", type=Path, required=True)
     q.add_argument("--gpu", type=int, choices=range(8), required=True)
-    q.add_argument("--concurrency", type=int, default=128)
+    q.add_argument("--concurrency", type=int, default=256)
     q.set_defaults(func=cmd_gen)
     q = sub.add_parser("score")
     q.add_argument("--plan", type=Path, required=True)
