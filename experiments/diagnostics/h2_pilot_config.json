@@ -1,0 +1,27 @@
+{
+  "protocol": "structural-behavioral-h2-pilot-v1",
+  "run_id": "h2-pilot-s42-n2-20261015-r1",
+  "seed": 42,
+  "profile": "lhtu05",
+  "prompts": 512,
+  "samples_per_prompt": 2,
+  "temperature": 1.0,
+  "top_p": 1.0,
+  "top_k": 0,
+  "max_new_tokens": 1024,
+  "e3_positions": 1000,
+  "quality_problems": 256,
+  "quality_samples": 8,
+  "calibration_prompt_fraction": 0.2,
+  "bootstrap_replicates": 2000,
+  "runtime_image": "docker.io/codemaivanngu/simct-b200@sha256:33b2b55874b34447a1395328987b64c63d824a05fa6b737fe5978b22d497b24f",
+  "models": {
+    "S": {"repo": "google/gemma-2-2b-it", "revision": "299a8560bedf22ed1c72a8a11e7dce4a7f9f51f8"},
+    "G9": {"repo": "google/gemma-2-9b-it", "revision": "11c9b309abf73637e4b6f9a3fa1e92e615547819"},
+    "Q": {"repo": "Qwen/Qwen2.5-7B-Instruct", "revision": "a09a35458c702b33eeacc393d103063234e8bc28"},
+    "L": {"repo": "meta-llama/Llama-3.1-8B-Instruct", "revision": null}
+  },
+  "dataset_mix": {"gsm8k_train": 256, "math_train": 256},
+  "parity": {"max_abs_logprob": 0.1, "mean_abs_logprob": 0.02, "canonical_head_max_abs": 0.00001},
+  "scope": "H2 inference only; unavailable primary models explicitly mark the scientific gate incomplete"
+}
