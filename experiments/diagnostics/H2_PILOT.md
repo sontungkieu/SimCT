@@ -46,6 +46,67 @@ prompt-clustered summaries. None of these downstream stages has been executed.
 Five dependency-free measurement tests pass; AST/config checks pass. These
 checks do not establish GPU/backend correctness or end-to-end completion.
 
+## Bounded performance benchmark (separate from scientific stages)
+
+The subsequent user request authorizes a100-position Modal cost benchmark;
+larger work belongs on company hardware. Current requested teachers are G9
+and Q, with S as student. L is deferred, and no L job is launched by the
+benchmark. `h2_e3_benchmark.py` runs under a fresh run ID and writes only
+performance-proxy artifacts; it never relaxes `require_parity` for the study.
+
+Because there is no qualified student pool yet, its fixtures are100 aligned
+positions from63 GSM8K/MATH training reference problems. Their native prefix
+lengths range36–1176 for S/G9 and57–1214 for Q. Selection is by seed42 hash,
+stratified by category/prefix-length bucket; weights refer to this reference
+fixture population, not to an unobserved student-rollout population.
+
+It measures top10 greedy candidate proposals (at most4 tokens), the deduplicated
+S/G9/Q union plus realized reference word, and scoring with independent KV
+cache clones, canonical prefix/roundtrip checks, full-vocabulary boundary
+softmax, raw temperature1 and representative calibrated temperature1.25.
+No global temperature is fitted by this timing test. It uses HF eager BF16
+throughout; the failed SGLang softcap adapter is disabled for benchmark stages.
+Each stage has a900-second worker cap. Rate estimates exclude the first5
+positions, retain warmup telemetry, and extrapolate8k with20% reserve.
+Canonical-path rejections and reference-versus-student differences must be
+reported alongside cost. Benchmark data cannot be used as H2 evidence.
+
+Stage order: `bench-prepare` (CPU), `bench-proposal` per S/G9/Q,
+`bench-merge` (CPU), `bench-scoring` per S/G9/Q, `bench-report` (CPU).
+Use `H2_RUN_ID=h2-e3-bench100-20261015-r1` and the explicit lhtu05 profile.
+S uses L4+4CPU+24GiB; G9/Q use L40S+4CPU+32GiB. Cache assets are reused;
+no new dependency runtime is installed or rebuilt.
+
+The 100-position run completed successfully for all three models. Measured
+population-weighted seconds per position (first five excluded) are:
+
+| Model / GPU | Candidate proposal | Word scoring | Projected 8k GPU hours | Projected 8k USD |
+| --- | ---: | ---: | ---: | ---: |
+| S / L4 | 1.965878 | 0.815440 | 6.190885 | 7.303065 |
+| G9 / L40S | 2.098019 | 0.820735 | 6.498546 | 15.567813 |
+| Q / L40S | 0.851697 | 0.455157 | 2.917908 | 6.990093 |
+
+The observed union has 12.68 candidates/position (range 3–25); its weighted
+population estimate is 14.126788. Canonical-prefix/roundtrip checks reject
+42/1268 candidate attempts each for S/G9 and 40/1268 for Q. The four-token
+proposal cap leaves 7/1000 proposals incomplete for S and 9/1000 each for
+G9/Q; this cap is part of the measured workload. Extrapolation is
+15.607339 aggregate GPU hours and USD29.860971, or USD35.833165 with 20%
+reserve. A sensitivity calculation charging every candidate at the observed
+valid-candidate rate gives USD36.261969 including reserve. These estimates
+exclude rollout generation, full-pool scoring, calibration fitting, parity
+repairs and Modal startup/output IO. The 8k workload has not been launched.
+
+At 2026-10-14T18:53:40Z, Modal billing reports USD0.49660090 for this benchmark
+description; billing may still lag. The local machine-readable summary and
+per-model artifacts are in `remote_artifacts/h2-e3-bench100-20261015-r1/`.
+Proposal/scoring receipts identify the executed source hashes; later dispatch
+guards prevent L jobs and require a separate benchmark run ID. These guards
+were checked locally, and the final CPU report used the guarded wrapper.
+All six model artifacts contain 100 matching unique positions, with finite
+positive timings and valid/rejected candidate counts accounting for every
+attempt. Five measurement tests and AST checks pass.
+
 The finite E3 implementation is explicitly an approximate canonical-path,
 candidate-conditional view. It does NOT implement the new PDF's explicit
 word-boundary factor plus OTHER distribution. The guide is new source material

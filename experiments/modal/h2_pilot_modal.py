@@ -24,6 +24,7 @@ SOURCES = {
     'experiments/diagnostics/h2_measurements.py': 'h2_measurements.py',
     'experiments/diagnostics/h2_e3.py': 'h2_e3.py',
     'experiments/diagnostics/h2_report.py': 'h2_report.py',
+    'experiments/diagnostics/h2_e3_benchmark.py': 'h2_e3_benchmark.py',
     'experiments/diagnostics/h2_sitecustomize.py': 'sitecustomize.py',
     'experiments/diagnostics/h2_pilot_config.json': 'h2_pilot_config.json',
     'experiments/modal/mp_opd_parity_worker.py': 'mp_opd_parity_worker.py',
@@ -55,13 +56,17 @@ def execute(stage, arm, seconds, attempt):
     else:
         env.pop('HF_HUB_OFFLINE', None); env.pop('TRANSFORMERS_OFFLINE', None)
     env['H2_STAGE_ATTEMPT'] = str(attempt)
+    benchmark = stage.startswith('bench-')
+    if benchmark:
+        env.pop('H2_CANONICAL_GEMMA_SOFTCAP',None)
+    worker = 'h2_e3_benchmark.py' if benchmark else 'h2_pilot.py'
     start = time.monotonic(); position = 0; process = None; error = None
     try:
         with log.open('x') as output:
-            process = subprocess.Popen([PY, '-u', '/opt/h2/h2_pilot.py', stage, arm],
+            process = subprocess.Popen([PY, '-u', '/opt/h2/'+worker, stage, arm],
                 env=env, stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
             while process.poll() is None:
-                if time.monotonic() - start > seconds:
+                if time.monotonic() - start > (min(seconds,900) if benchmark else seconds):
                     raise TimeoutError('H2 stage runtime cap reached')
                 with log.open() as reader:
                     reader.seek(position); chunk = reader.read(); position = reader.tell()
@@ -118,9 +123,16 @@ def analysis(stage, arm, attempt): return execute(stage, arm, 1200, attempt)
 def main(stage: str = 'prepare', arm: str = 'S', gpu: str = 'L4', attempt: int = 1):
     if stage not in {'prepare', 'parity', 'rollout', 'score', 'events', 'quality', 'report',
                      'e3-candidates', 'e3-merge', 'e3-score'}:
-        raise ValueError('Unknown H2 stage')
+        if stage not in {'bench-prepare','bench-proposal','bench-merge','bench-scoring','bench-report'}:
+            raise ValueError('Unknown H2 stage')
     if arm not in {'S', 'G9', 'Q', 'L', 'ALL'}: raise ValueError(arm)
     if gpu not in {'L4', 'L40S'}: raise ValueError(gpu)
-    result = prepare.remote(arm, attempt) if stage == 'prepare' else analysis.remote(stage,arm,attempt) if stage in {'e3-merge','report'} else (
+    if stage.startswith('bench-'):
+        if RUN == CONFIG.get('run_id'):
+            raise ValueError('Benchmark requires a separate H2_RUN_ID')
+        expected_arms = {'S', 'G9', 'Q'} if stage in {'bench-proposal', 'bench-scoring'} else {'ALL'}
+        if arm not in expected_arms:
+            raise ValueError('Benchmark teacher scope is G9/Q with S as student')
+    result = prepare.remote(arm, attempt) if stage == 'prepare' else analysis.remote(stage,arm,attempt) if stage in {'e3-merge','report','bench-prepare','bench-merge','bench-report'} else (
         l4.remote(stage, arm, attempt) if gpu == 'L4' else l40s.remote(stage, arm, attempt))
     print('H2_LOCAL_RECEIPT_JSON=' + json.dumps(result))
