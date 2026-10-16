@@ -49,6 +49,7 @@ role_for() {
     bench:huyhq21-membedding-v3-0-0:3) echo "B";;
     bench:convert-nemo-rl-4gpus-v100-2608-0-3:0) echo "Q";;
     pool:convert-nemo-rl-4gpus-v100-2608-0-3:*) echo "S";;
+    audit:convert-nemo-rl-4gpus-v100-2608-0-3:*) echo "S";;
     *) echo "";;
   esac
 }
@@ -75,8 +76,8 @@ fi
 WANT="$(role_for "$STAGE" "$HOST" "$GPU")"
 [ -n "$WANT" ] || { echo "REFUSE: $HOST gpu$GPU not assigned for stage $STAGE"; exit 5; }
 [ "$ARM" = "$WANT" ] || { echo "REFUSE: $HOST gpu$GPU runs $WANT this phase, not $ARM"; exit 5; }
-if [ "$STAGE" = "pool" ]; then
-  [ -n "$SHARD" ] || { echo "REFUSE: pool needs --shard NN"; exit 2; }
+if [ "$STAGE" = "pool" ] || [ "$STAGE" = "audit" ]; then
+  [ -n "$SHARD" ] || { echo "REFUSE: $STAGE needs --shard NN"; exit 2; }
   case " $(pool_shards_for "$HOST" "$GPU") " in
     *" $SHARD "*) ;;
     *) echo "REFUSE: shard $SHARD not assigned to $HOST gpu$GPU"; exit 5;;
@@ -103,6 +104,11 @@ case "$STAGE" in
   pool)
     [ "$ARM" = "S" ] || { echo "REFUSE: pool is student-only"; exit 2; }
     exec /opt/venv/bin/python "$SB_NEW/experiments/diagnostics/sb_pool.py" \
+      --shard "$SHARD"
+    ;;
+  audit)
+    # CPU-only (tokenizers); GPU guard still applies for placement discipline.
+    exec /opt/venv/bin/python "$SB_NEW/experiments/diagnostics/sb_audit.py" \
       --shard "$SHARD"
     ;;
   *) echo "REFUSE: unknown stage $STAGE"; exit 2;;

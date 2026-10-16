@@ -24,8 +24,13 @@ def main() -> None:
     from h2_tokenizer_audit import audit_pair, aggregate_audits
 
     root = Path(args.root)
+    pool_path = root / "work" / f"pool-{args.shard}.json"
+    if not pool_path.is_file():
+        print(f"REFUSE: pool-{args.shard}.json not ready; run pool first",
+              file=sys.stderr)
+        sys.exit(2)
     assets = json.loads((root / "assets.json").read_text())
-    pool = json.loads((root / "work" / f"pool-{args.shard}.json").read_text())
+    pool = json.loads(pool_path.read_text())
     toks, vocabs = {}, {}
     for arm in ("S", "B", "Q"):
         toks[arm] = AutoTokenizer.from_pretrained(
