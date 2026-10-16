@@ -15,7 +15,7 @@ from pathlib import Path
 
 import modal
 
-RUN = os.environ.get("SB_MODAL_RUN", "sb-debug-20261016-r11")
+RUN = os.environ.get("SB_MODAL_RUN", "sb-debug-20261016-r15")
 ROOT = Path(__file__).resolve().parents[2] if modal.is_local() else Path("/opt/sb")
 if modal.is_local():
     with open(ROOT / "experiments/diagnostics/h2_pilot_config.json") as f:
@@ -264,20 +264,32 @@ def eval_s(tag: str, split: str, samples: int, checkpoint: str,
     return {"kind": "eval", "tag": tag}
 
 
-@app.function(image=image, cpu=8, memory=65536, timeout=3300,
+@app.function(image=image, gpu="L40S", cpu=4, memory=32768, timeout=1800,
               retries=0, max_containers=1, scaledown_window=2, volumes=volumes)
-def train_cpu(run: str, args: str):
-    """CPU training smoke (self-distill loop validation, no GPU)."""
+def train_gpu(run: str, args: str, resume_from: str = "", probe_grad: str = ""):
+    """GPU training smoke (self-distill loop validation)."""
+    import shutil
     assets.reload()
     results.reload()
     root = Path("/results") / RUN
     work = root / "work"
     (work / "train").mkdir(parents=True, exist_ok=True)
     _write_assets(root)
+    if resume_from:
+        src = Path("/results") / resume_from / "work" / "train"
+        for p in sorted(src.glob("**/*")):
+            if p.is_file():
+                dst = work / "train" / p.relative_to(src)
+                if not dst.exists():
+                    dst.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy(p, dst)
     log = work / f"train-{run}.log"
     if log.exists():
         raise RuntimeError("output exists; use a new run id for repairs")
     env = _study_env(root)
+    env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+    if probe_grad:
+        env["SB_PROBE_GRAD"] = "1"
     cmd = [PY, "-u", "/opt/sb/sb_train.py", "--run", run] + args.split()
     rc = _run(cmd, env, log, 3200)
     results.commit()
@@ -548,7 +560,13 @@ def main(job: str = "fetch", arm: str = "S", dtype: str = "bfloat16",
     elif job == "trainsmoke":
         if arm != "S":
             raise ValueError("trainsmoke is S self-distill only")
-        print("SB_LOCAL_JSON=" + json.dumps(train_cpu.remote("T-SS-self", "--smoke")))
+        print("SB_LOCAL_JSON=" + json.dumps(train_gpu.remote("T-SS-self", "--smoke", "")))
+    elif job == "trainresume":
+        print("SB_LOCAL_JSON=" + json.dumps(
+            train_gpu.remote("T-SS-self", "--smoke", "sb-debug-20261016-r12")))
+    elif job == "trainprobe":
+        print("SB_LOCAL_JSON=" + json.dumps(
+            train_gpu.remote("T-B-strict", "--smoke --lr 1e-6", "", "1")))
     elif job == "audit":
         if not shard:
             raise ValueError("audit needs --shard NN")

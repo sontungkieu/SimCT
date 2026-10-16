@@ -156,6 +156,8 @@ case "$STAGE" in
   train)
     [ "$ARM" = "S" ] || { echo "REFUSE: train student is S"; exit 2; }
     [ -n "$RUN" ] || { echo "REFUSE: train needs --run ID"; exit 2; }
+    # Eager stack only (no SGLang): expandable segments fights fragmentation.
+    export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
     if [ -n "$LR" ]; then
       exec /opt/venv/bin/python "$SB_NEW/experiments/diagnostics/sb_train.py" \
         --run "$RUN" --lr "$LR"

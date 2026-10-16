@@ -124,8 +124,13 @@ def main() -> None:
     assets = json.loads((root / "assets.json").read_text())
     device = "cuda" if torch.cuda.is_available() else "cpu"
     student, s_tok = load_lm(assets["models"]["S"]["path"], DTYPES["S"], True)
-    teacher, t_tok = load_lm(assets["models"][teacher_arm]["path"],
-                             DTYPES[teacher_arm], False)
+    if teacher_arm == "S":
+        # Smoke-only self-distill: share weights (no second copy); Llama has
+        # no dropout so train-mode numerics match eval-mode here.
+        teacher, t_tok = student, s_tok
+    else:
+        teacher, t_tok = load_lm(assets["models"][teacher_arm]["path"],
+                                 DTYPES[teacher_arm], False)
     stop = set(terminal_token_ids(s_tok))
     pad = s_tok.pad_token_id if s_tok.pad_token_id is not None else s_tok.eos_token_id
     s_vocab = __import__("h2_measurements").vocabulary_bytes(s_tok, "bpe")
@@ -289,6 +294,19 @@ def main() -> None:
                 if p.grad is not None:
                     p.grad.div_(tot_tok)
         torch.nn.utils.clip_grad_norm_(student.parameters(), CLIP)
+        if os.environ.get("SB_PROBE_GRAD") and u == start_u:
+            norms = [float(p.grad.abs().max()) for p in student.parameters()
+                     if p.grad is not None]
+            print(json.dumps({"probe_update": u + 1,
+                              "probe_loss": tot_loss_num / tot_tok,
+                              "probe_tokens": tot_tok,
+                              "probe_grad_max": max(norms) if norms else None,
+                              "probe_grad_mean": (sum(norms) / len(norms)
+                                                  if norms else None)}),
+                  flush=True)
+            print("SB_PROBE_DONE", flush=True)
+            logf.close()
+            return
         opt.step()
         rec = {"update": u + 1, "loss": tot_loss_num / tot_tok,
                "tokens": tot_tok, "lr": sched_lr(u),
