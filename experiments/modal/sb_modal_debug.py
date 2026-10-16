@@ -15,7 +15,7 @@ from pathlib import Path
 
 import modal
 
-RUN = os.environ.get("SB_MODAL_RUN", "sb-debug-20261016-r10")
+RUN = os.environ.get("SB_MODAL_RUN", "sb-debug-20261016-r11")
 ROOT = Path(__file__).resolve().parents[2] if modal.is_local() else Path("/opt/sb")
 if modal.is_local():
     with open(ROOT / "experiments/diagnostics/h2_pilot_config.json") as f:
@@ -34,6 +34,7 @@ SOURCES = {
     "experiments/diagnostics/sb_qualify.py": "sb_qualify.py",
     "experiments/diagnostics/sb_audit.py": "sb_audit.py",
     "experiments/diagnostics/sb_propose.py": "sb_propose.py",
+    "experiments/diagnostics/sb_train.py": "sb_train.py",
     "experiments/diagnostics/sb_bridge.py": "sb_bridge.py",
     "experiments/diagnostics/sb_score.py": "sb_score.py",
     "experiments/diagnostics/sb_fixtures.py": "sb_fixtures.py",
@@ -230,6 +231,32 @@ def bench_big(arm: str, dtype: str):
               retries=0, max_containers=1, scaledown_window=2, volumes=volumes)
 def pool_s(shard: str):
     return _gpu_job("pool", "S", "bfloat16", 3200, shard)
+
+
+@app.function(image=image, cpu=8, memory=65536, timeout=3300,
+              retries=0, max_containers=1, scaledown_window=2, volumes=volumes)
+def train_cpu(run: str, args: str):
+    """CPU training smoke (self-distill loop validation, no GPU)."""
+    assets.reload()
+    results.reload()
+    root = Path("/results") / RUN
+    work = root / "work"
+    (work / "train").mkdir(parents=True, exist_ok=True)
+    _write_assets(root)
+    log = work / f"train-{run}.log"
+    if log.exists():
+        raise RuntimeError("output exists; use a new run id for repairs")
+    env = _study_env(root)
+    cmd = [PY, "-u", "/opt/sb/sb_train.py", "--run", run] + args.split()
+    rc = _run(cmd, env, log, 3200)
+    results.commit()
+    tail = "\n".join(log.read_text().splitlines()[-8:])
+    print(f"SB_TRAIN run={run} rc={rc}\n{tail}", flush=True)
+    print(f"SB_SUMMARY_JSON={json.dumps({'kind': 'train', 'run': run, 'rc': rc})}",
+          flush=True)
+    if rc != 0:
+        raise RuntimeError(f"train {run} failed; log authoritative")
+    return {"kind": "train", "run": run}
 
 
 @app.function(image=image, gpu="L40S", cpu=4, memory=32768, timeout=1800,
@@ -481,6 +508,10 @@ def main(job: str = "fetch", arm: str = "S", dtype: str = "bfloat16",
         print("SB_LOCAL_JSON=" + json.dumps(pool_s.remote(shard)))
     elif job == "bridge":
         print("SB_LOCAL_JSON=" + json.dumps(bridge_b.remote()))
+    elif job == "trainsmoke":
+        if arm != "S":
+            raise ValueError("trainsmoke is S self-distill only")
+        print("SB_LOCAL_JSON=" + json.dumps(train_cpu.remote("T-SS-self", "--smoke")))
     elif job == "audit":
         if not shard:
             raise ValueError("audit needs --shard NN")
