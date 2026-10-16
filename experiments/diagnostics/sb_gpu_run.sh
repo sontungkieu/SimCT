@@ -5,14 +5,16 @@
 # Usage: SB_ROOT=... SB_NEW=... bash sb_gpu_run.sh <stage> --arm S --dtype bfloat16 --gpu 0
 set -u
 set -o pipefail
-STAGE="${1:?usage: sb_gpu_run.sh <stage> --arm A --dtype D --gpu N}"; shift
-ARM=""; DTYPE="bfloat16"; GPU=""; SHARD=""
+STAGE="${1:?usage: sb_gpu_run.sh <stage> --arm A ...}"; shift
+ARM=""; DTYPE="bfloat16"; GPU=""; SHARD=""; RUN=""; LR=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --arm) ARM="${2:?}"; shift 2;;
     --dtype) DTYPE="${2:?}"; shift 2;;
     --gpu) GPU="${2:?}"; shift 2;;
     --shard) SHARD="${2:?}"; shift 2;;
+    --run) RUN="${2:?}"; shift 2;;
+    --lr) LR="${2:?}"; shift 2;;
     *) echo "REFUSE: unknown arg $1"; exit 2;;
   esac
 done
@@ -61,6 +63,8 @@ role_for() {
     score:convert-nemo-rl-4gpus-v100-2608-0-3:*) echo "S";;
     score:huyhq21-membedding-v3-0-0:*) echo "B";;
     score:huyhq21-membedding-v1-0-0:*) echo "Q";;
+    bridge:huyhq21-membedding-v3-0-0:3) echo "B";;
+    train:huyhq21-membedding-v3-0-0:*) echo "S";;
     *) echo "";;
   esac
 }
@@ -139,6 +143,22 @@ case "$STAGE" in
     [ -f "$POS" ] || { echo "REFUSE: $POS missing; run P-positions first"; exit 6; }
     exec /opt/venv/bin/python "$SB_NEW/experiments/diagnostics/sb_score.py" \
       --shard "$SHARD" --arm "$ARM" --positions-file "$POS"
+    ;;
+  bridge)
+    [ "$ARM" = "B" ] || { echo "REFUSE: bridge is official-B"; exit 2; }
+    exec /opt/venv/bin/python "$SB_NEW/experiments/diagnostics/sb_bridge.py" \
+      --n 200
+    ;;
+  train)
+    [ "$ARM" = "S" ] || { echo "REFUSE: train student is S"; exit 2; }
+    [ -n "$RUN" ] || { echo "REFUSE: train needs --run ID"; exit 2; }
+    if [ -n "$LR" ]; then
+      exec /opt/venv/bin/python "$SB_NEW/experiments/diagnostics/sb_train.py" \
+        --run "$RUN" --lr "$LR"
+    else
+      exec /opt/venv/bin/python "$SB_NEW/experiments/diagnostics/sb_train.py" \
+        --run "$RUN"
+    fi
     ;;
   *) echo "REFUSE: unknown stage $STAGE"; exit 2;;
 esac
