@@ -108,10 +108,15 @@ def main() -> None:
         w = max(len(a), len(b))
         pad = tok.pad_token_id if tok.pad_token_id is not None else tok.eos_token_id
         batch = torch.tensor([[pad] * (w - len(a)) + a, [pad] * (w - len(b)) + b], device="cuda")
+        mask = torch.tensor([[0] * (w - len(a)) + [1] * len(a),
+                             [0] * (w - len(b)) + [1] * len(b)], device="cuda")
         with torch.inference_mode():
             # CausalLM forward already returns vocab logits; no extra lm_head.
-            lp_cached = model(input_ids=batch, use_cache=True).logits.double()
-            lp_plain = model(input_ids=batch, use_cache=False).logits.double()
+            # attention_mask is required: without it pad tokens pollute logits.
+            lp_cached = model(input_ids=batch, attention_mask=mask,
+                              use_cache=True).logits.double()
+            lp_plain = model(input_ids=batch, attention_mask=mask,
+                             use_cache=False).logits.double()
             lp_solo = model(
                 input_ids=torch.tensor([a], device="cuda"), use_cache=False
             ).logits.double()
