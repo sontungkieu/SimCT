@@ -34,6 +34,8 @@ SOURCES = {
     "experiments/diagnostics/sb_qualify.py": "sb_qualify.py",
     "experiments/diagnostics/sb_audit.py": "sb_audit.py",
     "experiments/diagnostics/sb_propose.py": "sb_propose.py",
+    "experiments/diagnostics/sb_eval.py": "sb_eval.py",
+    "scripts/sft/answer_verifier.py": "answer_verifier.py",
     "experiments/diagnostics/sb_train.py": "sb_train.py",
     "experiments/diagnostics/sb_bridge.py": "sb_bridge.py",
     "experiments/diagnostics/sb_score.py": "sb_score.py",
@@ -231,6 +233,35 @@ def bench_big(arm: str, dtype: str):
               retries=0, max_containers=1, scaledown_window=2, volumes=volumes)
 def pool_s(shard: str):
     return _gpu_job("pool", "S", "bfloat16", 3200, shard)
+
+
+@app.function(image=image, gpu="L4", cpu=4, memory=24576, timeout=3300,
+              retries=0, max_containers=1, scaledown_window=2, volumes=volumes)
+def eval_s(tag: str, split: str, samples: int, checkpoint: str,
+           max_problems: int, offset: int = 0):
+    """Dev accuracy eval for a student checkpoint (S only)."""
+    assets.reload()
+    results.reload()
+    root = Path("/results") / RUN
+    work = root / "work"
+    work.mkdir(parents=True, exist_ok=True)
+    _write_assets(root)
+    log = work / f"eval-{tag}.log"
+    if log.exists():
+        raise RuntimeError("output exists; use a new run id for repairs")
+    env = _study_env(root)
+    rc = _run([PY, "-u", "/opt/sb/sb_eval.py", "--tag", tag, "--split", split,
+               "--samples", str(samples), "--checkpoint", checkpoint,
+               "--max-problems", str(max_problems), "--offset", str(offset)],
+              env, log, 3200)
+    results.commit()
+    tail = "\n".join(log.read_text().splitlines()[-6:])
+    print(f"SB_EVAL tag={tag} rc={rc}\n{tail}", flush=True)
+    print(f"SB_SUMMARY_JSON={json.dumps({'kind': 'eval', 'tag': tag, 'rc': rc})}",
+          flush=True)
+    if rc != 0:
+        raise RuntimeError(f"eval {tag} failed; log authoritative")
+    return {"kind": "eval", "tag": tag}
 
 
 @app.function(image=image, cpu=8, memory=65536, timeout=3300,
@@ -508,6 +539,12 @@ def main(job: str = "fetch", arm: str = "S", dtype: str = "bfloat16",
         print("SB_LOCAL_JSON=" + json.dumps(pool_s.remote(shard)))
     elif job == "bridge":
         print("SB_LOCAL_JSON=" + json.dumps(bridge_b.remote()))
+    elif job == "evalsmoke":
+        print("SB_LOCAL_JSON=" + json.dumps(
+            eval_s.remote("smoke-initial", "dev", 2, "initial", 8, 0)))
+    elif job == "evalmath":
+        print("SB_LOCAL_JSON=" + json.dumps(
+            eval_s.remote("smoke-math", "dev", 2, "initial", 8, 128)))
     elif job == "trainsmoke":
         if arm != "S":
             raise ValueError("trainsmoke is S self-distill only")
