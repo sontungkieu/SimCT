@@ -1,0 +1,79 @@
+{
+ "study_version": "sb-main-v2",
+ "source": "modal sb-debug-20261016-r3 (L40S)",
+ "operating_dtype": {
+  "S": "bfloat16",
+  "B": "bfloat16",
+  "Q": "float32"
+ },
+ "dtype_rationale": "Q top20 overlap 16-18/20 under bf16 vs 19-20/20 for S/B; Q scores run fp32 (31GB fits B200). bf16 batch-geometry noise recorded in disposition-G0; fp32 proves implementation exactness.",
+ "qwen_swa_eager_warning": "recorded; fp32 does not change SWA semantics, pilot used same eager path",
+ "arms": {
+  "S": {
+   "bf16": {
+    "load_s": 11.2,
+    "vram_peak_gb": 6.88,
+    "gen_tok_per_s": 145.6,
+    "gen_s": 3.5,
+    "cap_hit_64": 8
+   },
+   "fp32": {
+    "load_s": 8.6,
+    "vram_peak_gb": 13.7,
+    "gen_tok_per_s": 193.4,
+    "gen_s": 2.6,
+    "cap_hit_64": 8
+   },
+   "top20_overlap_bf16_fp32": {
+    "p0": 19,
+    "p1": 20,
+    "p2": 20,
+    "p3": 20
+   }
+  },
+  "B": {
+   "bf16": {
+    "load_s": 14.7,
+    "vram_peak_gb": 16.63,
+    "gen_tok_per_s": 194.9,
+    "gen_s": 2.6,
+    "cap_hit_64": 8
+   },
+   "fp32": {
+    "load_s": 13.2,
+    "vram_peak_gb": 33.24,
+    "gen_tok_per_s": 102.7,
+    "gen_s": 5.0,
+    "cap_hit_64": 8
+   },
+   "top20_overlap_bf16_fp32": {
+    "p0": 20,
+    "p1": 20,
+    "p2": 19,
+    "p3": 19
+   }
+  },
+  "Q": {
+   "bf16": {
+    "load_s": 13.1,
+    "vram_peak_gb": 15.69,
+    "gen_tok_per_s": 203.2,
+    "gen_s": 2.5,
+    "cap_hit_64": 8
+   },
+   "fp32": {
+    "load_s": 12.5,
+    "vram_peak_gb": 31.36,
+    "gen_tok_per_s": 109.9,
+    "gen_s": 4.7,
+    "cap_hit_64": 7
+   },
+   "top20_overlap_bf16_fp32": {
+    "p0": 16,
+    "p1": 16,
+    "p2": 18,
+    "p3": 16
+   }
+  }
+ }
+}

@@ -15,7 +15,7 @@ from pathlib import Path
 
 import modal
 
-RUN = os.environ.get("SB_MODAL_RUN", "sb-debug-20261016-r1")
+RUN = os.environ.get("SB_MODAL_RUN", "sb-debug-20261016-r3")
 ROOT = Path(__file__).resolve().parents[2] if modal.is_local() else Path("/opt/sb")
 if modal.is_local():
     with open(ROOT / "experiments/diagnostics/h2_pilot_config.json") as f:

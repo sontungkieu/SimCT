@@ -36,9 +36,15 @@ def main() -> None:
     def render(tok, prompt):
         # Same user-only chat render as h2_pilot.render, without importing
         # h2_pilot (its module level mkdirs /results on import).
-        return [int(x) for x in tok.apply_chat_template(
+        # Newer transformers return a dict/BatchEncoding; older ones a bare list.
+        out = tok.apply_chat_template(
             [{"role": "user", "content": prompt}],
-            tokenize=True, add_generation_prompt=True)]
+            tokenize=True, add_generation_prompt=True)
+        try:
+            ids = out["input_ids"]
+        except TypeError:
+            ids = out
+        return [int(x) for x in ids]
 
     root = Path(args.root)
     new = Path(os.environ.get("SB_NEW", ""))
