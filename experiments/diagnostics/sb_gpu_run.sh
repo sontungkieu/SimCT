@@ -44,6 +44,9 @@ role_for() {
     qualify:huyhq21-membedding-v3-0-0:0) echo "S";;
     qualify:huyhq21-membedding-v3-0-0:3) echo "B";;
     qualify:huyhq21-membedding-v3-0-0:2) echo "Q";;
+    bench:huyhq21-membedding-v3-0-0:1) echo "S";;
+    bench:huyhq21-membedding-v3-0-0:3) echo "B";;
+    bench:convert-nemo-rl-4gpus-v100-2608-0-3:0) echo "Q";;
     *) echo "";;
   esac
 }
@@ -68,6 +71,13 @@ case "$STAGE" in
       *) echo "REFUSE: bad dtype $DTYPE"; exit 2;;
     esac
     exec /opt/venv/bin/python "$SB_NEW/experiments/diagnostics/sb_qualify.py" \
+      --arm "$ARM" --dtype "$DTYPE"
+    ;;
+  bench)
+    case "$DTYPE" in bfloat16|float32) ;;
+      *) echo "REFUSE: bad dtype $DTYPE"; exit 2;;
+    esac
+    exec /opt/venv/bin/python "$SB_NEW/experiments/diagnostics/sb_bench.py" \
       --arm "$ARM" --dtype "$DTYPE"
     ;;
   *) echo "REFUSE: unknown stage $STAGE"; exit 2;;
