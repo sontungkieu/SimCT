@@ -34,9 +34,15 @@ def load_study_model(arm: str, dtype: str, assets: dict):
         raise RuntimeError(f"arm {arm}: pinned weights not verified")
     torch.backends.cuda.matmul.allow_tf32 = False
     torch.backends.cudnn.allow_tf32 = False
-    model = AutoModelForCausalLM.from_pretrained(
-        entry["path"], local_files_only=True, dtype=dtype,
-        attn_implementation="eager", device_map={"": "cuda"}).eval()
+    kwargs = dict(local_files_only=True, attn_implementation="eager",
+                  device_map={"": "cuda"})
+    try:
+        model = AutoModelForCausalLM.from_pretrained(
+            entry["path"], dtype=dtype, **kwargs).eval()
+    except TypeError:
+        # transformers < 4.52 (v3/v1 nodes): legacy torch_dtype spelling.
+        model = AutoModelForCausalLM.from_pretrained(
+            entry["path"], torch_dtype=getattr(torch, dtype), **kwargs).eval()
     model.requires_grad_(False)
     tok = AutoTokenizer.from_pretrained(entry["path"], local_files_only=True)
     return model, tok
