@@ -46,6 +46,10 @@ prompt-clustered summaries. None of these downstream stages has been executed.
 Five dependency-free measurement tests pass; AST/config checks pass. These
 checks do not establish GPU/backend correctness or end-to-end completion.
 
+The later user-authorized Llama3.2-3B / Llama3.1-8B mirror / Qwen2-7B pilot
+uses a separate run and HF qualification. See `H2_WORD_PILOT.md`; its outputs
+must not be attributed to this original Gemma/SGLang scaffold.
+
 ## Bounded performance benchmark (separate from scientific stages)
 
 The subsequent user request authorizes a100-position Modal cost benchmark;

@@ -25,6 +25,11 @@ SOURCES = {
     'experiments/diagnostics/h2_e3.py': 'h2_e3.py',
     'experiments/diagnostics/h2_report.py': 'h2_report.py',
     'experiments/diagnostics/h2_e3_benchmark.py': 'h2_e3_benchmark.py',
+    'experiments/diagnostics/h2_word_pilot.py': 'h2_word_pilot.py',
+    'experiments/diagnostics/h2_word_pilot_config.json': 'h2_word_pilot_config.json',
+    'experiments/diagnostics/h2_word_metrics.py': 'h2_word_metrics.py',
+    'experiments/diagnostics/h2_word_events.py': 'h2_word_events.py',
+    'experiments/diagnostics/h2_tokenizer_audit.py': 'h2_tokenizer_audit.py',
     'experiments/diagnostics/h2_sitecustomize.py': 'sitecustomize.py',
     'experiments/diagnostics/h2_pilot_config.json': 'h2_pilot_config.json',
     'experiments/modal/mp_opd_parity_worker.py': 'mp_opd_parity_worker.py',
@@ -50,16 +55,20 @@ def execute(stage, arm, seconds, attempt):
     libs = ['/usr/local/cuda/lib64', '/usr/local/nvidia/lib64']
     libs += [str(p) for p in Path('/opt/venvs/simct-b200/lib/python3.12/site-packages/nvidia').glob('*/lib')]
     env['LD_LIBRARY_PATH'] = ':'.join(libs)
-    if stage != 'prepare':
+    if stage not in {'prepare','word-access','word-prepare'}:
         env.update(HF_HUB_OFFLINE='1', TRANSFORMERS_OFFLINE='1')
         env['H2_CANONICAL_GEMMA_SOFTCAP'] = '1'
     else:
         env.pop('HF_HUB_OFFLINE', None); env.pop('TRANSFORMERS_OFFLINE', None)
     env['H2_STAGE_ATTEMPT'] = str(attempt)
     benchmark = stage.startswith('bench-')
-    if benchmark:
+    word_pilot = stage.startswith('word-')
+    if benchmark or word_pilot:
         env.pop('H2_CANONICAL_GEMMA_SOFTCAP',None)
-    worker = 'h2_e3_benchmark.py' if benchmark else 'h2_pilot.py'
+    worker = 'h2_word_pilot.py' if word_pilot else 'h2_e3_benchmark.py' if benchmark else 'h2_pilot.py'
+    if word_pilot:
+        caps=json.loads(Path('/opt/h2/h2_word_pilot_config.json').read_text())['stage_caps_seconds']
+        seconds=min(seconds,caps.get(stage,seconds))
     start = time.monotonic(); position = 0; process = None; error = None
     try:
         with log.open('x') as output:
@@ -87,6 +96,7 @@ def execute(stage, arm, seconds, attempt):
             'source_sha256': {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
                               for p in Path('/opt/h2').glob('*.py')},
             'config_sha256': hashlib.sha256(Path('/opt/h2/h2_pilot_config.json').read_bytes()).hexdigest(),
+            'word_config_sha256': hashlib.sha256(Path('/opt/h2/h2_word_pilot_config.json').read_bytes()).hexdigest() if word_pilot else None,
             'log_sha256': hashlib.sha256(log.read_bytes()).hexdigest()}
         (root / (label + '-receipt.json')).write_text(json.dumps(receipt, indent=2))
         assets.commit(); results.commit()
@@ -119,8 +129,35 @@ def l40s(stage, arm, attempt): return execute(stage, arm, 1800, attempt)
 def analysis(stage, arm, attempt): return execute(stage, arm, 1200, attempt)
 
 
+@app.function(image=image,cpu=2,memory=16384,timeout=1860,retries=0,
+              max_containers=1,scaledown_window=2,volumes=volumes,
+              secrets=[modal.Secret.from_name('huggingface-secret')])
+def word_setup(stage,arm,attempt): return execute(stage,arm,1800,attempt)
+
+
+@app.function(image=image,gpu='L4',cpu=4,memory=24576,timeout=3360,retries=0,
+              max_containers=1,scaledown_window=2,volumes=volumes)
+def word_l4(stage,arm,attempt): return execute(stage,arm,3300,attempt)
+
+
+@app.function(image=image,gpu='L40S',cpu=4,memory=32768,timeout=3360,retries=0,
+              max_containers=1,scaledown_window=2,volumes=volumes)
+def word_l40s(stage,arm,attempt): return execute(stage,arm,3300,attempt)
+
+
 @app.local_entrypoint()
 def main(stage: str = 'prepare', arm: str = 'S', gpu: str = 'L4', attempt: int = 1):
+    if stage.startswith('word-'):
+        allowed={'word-access','word-prepare','word-prompts','word-qualify','word-rollout',
+                 'word-audit','word-fixtures','word-proposal','word-merge','word-scoring','word-report','word-export'}
+        if stage not in allowed or RUN==CONFIG.get('run_id'): raise ValueError('Separate word-pilot run ID required')
+        gpu_stages={'word-qualify','word-rollout','word-proposal','word-scoring'}
+        valid={'S'} if stage=='word-rollout' else {'S','B','Q'} if stage in gpu_stages|{'word-prepare'} else {'ALL'}
+        if arm not in valid or gpu not in {'L4','L40S'}: raise ValueError('Word pilot scope is S/B/Q, 100 prompts, 1000 positions')
+        result=(word_setup.remote(stage,arm,attempt) if stage in {'word-access','word-prepare'} else
+                (word_l4.remote(stage,arm,attempt) if gpu=='L4' else word_l40s.remote(stage,arm,attempt)) if stage in gpu_stages else
+                analysis.remote(stage,arm,attempt))
+        print('H2_LOCAL_RECEIPT_JSON='+json.dumps(result)); return
     if stage not in {'prepare', 'parity', 'rollout', 'score', 'events', 'quality', 'report',
                      'e3-candidates', 'e3-merge', 'e3-score'}:
         if stage not in {'bench-prepare','bench-proposal','bench-merge','bench-scoring','bench-report'}:
