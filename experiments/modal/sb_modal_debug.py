@@ -15,7 +15,7 @@ from pathlib import Path
 
 import modal
 
-RUN = os.environ.get("SB_MODAL_RUN", "sb-debug-20261016-r15")
+RUN = os.environ.get("SB_MODAL_RUN", "sb-debug-20261016-r17")
 ROOT = Path(__file__).resolve().parents[2] if modal.is_local() else Path("/opt/sb")
 if modal.is_local():
     with open(ROOT / "experiments/diagnostics/h2_pilot_config.json") as f:
@@ -34,6 +34,8 @@ SOURCES = {
     "experiments/diagnostics/sb_qualify.py": "sb_qualify.py",
     "experiments/diagnostics/sb_audit.py": "sb_audit.py",
     "experiments/diagnostics/sb_propose.py": "sb_propose.py",
+    "experiments/diagnostics/sb_forks.py": "sb_forks.py",
+    "experiments/diagnostics/sb_quality.py": "sb_quality.py",
     "experiments/diagnostics/sb_eval.py": "sb_eval.py",
     "scripts/sft/answer_verifier.py": "answer_verifier.py",
     "experiments/diagnostics/sb_train.py": "sb_train.py",
@@ -233,6 +235,73 @@ def bench_big(arm: str, dtype: str):
               retries=0, max_containers=1, scaledown_window=2, volumes=volumes)
 def pool_s(shard: str):
     return _gpu_job("pool", "S", "bfloat16", 3200, shard)
+
+
+@app.function(image=image, gpu="L4", cpu=4, memory=24576, timeout=1800,
+              retries=0, max_containers=1, scaledown_window=2, volumes=volumes)
+def quality_s(kind: str, max_prompts: int):
+    """Quality generation smoke/full (S only)."""
+    assets.reload()
+    results.reload()
+    root = Path("/results") / RUN
+    work = root / "work"
+    work.mkdir(parents=True, exist_ok=True)
+    _write_assets(root)
+    for shard in ("00", "01"):
+        src = Path("/results") / "sb-debug-20261016-r7" / "work" / f"pool-{shard}.json"
+        dst = work / f"pool-{shard}.json"
+    log = work / f"quality-{kind}-S.log"
+    if log.exists():
+        raise RuntimeError("output exists; use a new run id for repairs")
+    env = _study_env(root)
+    rc = _run([PY, "-u", "/opt/sb/sb_quality.py", "--kind", kind,
+               "--arm", "S", "--max-prompts", str(max_prompts)],
+              env, log, 1500)
+    results.commit()
+    tail = "\n".join(log.read_text().splitlines()[-5:])
+    print(f"SB_QUALITY kind={kind} rc={rc}\n{tail}", flush=True)
+    print(f"SB_SUMMARY_JSON={json.dumps({'kind': 'quality', 'tag': kind, 'rc': rc})}",
+          flush=True)
+    if rc != 0:
+        raise RuntimeError(f"quality {kind} failed; log authoritative")
+    return {"kind": "quality", "tag": kind}
+
+
+@app.function(image=image, gpu="L4", cpu=4, memory=24576, timeout=1800,
+              retries=0, max_containers=1, scaledown_window=2, volumes=volumes)
+def forks_s(shard: str, tag: str, max_positions: int, continuations: int,
+            cap: int, pool_run: str):
+    """Counterfactual forks smoke/full (S only)."""
+    import shutil
+    assets.reload()
+    results.reload()
+    root = Path("/results") / RUN
+    work = root / "work"
+    work.mkdir(parents=True, exist_ok=True)
+    _write_assets(root)
+    src_work = Path("/results") / pool_run / "work"
+    for name in (f"fixtures-{shard}.json", f"proposals-{shard}-S.json"):
+        src, dst = src_work / name, work / name
+        if src.is_file() and not dst.exists():
+            shutil.copy(src, dst)
+    log = work / f"forks-{tag}.log"
+    if log.exists():
+        raise RuntimeError("output exists; use a new run id for repairs")
+    env = _study_env(root)
+    rc = _run([PY, "-u", "/opt/sb/sb_forks.py",
+               "--positions-file", str(work / f"fixtures-{shard}.json"),
+               "--proposals-file", str(work / f"proposals-{shard}-S.json"),
+               "--tag", tag, "--max-positions", str(max_positions),
+               "--continuations", str(continuations), "--cap", str(cap)],
+              env, log, 1500)
+    results.commit()
+    tail = "\n".join(log.read_text().splitlines()[-5:])
+    print(f"SB_FORKS tag={tag} rc={rc}\n{tail}", flush=True)
+    print(f"SB_SUMMARY_JSON={json.dumps({'kind': 'forks', 'tag': tag, 'rc': rc})}",
+          flush=True)
+    if rc != 0:
+        raise RuntimeError(f"forks {tag} failed; log authoritative")
+    return {"kind": "forks", "tag": tag}
 
 
 @app.function(image=image, gpu="L4", cpu=4, memory=24576, timeout=3300,
@@ -557,6 +626,11 @@ def main(job: str = "fetch", arm: str = "S", dtype: str = "bfloat16",
     elif job == "evalmath":
         print("SB_LOCAL_JSON=" + json.dumps(
             eval_s.remote("smoke-math", "dev", 2, "initial", 8, 128)))
+    elif job == "qualitysmoke":
+        print("SB_LOCAL_JSON=" + json.dumps(quality_s.remote("screen", 4)))
+    elif job == "forksmoke":
+        print("SB_LOCAL_JSON=" + json.dumps(
+            forks_s.remote("09", "smoke", 5, 2, 128, "sb-debug-20261016-r7")))
     elif job == "trainsmoke":
         if arm != "S":
             raise ValueError("trainsmoke is S self-distill only")
