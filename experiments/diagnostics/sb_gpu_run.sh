@@ -45,9 +45,13 @@ role_for() {
     qualify:huyhq21-membedding-v3-0-0:0) echo "S";;
     qualify:huyhq21-membedding-v3-0-0:3) echo "B";;
     qualify:huyhq21-membedding-v3-0-0:2) echo "Q";;
+    qualify:huyhq21-membedding-v1-0-0:0) echo "S";;
+    qualify:huyhq21-membedding-v1-0-0:1) echo "B";;
+    qualify:huyhq21-membedding-v1-0-0:2) echo "Q";;
     bench:huyhq21-membedding-v3-0-0:1) echo "S";;
     bench:huyhq21-membedding-v3-0-0:3) echo "B";;
     bench:convert-nemo-rl-4gpus-v100-2608-0-3:0) echo "Q";;
+    bench:huyhq21-membedding-v1-0-0:3) echo "S";;
     pool:convert-nemo-rl-4gpus-v100-2608-0-3:*) echo "S";;
     audit:convert-nemo-rl-4gpus-v100-2608-0-3:*) echo "S";;
     *) echo "";;
