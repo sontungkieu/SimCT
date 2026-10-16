@@ -15,7 +15,7 @@ from pathlib import Path
 
 import modal
 
-RUN = os.environ.get("SB_MODAL_RUN", "sb-debug-20261016-r5")
+RUN = os.environ.get("SB_MODAL_RUN", "sb-debug-20261016-r8")
 ROOT = Path(__file__).resolve().parents[2] if modal.is_local() else Path("/opt/sb")
 if modal.is_local():
     with open(ROOT / "experiments/diagnostics/h2_pilot_config.json") as f:
@@ -33,11 +33,15 @@ image = modal.Image.from_registry(IMAGE).entrypoint([])
 SOURCES = {
     "experiments/diagnostics/sb_qualify.py": "sb_qualify.py",
     "experiments/diagnostics/sb_audit.py": "sb_audit.py",
+    "experiments/diagnostics/sb_propose.py": "sb_propose.py",
+    "experiments/diagnostics/sb_score.py": "sb_score.py",
+    "experiments/diagnostics/sb_fixtures.py": "sb_fixtures.py",
     "experiments/diagnostics/h2_tokenizer_audit.py": "h2_tokenizer_audit.py",
     "experiments/diagnostics/sb_pool.py": "sb_pool.py",
     "experiments/diagnostics/sb_bench.py": "sb_bench.py",
     "experiments/diagnostics/sb_disposition_qualify.py": "sb_disposition_qualify.py",
     "experiments/diagnostics/h2_measurements.py": "h2_measurements.py",
+    "experiments/diagnostics/h2_word_events.py": "h2_word_events.py",
     "experiments/mp_opd/hf_frozen_sampler.py": "hf_frozen_sampler.py",
     "experiments/diagnostics/artifacts/structural-behavioral-main-runs/main_pool_manifest.json":
         "experiments/diagnostics/artifacts/structural-behavioral-main-runs/main_pool_manifest.json",
@@ -221,6 +225,140 @@ def pool_s(shard: str):
     return _gpu_job("pool", "S", "bfloat16", 3200, shard)
 
 
+@app.function(image=image, gpu="L4", cpu=4, memory=24576, timeout=1800,
+              retries=0, max_containers=1, scaledown_window=2, volumes=volumes)
+def score_s(shard: str, arm: str, max_positions: int, pool_run: str):
+    """GPU scoring smoke/full for one shard+arm."""
+    import shutil
+    assets.reload()
+    results.reload()
+    root = Path("/results") / RUN
+    work = root / "work"
+    work.mkdir(parents=True, exist_ok=True)
+    _write_assets(root)
+    src_work = Path("/results") / pool_run / "work"
+    for name in (f"fixtures-{shard}.json", f"audit-{shard}.json",
+                 f"pool-{shard}.json", f"proposals-{shard}-S.json",
+                 f"proposals-{shard}-B.json", f"proposals-{shard}-Q.json"):
+        src, dst = src_work / name, work / name
+        if src.is_file() and not dst.exists():
+            shutil.copy(src, dst)
+    log = work / f"score-{shard}-{arm}.log"
+    if log.exists():
+        raise RuntimeError("output exists; use a new run id for repairs")
+    env = _study_env(root)
+    rc = _run([PY, "-u", "/opt/sb/sb_score.py", "--shard", shard,
+               "--arm", arm, "--max-positions", str(max_positions)],
+              env, log, 1500)
+    results.commit()
+    tail = "\n".join(log.read_text().splitlines()[-5:])
+    print(f"SB_SCORE shard={shard} arm={arm} rc={rc}\n{tail}", flush=True)
+    print(f"SB_SUMMARY_JSON={json.dumps({'kind': 'score', 'shard': shard, 'arm': arm, 'rc': rc})}",
+          flush=True)
+    if rc != 0:
+        raise RuntimeError(f"score {shard}/{arm} failed; log authoritative")
+    return {"kind": "score", "shard": shard, "arm": arm}
+
+
+@app.function(image=image, gpu="L4", cpu=4, memory=24576, timeout=1800,
+              retries=0, max_containers=1, scaledown_window=2, volumes=volumes)
+def propose_s(shard: str, arm: str, max_positions: int):
+    if arm != "S":
+        raise ValueError("L4 propose is S-only; use propose_big for B/Q")
+    """GPU proposal smoke/full for one shard+arm."""
+    import shutil
+    assets.reload()
+    results.reload()
+    root = Path("/results") / RUN
+    work = root / "work"
+    work.mkdir(parents=True, exist_ok=True)
+    _write_assets(root)
+    for name in (f"fixtures-{shard}.json",):
+        src = Path("/results") / "sb-debug-20261016-r7" / "work" / name
+        dst = work / name
+        if not dst.exists():
+            shutil.copy(src, dst)
+    log = work / f"propose-{shard}-{arm}.log"
+    if log.exists():
+        raise RuntimeError("output exists; use a new run id for repairs")
+    env = _study_env(root)
+    rc = _run([PY, "-u", "/opt/sb/sb_propose.py", "--shard", shard,
+               "--arm", arm, "--max-positions", str(max_positions)],
+              env, log, 1500)
+    results.commit()
+    tail = "\n".join(log.read_text().splitlines()[-5:])
+    print(f"SB_PROPOSE shard={shard} arm={arm} rc={rc}\n{tail}", flush=True)
+    print(f"SB_SUMMARY_JSON={json.dumps({'kind': 'propose', 'shard': shard, 'arm': arm, 'rc': rc})}",
+          flush=True)
+    if rc != 0:
+        raise RuntimeError(f"propose {shard}/{arm} failed; log authoritative")
+    return {"kind": "propose", "shard": shard, "arm": arm}
+
+
+@app.function(image=image, gpu="L40S", cpu=4, memory=32768, timeout=1800,
+              retries=0, max_containers=1, scaledown_window=2, volumes=volumes)
+def propose_big(shard: str, arm: str, max_positions: int):
+    """L40S proposal (B bf16 / Q fp32 don't fit L4). Same contract as propose_s."""
+    import shutil
+    assets.reload()
+    results.reload()
+    root = Path("/results") / RUN
+    work = root / "work"
+    work.mkdir(parents=True, exist_ok=True)
+    _write_assets(root)
+    src = Path("/results") / "sb-debug-20261016-r7" / "work" / f"fixtures-{shard}.json"
+    dst = work / f"fixtures-{shard}.json"
+    if not dst.exists():
+        shutil.copy(src, dst)
+    log = work / f"propose-{shard}-{arm}.log"
+    if log.exists():
+        raise RuntimeError("output exists; use a new run id for repairs")
+    env = _study_env(root)
+    rc = _run([PY, "-u", "/opt/sb/sb_propose.py", "--shard", shard,
+               "--arm", arm, "--max-positions", str(max_positions)],
+              env, log, 1500)
+    results.commit()
+    tail = "\n".join(log.read_text().splitlines()[-5:])
+    print(f"SB_PROPOSE shard={shard} arm={arm} rc={rc}\n{tail}", flush=True)
+    print(f"SB_SUMMARY_JSON={json.dumps({'kind': 'propose', 'shard': shard, 'arm': arm, 'rc': rc})}",
+          flush=True)
+    if rc != 0:
+        raise RuntimeError(f"propose {shard}/{arm} failed; log authoritative")
+    return {"kind": "propose", "shard": shard, "arm": arm}
+
+
+@app.function(image=image, cpu=4, memory=16384, timeout=1800,
+              retries=0, max_containers=1, scaledown_window=2, volumes=volumes)
+def fixtures_cpu(shard: str, pool_run: str):
+    """CPU fixtures for one shard (pool+audit copied from pool_run)."""
+    import shutil
+    assets.reload()
+    results.reload()
+    root = Path("/results") / RUN
+    work = root / "work"
+    work.mkdir(parents=True, exist_ok=True)
+    _write_assets(root)
+    for name in (f"pool-{shard}.json", f"audit-{shard}.json"):
+        src = Path("/results") / pool_run / "work" / name
+        dst = work / name
+        if not dst.exists():
+            shutil.copy(src, dst)
+    log = work / f"fixtures-{shard}.log"
+    if log.exists():
+        raise RuntimeError("output exists; use a new run id for repairs")
+    env = _study_env(root)
+    rc = _run([PY, "-u", "/opt/sb/sb_fixtures.py", "--shard", shard],
+              env, log, 1500)
+    results.commit()
+    tail = "\n".join(log.read_text().splitlines()[-5:])
+    print(f"SB_FIXTURES shard={shard} rc={rc}\n{tail}", flush=True)
+    print(f"SB_SUMMARY_JSON={json.dumps({'kind': 'fixtures', 'shard': shard, 'rc': rc})}",
+          flush=True)
+    if rc != 0:
+        raise RuntimeError(f"fixtures {shard} failed; log authoritative")
+    return {"kind": "fixtures", "shard": shard}
+
+
 @app.function(image=image, cpu=4, memory=16384, timeout=1800,
               retries=0, max_containers=1, scaledown_window=2, volumes=volumes)
 def audit_cpu(shard: str, pool_run: str):
@@ -252,6 +390,41 @@ def audit_cpu(shard: str, pool_run: str):
     return {"kind": "audit", "shard": shard}
 
 
+@app.function(image=image, gpu="L40S", cpu=4, memory=32768, timeout=1800,
+              retries=0, max_containers=1, scaledown_window=2, volumes=volumes)
+def score_big(shard: str, arm: str, max_positions: int, pool_run: str):
+    """L40S scoring (B/Q exceed L4 with KV-cache surgery)."""
+    import shutil
+    assets.reload()
+    results.reload()
+    root = Path("/results") / RUN
+    work = root / "work"
+    work.mkdir(parents=True, exist_ok=True)
+    _write_assets(root)
+    src_work = Path("/results") / pool_run / "work"
+    for name in (f"fixtures-{shard}.json", f"audit-{shard}.json",
+                 f"pool-{shard}.json", f"proposals-{shard}-S.json",
+                 f"proposals-{shard}-B.json", f"proposals-{shard}-Q.json"):
+        src, dst = src_work / name, work / name
+        if src.is_file() and not dst.exists():
+            shutil.copy(src, dst)
+    log = work / f"score-{shard}-{arm}.log"
+    if log.exists():
+        raise RuntimeError("output exists; use a new run id for repairs")
+    env = _study_env(root)
+    rc = _run([PY, "-u", "/opt/sb/sb_score.py", "--shard", shard,
+               "--arm", arm, "--max-positions", str(max_positions)],
+              env, log, 1500)
+    results.commit()
+    tail = "\n".join(log.read_text().splitlines()[-5:])
+    print(f"SB_SCORE shard={shard} arm={arm} rc={rc}\n{tail}", flush=True)
+    print(f"SB_SUMMARY_JSON={json.dumps({'kind': 'score', 'shard': shard, 'arm': arm, 'rc': rc})}",
+          flush=True)
+    if rc != 0:
+        raise RuntimeError(f"score {shard}/{arm} failed; log authoritative")
+    return {"kind": "score", "shard": shard, "arm": arm}
+
+
 @app.local_entrypoint()
 def main(job: str = "fetch", arm: str = "S", dtype: str = "bfloat16",
          shard: str = "", pool_run: str = "sb-debug-20261016-r3"):
@@ -275,5 +448,25 @@ def main(job: str = "fetch", arm: str = "S", dtype: str = "bfloat16",
         if not shard:
             raise ValueError("audit needs --shard NN")
         print("SB_LOCAL_JSON=" + json.dumps(audit_cpu.remote(shard, pool_run)))
+    elif job == "fixtures":
+        if not shard:
+            raise ValueError("fixtures needs --shard NN")
+        print("SB_LOCAL_JSON=" + json.dumps(fixtures_cpu.remote(shard, pool_run)))
+    elif job == "propose":
+        if not shard or arm not in ("S", "B", "Q"):
+            raise ValueError("propose needs --shard NN --arm A")
+        mp = int(os.environ.get("SB_MAXPOS", "20"))
+        fn = propose_s if arm == "S" else propose_big
+        print("SB_LOCAL_JSON=" + json.dumps(fn.remote(shard, arm, mp)))
+    elif job == "score":
+        if not shard or arm not in ("S", "B", "Q"):
+            raise ValueError("score needs --shard NN --arm A")
+        mp = int(os.environ.get("SB_MAXPOS", "20"))
+        if arm == "S":
+            print("SB_LOCAL_JSON=" + json.dumps(
+                score_s.remote(shard, arm, mp, pool_run)))
+        else:
+            print("SB_LOCAL_JSON=" + json.dumps(
+                score_big.remote(shard, arm, mp, pool_run)))
     else:
         raise ValueError(job)

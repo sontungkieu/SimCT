@@ -20,7 +20,7 @@ def main() -> None:
     ap.add_argument("--shard", required=True)
     args = ap.parse_args()
     from transformers import AutoTokenizer
-    from h2_measurements import vocabulary_bytes, byte_spans
+    from h2_measurements import vocabulary_bytes, byte_spans, strict_pairs
     from h2_tokenizer_audit import audit_pair, aggregate_audits
 
     root = Path(args.root)
@@ -69,20 +69,27 @@ def main() -> None:
             except Exception as ex:  # noqa: BLE001
                 errors[arm] = str(ex)[:200]
                 ok = False
-        audits = {}
+        audits, strict = {}, {}
         if ok:
             for x, y in (("S", "B"), ("S", "Q"), ("B", "Q")):
                 try:
                     audits[f"{x}{y}"] = audit_pair(spans[x], spans[y], rtext)
                 except Exception as ex:  # noqa: BLE001
                     audits[f"{x}{y}"] = {"error": str(ex)[:200]}
+            try:
+                for x, y in (("S", "B"), ("S", "Q")):
+                    strict[f"{x}{y}"] = sorted(
+                        strict_pairs(spans["S"], spans[y]).items())
+            except Exception as ex:  # noqa: BLE001
+                errors["strict"] = str(ex)[:200]
+                ok = False
         else:
             for a in errors:
                 failures[a] += 1
         rows.append({"id": row["id"], "prompt_id": row["prompt_id"],
                      "rollout_id": row["id"],
                      "n_response_tokens": len(row["response_ids"]),
-                     "errors": errors, "audits": audits})
+                     "errors": errors, "audits": audits, "strict": strict})
     per_pair = {}
     for pair in ("SB", "SQ", "BQ"):
         prows = [{"prompt_id": r["prompt_id"], "rollout_id": r["id"],
