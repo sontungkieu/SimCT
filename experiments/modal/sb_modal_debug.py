@@ -15,7 +15,7 @@ from pathlib import Path
 
 import modal
 
-RUN = os.environ.get("SB_MODAL_RUN", "sb-debug-20261016-r8")
+RUN = os.environ.get("SB_MODAL_RUN", "sb-debug-20261016-r10")
 ROOT = Path(__file__).resolve().parents[2] if modal.is_local() else Path("/opt/sb")
 if modal.is_local():
     with open(ROOT / "experiments/diagnostics/h2_pilot_config.json") as f:
@@ -34,6 +34,7 @@ SOURCES = {
     "experiments/diagnostics/sb_qualify.py": "sb_qualify.py",
     "experiments/diagnostics/sb_audit.py": "sb_audit.py",
     "experiments/diagnostics/sb_propose.py": "sb_propose.py",
+    "experiments/diagnostics/sb_bridge.py": "sb_bridge.py",
     "experiments/diagnostics/sb_score.py": "sb_score.py",
     "experiments/diagnostics/sb_fixtures.py": "sb_fixtures.py",
     "experiments/diagnostics/h2_tokenizer_audit.py": "h2_tokenizer_audit.py",
@@ -58,6 +59,10 @@ SEED_HASHES = {
 if modal.is_local():
     for local, remote in SOURCES.items():
         image = image.add_local_file(str(ROOT / local), "/opt/sb/" + remote)
+    _pilot = ROOT / "remote_artifacts" / \
+        "h2-llama32-qwen2-s42-p100-n2-e1000-20261015-r1" / "received"
+    for _name in ("word-candidates.json", "word-scores-B.json", "word-prompts.json"):
+        image = image.add_local_file(str(_pilot / _name), "/opt/sb/pilot/" + _name)
     for _ref, _name in (("gsm8k-train-ref.parquet", "gsm8k-train.parquet"),
                         ("math-train-ref.parquet", "math-train.parquet")):
         _p = ROOT.parent / "tmp" / _ref
@@ -71,6 +76,8 @@ MODELS = {
           "0e9e39f249a16976918f6564b8830bc894c89659"),
     "Q": ("Qwen/Qwen2-7B-Instruct",
           "f2826a00ceef68f0f2b946d945ecc0477ce4450c"),
+    "Bm": ("NousResearch/Meta-Llama-3.1-8B-Instruct",
+           "d10aef7999a2b5ba950ab3974312feeedbfe0b77"),
 }
 
 
@@ -223,6 +230,34 @@ def bench_big(arm: str, dtype: str):
               retries=0, max_containers=1, scaledown_window=2, volumes=volumes)
 def pool_s(shard: str):
     return _gpu_job("pool", "S", "bfloat16", 3200, shard)
+
+
+@app.function(image=image, gpu="L40S", cpu=4, memory=32768, timeout=1800,
+              retries=0, max_containers=1, scaledown_window=2, volumes=volumes)
+def bridge_b():
+    """V-B-bridge on official B (L40S)."""
+    assets.reload()
+    results.reload()
+    root = Path("/results") / RUN
+    work = root / "work"
+    work.mkdir(parents=True, exist_ok=True)
+    _write_assets(root)
+    log = work / "bridge.log"
+    if log.exists():
+        raise RuntimeError("output exists; use a new run id for repairs")
+    env = _study_env(root)
+    env["SB_PILOT_DIR"] = "/opt/sb/pilot"
+    env["MIRROR_B_PATH"] = "/assets/sb-models/Bm"
+    rc = _run([PY, "-u", "/opt/sb/sb_bridge.py", "--n", "200"],
+              env, log, 1500)
+    results.commit()
+    tail = "\n".join(log.read_text().splitlines()[-5:])
+    print(f"SB_BRIDGE rc={rc}\n{tail}", flush=True)
+    print(f"SB_SUMMARY_JSON={json.dumps({'kind': 'bridge', 'rc': rc})}",
+          flush=True)
+    if rc != 0:
+        raise RuntimeError("bridge failed; log authoritative")
+    return {"kind": "bridge"}
 
 
 @app.function(image=image, gpu="L4", cpu=4, memory=24576, timeout=1800,
@@ -444,6 +479,8 @@ def main(job: str = "fetch", arm: str = "S", dtype: str = "bfloat16",
         if arm != "S" or not shard:
             raise ValueError("pool needs arm=S and --shard NN")
         print("SB_LOCAL_JSON=" + json.dumps(pool_s.remote(shard)))
+    elif job == "bridge":
+        print("SB_LOCAL_JSON=" + json.dumps(bridge_b.remote()))
     elif job == "audit":
         if not shard:
             raise ValueError("audit needs --shard NN")
