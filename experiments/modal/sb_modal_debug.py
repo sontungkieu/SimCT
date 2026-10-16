@@ -15,7 +15,7 @@ from pathlib import Path
 
 import modal
 
-RUN = os.environ.get("SB_MODAL_RUN", "sb-debug-20261016-r3")
+RUN = os.environ.get("SB_MODAL_RUN", "sb-debug-20261016-r5")
 ROOT = Path(__file__).resolve().parents[2] if modal.is_local() else Path("/opt/sb")
 if modal.is_local():
     with open(ROOT / "experiments/diagnostics/h2_pilot_config.json") as f:
@@ -32,6 +32,8 @@ image = modal.Image.from_registry(IMAGE).entrypoint([])
 
 SOURCES = {
     "experiments/diagnostics/sb_qualify.py": "sb_qualify.py",
+    "experiments/diagnostics/sb_audit.py": "sb_audit.py",
+    "experiments/diagnostics/h2_tokenizer_audit.py": "h2_tokenizer_audit.py",
     "experiments/diagnostics/sb_pool.py": "sb_pool.py",
     "experiments/diagnostics/sb_bench.py": "sb_bench.py",
     "experiments/diagnostics/sb_disposition_qualify.py": "sb_disposition_qualify.py",
@@ -219,9 +221,40 @@ def pool_s(shard: str):
     return _gpu_job("pool", "S", "bfloat16", 3200, shard)
 
 
+@app.function(image=image, cpu=4, memory=16384, timeout=1800,
+              retries=0, max_containers=1, scaledown_window=2, volumes=volumes)
+def audit_cpu(shard: str, pool_run: str):
+    """CPU audit of one pool shard (pool file read from another run dir)."""
+    import shutil
+    assets.reload()
+    results.reload()
+    root = Path("/results") / RUN
+    work = root / "work"
+    work.mkdir(parents=True, exist_ok=True)
+    _write_assets(root)
+    src = Path("/results") / pool_run / "work" / f"pool-{shard}.json"
+    dst = work / f"pool-{shard}.json"
+    if not dst.exists():
+        shutil.copy(src, dst)
+    log = work / f"audit-{shard}.log"
+    if log.exists():
+        raise RuntimeError("output exists; use a new run id for repairs")
+    env = _study_env(root)
+    rc = _run([PY, "-u", "/opt/sb/sb_audit.py", "--shard", shard],
+              env, log, 1500)
+    results.commit()
+    tail = "\n".join(log.read_text().splitlines()[-5:])
+    print(f"SB_AUDIT shard={shard} rc={rc}\n{tail}", flush=True)
+    print(f"SB_SUMMARY_JSON={json.dumps({'kind': 'audit', 'shard': shard, 'rc': rc})}",
+          flush=True)
+    if rc != 0:
+        raise RuntimeError(f"audit {shard} failed; log authoritative")
+    return {"kind": "audit", "shard": shard}
+
+
 @app.local_entrypoint()
 def main(job: str = "fetch", arm: str = "S", dtype: str = "bfloat16",
-         shard: str = ""):
+         shard: str = "", pool_run: str = "sb-debug-20261016-r3"):
     if job == "fetch":
         if arm not in MODELS:
             raise ValueError(arm)
@@ -238,5 +271,9 @@ def main(job: str = "fetch", arm: str = "S", dtype: str = "bfloat16",
         if arm != "S" or not shard:
             raise ValueError("pool needs arm=S and --shard NN")
         print("SB_LOCAL_JSON=" + json.dumps(pool_s.remote(shard)))
+    elif job == "audit":
+        if not shard:
+            raise ValueError("audit needs --shard NN")
+        print("SB_LOCAL_JSON=" + json.dumps(audit_cpu.remote(shard, pool_run)))
     else:
         raise ValueError(job)
