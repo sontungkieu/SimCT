@@ -54,17 +54,24 @@ role_for() {
     bench:huyhq21-membedding-v1-0-0:3) echo "S";;
     pool:convert-nemo-rl-4gpus-v100-2608-0-3:*) echo "S";;
     audit:convert-nemo-rl-4gpus-v100-2608-0-3:*) echo "S";;
+    fixtures:convert-nemo-rl-4gpus-v100-2608-0-3:*) echo "S";;
+    propose:convert-nemo-rl-4gpus-v100-2608-0-3:*) echo "S";;
+    propose:huyhq21-membedding-v3-0-0:*) echo "B";;
+    propose:huyhq21-membedding-v1-0-0:*) echo "Q";;
+    score:convert-nemo-rl-4gpus-v100-2608-0-3:*) echo "S";;
+    score:huyhq21-membedding-v3-0-0:*) echo "B";;
+    score:huyhq21-membedding-v1-0-0:*) echo "Q";;
     *) echo "";;
   esac
 }
 
-# Pool shards per nemo gpu (10 shards over 4 cards).
+# Pool shards per gpu (10 shards over 4 cards; same split on all nodes).
 pool_shards_for() {
   case "$1:$2" in
-    convert-nemo-rl-4gpus-v100-2608-0-3:0) echo "00 01";;
-    convert-nemo-rl-4gpus-v100-2608-0-3:1) echo "02 03";;
-    convert-nemo-rl-4gpus-v100-2608-0-3:2) echo "04 05 06";;
-    convert-nemo-rl-4gpus-v100-2608-0-3:3) echo "07 08 09";;
+    convert-nemo-rl-4gpus-v100-2608-0-3:0|huyhq21-membedding-v3-0-0:0|huyhq21-membedding-v1-0-0:0) echo "00 01";;
+    convert-nemo-rl-4gpus-v100-2608-0-3:1|huyhq21-membedding-v3-0-0:1|huyhq21-membedding-v1-0-0:1) echo "02 03";;
+    convert-nemo-rl-4gpus-v100-2608-0-3:2|huyhq21-membedding-v3-0-0:2|huyhq21-membedding-v1-0-0:2) echo "04 05 06";;
+    convert-nemo-rl-4gpus-v100-2608-0-3:3|huyhq21-membedding-v3-0-0:3|huyhq21-membedding-v1-0-0:3) echo "07 08 09";;
     *) echo "";;
   esac
 }
@@ -80,7 +87,8 @@ fi
 WANT="$(role_for "$STAGE" "$HOST" "$GPU")"
 [ -n "$WANT" ] || { echo "REFUSE: $HOST gpu$GPU not assigned for stage $STAGE"; exit 5; }
 [ "$ARM" = "$WANT" ] || { echo "REFUSE: $HOST gpu$GPU runs $WANT this phase, not $ARM"; exit 5; }
-if [ "$STAGE" = "pool" ] || [ "$STAGE" = "audit" ]; then
+if [ "$STAGE" = "pool" ] || [ "$STAGE" = "audit" ] || [ "$STAGE" = "fixtures" ] \
+    || [ "$STAGE" = "propose" ] || [ "$STAGE" = "score" ]; then
   [ -n "$SHARD" ] || { echo "REFUSE: $STAGE needs --shard NN"; exit 2; }
   case " $(pool_shards_for "$HOST" "$GPU") " in
     *" $SHARD "*) ;;
@@ -114,6 +122,23 @@ case "$STAGE" in
     # CPU-only (tokenizers); GPU guard still applies for placement discipline.
     exec /opt/venv/bin/python "$SB_NEW/experiments/diagnostics/sb_audit.py" \
       --shard "$SHARD"
+    ;;
+  fixtures)
+    # CPU-only; reads pool+audit of the same shard.
+    exec /opt/venv/bin/python "$SB_NEW/experiments/diagnostics/sb_fixtures.py" \
+      --shard "$SHARD"
+    ;;
+  propose)
+    POS="$SB_ROOT/work/positions.json"
+    [ -f "$POS" ] || { echo "REFUSE: $POS missing; run P-positions first"; exit 6; }
+    exec /opt/venv/bin/python "$SB_NEW/experiments/diagnostics/sb_propose.py" \
+      --shard "$SHARD" --arm "$ARM" --positions-file "$POS"
+    ;;
+  score)
+    POS="$SB_ROOT/work/positions.json"
+    [ -f "$POS" ] || { echo "REFUSE: $POS missing; run P-positions first"; exit 6; }
+    exec /opt/venv/bin/python "$SB_NEW/experiments/diagnostics/sb_score.py" \
+      --shard "$SHARD" --arm "$ARM" --positions-file "$POS"
     ;;
   *) echo "REFUSE: unknown stage $STAGE"; exit 2;;
 esac

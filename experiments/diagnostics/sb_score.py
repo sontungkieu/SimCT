@@ -35,6 +35,8 @@ def main() -> None:
     ap.add_argument("--shard", required=True)
     ap.add_argument("--arm", required=True, choices=("S", "B", "Q"))
     ap.add_argument("--max-positions", type=int, default=0)
+    ap.add_argument("--positions-file", default="",
+                    help="P-positions manifest (default: fixtures-{shard}.json)")
     args = ap.parse_args()
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -50,6 +52,10 @@ def main() -> None:
             print(f"REFUSE: {name} not ready", file=sys.stderr)
             sys.exit(2)
     fixtures = json.loads((work / f"fixtures-{args.shard}.json").read_text())["positions"]
+    if args.positions_file:
+        fixtures = [r for r in
+                    json.loads(Path(args.positions_file).read_text())["positions"]
+                    if r.get("shard", args.shard) == args.shard]
     if args.max_positions > 0:
         fixtures = fixtures[:args.max_positions]
     audit = {r["id"]: r for r in
