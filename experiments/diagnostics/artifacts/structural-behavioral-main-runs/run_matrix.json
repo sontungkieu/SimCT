@@ -1,0 +1,3041 @@
+{
+  "study_version": "sb-main-v2",
+  "status": "plan_not_launcher_not_submitted",
+  "models": {
+    "S": {
+      "repo": "meta-llama/Llama-3.2-3B-Instruct",
+      "revision": "0cb88a4f764b7a12671c53f0838cd831a0843b95",
+      "role": "student",
+      "additional_sft_warmup": false
+    },
+    "B": {
+      "repo": "meta-llama/Llama-3.1-8B-Instruct",
+      "revision": "0e9e39f249a16976918f6564b8830bc894c89659",
+      "role": "same_tokenizer_reference_subject_to_identity_audit",
+      "official_meta_requested_by_user": true,
+      "access_receipt": "artifacts/structural-behavioral-main-runs/meta_access_receipt.json",
+      "company_download_and_load_verified": false,
+      "bridge_against_pilot_required": true
+    },
+    "Q": {
+      "repo": "Qwen/Qwen2-7B-Instruct",
+      "revision": "f2826a00ceef68f0f2b946d945ecc0477ce4450c",
+      "role": "cross_family_teacher"
+    }
+  },
+  "source_plan": "../../STRUCTURAL_BEHAVIORAL_MAIN_PLAN.md",
+  "output_root_proposed": "/workspace/storage-shared/nlp/tungks/tmp/structural-behavioral/sb-main-v2",
+  "physical_node_gpu_uuid_mapping": null,
+  "seed": 42,
+  "inherited_recipe": "../../structural_behavioral_plan_contract.json#training_proposed_not_qualified",
+  "family_count": 139,
+  "runs": [
+    {
+      "id": "P-freeze",
+      "phase": "0",
+      "kind": "cpu_manifests",
+      "models": [],
+      "depends_on": [],
+      "gate": "no_gpu",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "prompt_shards": 10,
+      "prompts": 2000,
+      "responses_per_prompt": 4,
+      "requirement": "freeze dataset revisions/row IDs, exclusions, development/calibration manifests, template policy, source/config hashes and expected task keys"
+    },
+    {
+      "id": "V-qual-S",
+      "phase": "A",
+      "kind": "runtime_qualification",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "P-freeze"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "implementation": "pilot fixtures/scorer available; new immutable config loader required"
+    },
+    {
+      "id": "V-qual-B",
+      "phase": "A",
+      "kind": "runtime_qualification",
+      "models": [
+        "B"
+      ],
+      "depends_on": [
+        "P-freeze"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "implementation": "pilot fixtures/scorer available; new immutable config loader required"
+    },
+    {
+      "id": "V-qual-Q",
+      "phase": "A",
+      "kind": "runtime_qualification",
+      "models": [
+        "Q"
+      ],
+      "depends_on": [
+        "P-freeze"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "implementation": "pilot fixtures/scorer available; new immutable config loader required"
+    },
+    {
+      "id": "V-B-bridge",
+      "phase": "A",
+      "kind": "mirror_official_bridge",
+      "models": [
+        "B"
+      ],
+      "depends_on": [
+        "V-qual-B"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "positions": 200,
+      "use_frozen_pilot": true,
+      "conditions": [
+        "native_template",
+        "controlled_rendered_prompt"
+      ],
+      "implementation": "adapter_required; preserve mirror score artifacts"
+    },
+    {
+      "id": "V-bench-S",
+      "phase": "A",
+      "kind": "benchmark",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "V-qual-S"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "positions_target": 150,
+      "positions_range": [
+        100,
+        200
+      ],
+      "candidate_top_k": [
+        10,
+        20,
+        50
+      ],
+      "extension_caps": [
+        4,
+        8
+      ]
+    },
+    {
+      "id": "V-bench-B",
+      "phase": "A",
+      "kind": "benchmark",
+      "models": [
+        "B"
+      ],
+      "depends_on": [
+        "V-qual-B"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "positions_target": 150,
+      "positions_range": [
+        100,
+        200
+      ],
+      "candidate_top_k": [
+        10,
+        20,
+        50
+      ],
+      "extension_caps": [
+        4,
+        8
+      ]
+    },
+    {
+      "id": "V-bench-Q",
+      "phase": "A",
+      "kind": "benchmark",
+      "models": [
+        "Q"
+      ],
+      "depends_on": [
+        "V-qual-Q"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "positions_target": 150,
+      "positions_range": [
+        100,
+        200
+      ],
+      "candidate_top_k": [
+        10,
+        20,
+        50
+      ],
+      "extension_caps": [
+        4,
+        8
+      ]
+    },
+    {
+      "id": "P-operating-freeze",
+      "phase": "A",
+      "kind": "cpu_configuration_freeze",
+      "models": [],
+      "depends_on": [
+        "V-bench-S",
+        "V-bench-B",
+        "V-bench-Q",
+        "V-B-bridge"
+      ],
+      "gate": "G0_and_benchmark",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "requirement": "freeze estimator/precision, optimizer defaults, throughput forecast, mask-ranking acceptance rule, verifier/eval policy and training fit before launches"
+    },
+    {
+      "id": "C-quality-screen-S",
+      "phase": "A",
+      "kind": "quality_generation",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "P-operating-freeze"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "prompts": 256,
+      "samples_per_prompt": 8,
+      "responses": 2048,
+      "reuse": "first 256 stratified main prompts; task keys reused by full quality"
+    },
+    {
+      "id": "C-cal-S",
+      "phase": "A",
+      "kind": "global_token_calibration",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "P-operating-freeze"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "reference_solutions": 512,
+      "implementation": "adapter_required"
+    },
+    {
+      "id": "C-template-S",
+      "phase": "B",
+      "kind": "template_sensitivity",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "D-pool-00",
+        "P-operating-freeze"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "frozen_responses": 200,
+      "implementation": "adapter_required"
+    },
+    {
+      "id": "C-quality-full-S",
+      "phase": "B",
+      "kind": "quality_generation",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "C-quality-screen-S"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "prompts": 3819,
+      "samples_per_prompt": 8,
+      "responses_before_reuse": 30552
+    },
+    {
+      "id": "C-quality-screen-B",
+      "phase": "A",
+      "kind": "quality_generation",
+      "models": [
+        "B"
+      ],
+      "depends_on": [
+        "P-operating-freeze"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "prompts": 256,
+      "samples_per_prompt": 8,
+      "responses": 2048,
+      "reuse": "first 256 stratified main prompts; task keys reused by full quality"
+    },
+    {
+      "id": "C-cal-B",
+      "phase": "A",
+      "kind": "global_token_calibration",
+      "models": [
+        "B"
+      ],
+      "depends_on": [
+        "P-operating-freeze"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "reference_solutions": 512,
+      "implementation": "adapter_required"
+    },
+    {
+      "id": "C-template-B",
+      "phase": "B",
+      "kind": "template_sensitivity",
+      "models": [
+        "B"
+      ],
+      "depends_on": [
+        "D-pool-00",
+        "P-operating-freeze"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "frozen_responses": 200,
+      "implementation": "adapter_required"
+    },
+    {
+      "id": "C-quality-full-B",
+      "phase": "B",
+      "kind": "quality_generation",
+      "models": [
+        "B"
+      ],
+      "depends_on": [
+        "C-quality-screen-B"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "prompts": 3819,
+      "samples_per_prompt": 8,
+      "responses_before_reuse": 30552
+    },
+    {
+      "id": "C-quality-screen-Q",
+      "phase": "A",
+      "kind": "quality_generation",
+      "models": [
+        "Q"
+      ],
+      "depends_on": [
+        "P-operating-freeze"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "prompts": 256,
+      "samples_per_prompt": 8,
+      "responses": 2048,
+      "reuse": "first 256 stratified main prompts; task keys reused by full quality"
+    },
+    {
+      "id": "C-cal-Q",
+      "phase": "A",
+      "kind": "global_token_calibration",
+      "models": [
+        "Q"
+      ],
+      "depends_on": [
+        "P-operating-freeze"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "reference_solutions": 512,
+      "implementation": "adapter_required"
+    },
+    {
+      "id": "C-template-Q",
+      "phase": "B",
+      "kind": "template_sensitivity",
+      "models": [
+        "Q"
+      ],
+      "depends_on": [
+        "D-pool-00",
+        "P-operating-freeze"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "frozen_responses": 200,
+      "implementation": "adapter_required"
+    },
+    {
+      "id": "C-quality-full-Q",
+      "phase": "B",
+      "kind": "quality_generation",
+      "models": [
+        "Q"
+      ],
+      "depends_on": [
+        "C-quality-screen-Q"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "prompts": 3819,
+      "samples_per_prompt": 8,
+      "responses_before_reuse": 30552
+    },
+    {
+      "id": "D-pool-00",
+      "phase": "A",
+      "kind": "student_generation",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "P-operating-freeze"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "00",
+      "prompts": 200,
+      "responses_per_prompt": 4,
+      "responses": 800,
+      "reuse": "S sample keys 0..3 shared with quality tasks; single owner per logical task"
+    },
+    {
+      "id": "D-pool-01",
+      "phase": "A",
+      "kind": "student_generation",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "P-operating-freeze"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "01",
+      "prompts": 200,
+      "responses_per_prompt": 4,
+      "responses": 800,
+      "reuse": "S sample keys 0..3 shared with quality tasks; single owner per logical task"
+    },
+    {
+      "id": "D-pool-02",
+      "phase": "A",
+      "kind": "student_generation",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "P-operating-freeze"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "02",
+      "prompts": 200,
+      "responses_per_prompt": 4,
+      "responses": 800,
+      "reuse": "S sample keys 0..3 shared with quality tasks; single owner per logical task"
+    },
+    {
+      "id": "D-pool-03",
+      "phase": "A",
+      "kind": "student_generation",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "P-operating-freeze"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "03",
+      "prompts": 200,
+      "responses_per_prompt": 4,
+      "responses": 800,
+      "reuse": "S sample keys 0..3 shared with quality tasks; single owner per logical task"
+    },
+    {
+      "id": "D-pool-04",
+      "phase": "A",
+      "kind": "student_generation",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "P-operating-freeze"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "04",
+      "prompts": 200,
+      "responses_per_prompt": 4,
+      "responses": 800,
+      "reuse": "S sample keys 0..3 shared with quality tasks; single owner per logical task"
+    },
+    {
+      "id": "D-pool-05",
+      "phase": "A",
+      "kind": "student_generation",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "P-operating-freeze"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "05",
+      "prompts": 200,
+      "responses_per_prompt": 4,
+      "responses": 800,
+      "reuse": "S sample keys 0..3 shared with quality tasks; single owner per logical task"
+    },
+    {
+      "id": "D-pool-06",
+      "phase": "A",
+      "kind": "student_generation",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "P-operating-freeze"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "06",
+      "prompts": 200,
+      "responses_per_prompt": 4,
+      "responses": 800,
+      "reuse": "S sample keys 0..3 shared with quality tasks; single owner per logical task"
+    },
+    {
+      "id": "D-pool-07",
+      "phase": "A",
+      "kind": "student_generation",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "P-operating-freeze"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "07",
+      "prompts": 200,
+      "responses_per_prompt": 4,
+      "responses": 800,
+      "reuse": "S sample keys 0..3 shared with quality tasks; single owner per logical task"
+    },
+    {
+      "id": "D-pool-08",
+      "phase": "A",
+      "kind": "student_generation",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "P-operating-freeze"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "08",
+      "prompts": 200,
+      "responses_per_prompt": 4,
+      "responses": 800,
+      "reuse": "S sample keys 0..3 shared with quality tasks; single owner per logical task"
+    },
+    {
+      "id": "D-pool-09",
+      "phase": "A",
+      "kind": "student_generation",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "P-operating-freeze"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "09",
+      "prompts": 200,
+      "responses_per_prompt": 4,
+      "responses": 800,
+      "reuse": "S sample keys 0..3 shared with quality tasks; single owner per logical task"
+    },
+    {
+      "id": "D-census",
+      "phase": "B",
+      "kind": "cpu_tokenizer_census",
+      "models": [
+        "S",
+        "B",
+        "Q"
+      ],
+      "depends_on": [
+        "D-pool-00",
+        "D-pool-01",
+        "D-pool-02",
+        "D-pool-03",
+        "D-pool-04",
+        "D-pool-05",
+        "D-pool-06",
+        "D-pool-07",
+        "D-pool-08",
+        "D-pool-09"
+      ],
+      "gate": "no_gpu_after_pool",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "implementation": "audit core available; shard-aware merge required"
+    },
+    {
+      "id": "P-positions",
+      "phase": "B",
+      "kind": "cpu_position_manifest",
+      "models": [
+        "S",
+        "B",
+        "Q"
+      ],
+      "depends_on": [
+        "D-census"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "total_positions": 5000,
+      "same_ids_for_all_models": true
+    },
+    {
+      "id": "D-candidates-00",
+      "phase": "B",
+      "kind": "candidate_union",
+      "models": [
+        "S",
+        "B",
+        "Q"
+      ],
+      "depends_on": [
+        "P-positions"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "00",
+      "subjobs": [
+        "proposal-S",
+        "proposal-B",
+        "proposal-Q",
+        "union-cpu"
+      ],
+      "implementation": "pilot scoring/proposal core available; E1/E2 audit and main config/sharding required"
+    },
+    {
+      "id": "D-score-S-00",
+      "phase": "B",
+      "kind": "event_scoring",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "D-candidates-00",
+        "C-cal-S"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "00",
+      "spaces": [
+        "E1",
+        "E2",
+        "E3",
+        "next_byte_sensitivity"
+      ],
+      "implementation": "partial_pilot_core_only"
+    },
+    {
+      "id": "D-score-B-00",
+      "phase": "B",
+      "kind": "event_scoring",
+      "models": [
+        "B"
+      ],
+      "depends_on": [
+        "D-candidates-00",
+        "C-cal-B"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "00",
+      "spaces": [
+        "E1",
+        "E2",
+        "E3",
+        "next_byte_sensitivity"
+      ],
+      "implementation": "partial_pilot_core_only"
+    },
+    {
+      "id": "D-score-Q-00",
+      "phase": "B",
+      "kind": "event_scoring",
+      "models": [
+        "Q"
+      ],
+      "depends_on": [
+        "D-candidates-00",
+        "C-cal-Q"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "00",
+      "spaces": [
+        "E1",
+        "E2",
+        "E3",
+        "next_byte_sensitivity"
+      ],
+      "implementation": "partial_pilot_core_only"
+    },
+    {
+      "id": "D-candidates-01",
+      "phase": "B",
+      "kind": "candidate_union",
+      "models": [
+        "S",
+        "B",
+        "Q"
+      ],
+      "depends_on": [
+        "P-positions"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "01",
+      "subjobs": [
+        "proposal-S",
+        "proposal-B",
+        "proposal-Q",
+        "union-cpu"
+      ],
+      "implementation": "pilot scoring/proposal core available; E1/E2 audit and main config/sharding required"
+    },
+    {
+      "id": "D-score-S-01",
+      "phase": "B",
+      "kind": "event_scoring",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "D-candidates-01",
+        "C-cal-S"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "01",
+      "spaces": [
+        "E1",
+        "E2",
+        "E3",
+        "next_byte_sensitivity"
+      ],
+      "implementation": "partial_pilot_core_only"
+    },
+    {
+      "id": "D-score-B-01",
+      "phase": "B",
+      "kind": "event_scoring",
+      "models": [
+        "B"
+      ],
+      "depends_on": [
+        "D-candidates-01",
+        "C-cal-B"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "01",
+      "spaces": [
+        "E1",
+        "E2",
+        "E3",
+        "next_byte_sensitivity"
+      ],
+      "implementation": "partial_pilot_core_only"
+    },
+    {
+      "id": "D-score-Q-01",
+      "phase": "B",
+      "kind": "event_scoring",
+      "models": [
+        "Q"
+      ],
+      "depends_on": [
+        "D-candidates-01",
+        "C-cal-Q"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "01",
+      "spaces": [
+        "E1",
+        "E2",
+        "E3",
+        "next_byte_sensitivity"
+      ],
+      "implementation": "partial_pilot_core_only"
+    },
+    {
+      "id": "D-candidates-02",
+      "phase": "B",
+      "kind": "candidate_union",
+      "models": [
+        "S",
+        "B",
+        "Q"
+      ],
+      "depends_on": [
+        "P-positions"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "02",
+      "subjobs": [
+        "proposal-S",
+        "proposal-B",
+        "proposal-Q",
+        "union-cpu"
+      ],
+      "implementation": "pilot scoring/proposal core available; E1/E2 audit and main config/sharding required"
+    },
+    {
+      "id": "D-score-S-02",
+      "phase": "B",
+      "kind": "event_scoring",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "D-candidates-02",
+        "C-cal-S"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "02",
+      "spaces": [
+        "E1",
+        "E2",
+        "E3",
+        "next_byte_sensitivity"
+      ],
+      "implementation": "partial_pilot_core_only"
+    },
+    {
+      "id": "D-score-B-02",
+      "phase": "B",
+      "kind": "event_scoring",
+      "models": [
+        "B"
+      ],
+      "depends_on": [
+        "D-candidates-02",
+        "C-cal-B"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "02",
+      "spaces": [
+        "E1",
+        "E2",
+        "E3",
+        "next_byte_sensitivity"
+      ],
+      "implementation": "partial_pilot_core_only"
+    },
+    {
+      "id": "D-score-Q-02",
+      "phase": "B",
+      "kind": "event_scoring",
+      "models": [
+        "Q"
+      ],
+      "depends_on": [
+        "D-candidates-02",
+        "C-cal-Q"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "02",
+      "spaces": [
+        "E1",
+        "E2",
+        "E3",
+        "next_byte_sensitivity"
+      ],
+      "implementation": "partial_pilot_core_only"
+    },
+    {
+      "id": "D-candidates-03",
+      "phase": "B",
+      "kind": "candidate_union",
+      "models": [
+        "S",
+        "B",
+        "Q"
+      ],
+      "depends_on": [
+        "P-positions"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "03",
+      "subjobs": [
+        "proposal-S",
+        "proposal-B",
+        "proposal-Q",
+        "union-cpu"
+      ],
+      "implementation": "pilot scoring/proposal core available; E1/E2 audit and main config/sharding required"
+    },
+    {
+      "id": "D-score-S-03",
+      "phase": "B",
+      "kind": "event_scoring",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "D-candidates-03",
+        "C-cal-S"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "03",
+      "spaces": [
+        "E1",
+        "E2",
+        "E3",
+        "next_byte_sensitivity"
+      ],
+      "implementation": "partial_pilot_core_only"
+    },
+    {
+      "id": "D-score-B-03",
+      "phase": "B",
+      "kind": "event_scoring",
+      "models": [
+        "B"
+      ],
+      "depends_on": [
+        "D-candidates-03",
+        "C-cal-B"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "03",
+      "spaces": [
+        "E1",
+        "E2",
+        "E3",
+        "next_byte_sensitivity"
+      ],
+      "implementation": "partial_pilot_core_only"
+    },
+    {
+      "id": "D-score-Q-03",
+      "phase": "B",
+      "kind": "event_scoring",
+      "models": [
+        "Q"
+      ],
+      "depends_on": [
+        "D-candidates-03",
+        "C-cal-Q"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "03",
+      "spaces": [
+        "E1",
+        "E2",
+        "E3",
+        "next_byte_sensitivity"
+      ],
+      "implementation": "partial_pilot_core_only"
+    },
+    {
+      "id": "D-candidates-04",
+      "phase": "B",
+      "kind": "candidate_union",
+      "models": [
+        "S",
+        "B",
+        "Q"
+      ],
+      "depends_on": [
+        "P-positions"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "04",
+      "subjobs": [
+        "proposal-S",
+        "proposal-B",
+        "proposal-Q",
+        "union-cpu"
+      ],
+      "implementation": "pilot scoring/proposal core available; E1/E2 audit and main config/sharding required"
+    },
+    {
+      "id": "D-score-S-04",
+      "phase": "B",
+      "kind": "event_scoring",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "D-candidates-04",
+        "C-cal-S"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "04",
+      "spaces": [
+        "E1",
+        "E2",
+        "E3",
+        "next_byte_sensitivity"
+      ],
+      "implementation": "partial_pilot_core_only"
+    },
+    {
+      "id": "D-score-B-04",
+      "phase": "B",
+      "kind": "event_scoring",
+      "models": [
+        "B"
+      ],
+      "depends_on": [
+        "D-candidates-04",
+        "C-cal-B"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "04",
+      "spaces": [
+        "E1",
+        "E2",
+        "E3",
+        "next_byte_sensitivity"
+      ],
+      "implementation": "partial_pilot_core_only"
+    },
+    {
+      "id": "D-score-Q-04",
+      "phase": "B",
+      "kind": "event_scoring",
+      "models": [
+        "Q"
+      ],
+      "depends_on": [
+        "D-candidates-04",
+        "C-cal-Q"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "04",
+      "spaces": [
+        "E1",
+        "E2",
+        "E3",
+        "next_byte_sensitivity"
+      ],
+      "implementation": "partial_pilot_core_only"
+    },
+    {
+      "id": "D-candidates-05",
+      "phase": "B",
+      "kind": "candidate_union",
+      "models": [
+        "S",
+        "B",
+        "Q"
+      ],
+      "depends_on": [
+        "P-positions"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "05",
+      "subjobs": [
+        "proposal-S",
+        "proposal-B",
+        "proposal-Q",
+        "union-cpu"
+      ],
+      "implementation": "pilot scoring/proposal core available; E1/E2 audit and main config/sharding required"
+    },
+    {
+      "id": "D-score-S-05",
+      "phase": "B",
+      "kind": "event_scoring",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "D-candidates-05",
+        "C-cal-S"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "05",
+      "spaces": [
+        "E1",
+        "E2",
+        "E3",
+        "next_byte_sensitivity"
+      ],
+      "implementation": "partial_pilot_core_only"
+    },
+    {
+      "id": "D-score-B-05",
+      "phase": "B",
+      "kind": "event_scoring",
+      "models": [
+        "B"
+      ],
+      "depends_on": [
+        "D-candidates-05",
+        "C-cal-B"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "05",
+      "spaces": [
+        "E1",
+        "E2",
+        "E3",
+        "next_byte_sensitivity"
+      ],
+      "implementation": "partial_pilot_core_only"
+    },
+    {
+      "id": "D-score-Q-05",
+      "phase": "B",
+      "kind": "event_scoring",
+      "models": [
+        "Q"
+      ],
+      "depends_on": [
+        "D-candidates-05",
+        "C-cal-Q"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "05",
+      "spaces": [
+        "E1",
+        "E2",
+        "E3",
+        "next_byte_sensitivity"
+      ],
+      "implementation": "partial_pilot_core_only"
+    },
+    {
+      "id": "D-candidates-06",
+      "phase": "B",
+      "kind": "candidate_union",
+      "models": [
+        "S",
+        "B",
+        "Q"
+      ],
+      "depends_on": [
+        "P-positions"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "06",
+      "subjobs": [
+        "proposal-S",
+        "proposal-B",
+        "proposal-Q",
+        "union-cpu"
+      ],
+      "implementation": "pilot scoring/proposal core available; E1/E2 audit and main config/sharding required"
+    },
+    {
+      "id": "D-score-S-06",
+      "phase": "B",
+      "kind": "event_scoring",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "D-candidates-06",
+        "C-cal-S"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "06",
+      "spaces": [
+        "E1",
+        "E2",
+        "E3",
+        "next_byte_sensitivity"
+      ],
+      "implementation": "partial_pilot_core_only"
+    },
+    {
+      "id": "D-score-B-06",
+      "phase": "B",
+      "kind": "event_scoring",
+      "models": [
+        "B"
+      ],
+      "depends_on": [
+        "D-candidates-06",
+        "C-cal-B"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "06",
+      "spaces": [
+        "E1",
+        "E2",
+        "E3",
+        "next_byte_sensitivity"
+      ],
+      "implementation": "partial_pilot_core_only"
+    },
+    {
+      "id": "D-score-Q-06",
+      "phase": "B",
+      "kind": "event_scoring",
+      "models": [
+        "Q"
+      ],
+      "depends_on": [
+        "D-candidates-06",
+        "C-cal-Q"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "06",
+      "spaces": [
+        "E1",
+        "E2",
+        "E3",
+        "next_byte_sensitivity"
+      ],
+      "implementation": "partial_pilot_core_only"
+    },
+    {
+      "id": "D-candidates-07",
+      "phase": "B",
+      "kind": "candidate_union",
+      "models": [
+        "S",
+        "B",
+        "Q"
+      ],
+      "depends_on": [
+        "P-positions"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "07",
+      "subjobs": [
+        "proposal-S",
+        "proposal-B",
+        "proposal-Q",
+        "union-cpu"
+      ],
+      "implementation": "pilot scoring/proposal core available; E1/E2 audit and main config/sharding required"
+    },
+    {
+      "id": "D-score-S-07",
+      "phase": "B",
+      "kind": "event_scoring",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "D-candidates-07",
+        "C-cal-S"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "07",
+      "spaces": [
+        "E1",
+        "E2",
+        "E3",
+        "next_byte_sensitivity"
+      ],
+      "implementation": "partial_pilot_core_only"
+    },
+    {
+      "id": "D-score-B-07",
+      "phase": "B",
+      "kind": "event_scoring",
+      "models": [
+        "B"
+      ],
+      "depends_on": [
+        "D-candidates-07",
+        "C-cal-B"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "07",
+      "spaces": [
+        "E1",
+        "E2",
+        "E3",
+        "next_byte_sensitivity"
+      ],
+      "implementation": "partial_pilot_core_only"
+    },
+    {
+      "id": "D-score-Q-07",
+      "phase": "B",
+      "kind": "event_scoring",
+      "models": [
+        "Q"
+      ],
+      "depends_on": [
+        "D-candidates-07",
+        "C-cal-Q"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "07",
+      "spaces": [
+        "E1",
+        "E2",
+        "E3",
+        "next_byte_sensitivity"
+      ],
+      "implementation": "partial_pilot_core_only"
+    },
+    {
+      "id": "D-candidates-08",
+      "phase": "B",
+      "kind": "candidate_union",
+      "models": [
+        "S",
+        "B",
+        "Q"
+      ],
+      "depends_on": [
+        "P-positions"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "08",
+      "subjobs": [
+        "proposal-S",
+        "proposal-B",
+        "proposal-Q",
+        "union-cpu"
+      ],
+      "implementation": "pilot scoring/proposal core available; E1/E2 audit and main config/sharding required"
+    },
+    {
+      "id": "D-score-S-08",
+      "phase": "B",
+      "kind": "event_scoring",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "D-candidates-08",
+        "C-cal-S"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "08",
+      "spaces": [
+        "E1",
+        "E2",
+        "E3",
+        "next_byte_sensitivity"
+      ],
+      "implementation": "partial_pilot_core_only"
+    },
+    {
+      "id": "D-score-B-08",
+      "phase": "B",
+      "kind": "event_scoring",
+      "models": [
+        "B"
+      ],
+      "depends_on": [
+        "D-candidates-08",
+        "C-cal-B"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "08",
+      "spaces": [
+        "E1",
+        "E2",
+        "E3",
+        "next_byte_sensitivity"
+      ],
+      "implementation": "partial_pilot_core_only"
+    },
+    {
+      "id": "D-score-Q-08",
+      "phase": "B",
+      "kind": "event_scoring",
+      "models": [
+        "Q"
+      ],
+      "depends_on": [
+        "D-candidates-08",
+        "C-cal-Q"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "08",
+      "spaces": [
+        "E1",
+        "E2",
+        "E3",
+        "next_byte_sensitivity"
+      ],
+      "implementation": "partial_pilot_core_only"
+    },
+    {
+      "id": "D-candidates-09",
+      "phase": "B",
+      "kind": "candidate_union",
+      "models": [
+        "S",
+        "B",
+        "Q"
+      ],
+      "depends_on": [
+        "P-positions"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "09",
+      "subjobs": [
+        "proposal-S",
+        "proposal-B",
+        "proposal-Q",
+        "union-cpu"
+      ],
+      "implementation": "pilot scoring/proposal core available; E1/E2 audit and main config/sharding required"
+    },
+    {
+      "id": "D-score-S-09",
+      "phase": "B",
+      "kind": "event_scoring",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "D-candidates-09",
+        "C-cal-S"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "09",
+      "spaces": [
+        "E1",
+        "E2",
+        "E3",
+        "next_byte_sensitivity"
+      ],
+      "implementation": "partial_pilot_core_only"
+    },
+    {
+      "id": "D-score-B-09",
+      "phase": "B",
+      "kind": "event_scoring",
+      "models": [
+        "B"
+      ],
+      "depends_on": [
+        "D-candidates-09",
+        "C-cal-B"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "09",
+      "spaces": [
+        "E1",
+        "E2",
+        "E3",
+        "next_byte_sensitivity"
+      ],
+      "implementation": "partial_pilot_core_only"
+    },
+    {
+      "id": "D-score-Q-09",
+      "phase": "B",
+      "kind": "event_scoring",
+      "models": [
+        "Q"
+      ],
+      "depends_on": [
+        "D-candidates-09",
+        "C-cal-Q"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "09",
+      "spaces": [
+        "E1",
+        "E2",
+        "E3",
+        "next_byte_sensitivity"
+      ],
+      "implementation": "partial_pilot_core_only"
+    },
+    {
+      "id": "D-H2",
+      "phase": "B",
+      "kind": "cpu_h2_analysis",
+      "models": [
+        "S",
+        "B",
+        "Q"
+      ],
+      "depends_on": [
+        "D-score-S-00",
+        "D-score-B-00",
+        "D-score-Q-00",
+        "D-score-S-01",
+        "D-score-B-01",
+        "D-score-Q-01",
+        "D-score-S-02",
+        "D-score-B-02",
+        "D-score-Q-02",
+        "D-score-S-03",
+        "D-score-B-03",
+        "D-score-Q-03",
+        "D-score-S-04",
+        "D-score-B-04",
+        "D-score-Q-04",
+        "D-score-S-05",
+        "D-score-B-05",
+        "D-score-Q-05",
+        "D-score-S-06",
+        "D-score-B-06",
+        "D-score-Q-06",
+        "D-score-S-07",
+        "D-score-B-07",
+        "D-score-Q-07",
+        "D-score-S-08",
+        "D-score-B-08",
+        "D-score-Q-08",
+        "D-score-S-09",
+        "D-score-B-09",
+        "D-score-Q-09",
+        "C-template-S",
+        "C-template-B",
+        "C-template-Q",
+        "C-quality-full-S",
+        "C-quality-full-B",
+        "C-quality-full-Q"
+      ],
+      "gate": "valid_mass_residual_precision_and_quality_controls",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null
+    },
+    {
+      "id": "D-paired-P1",
+      "phase": "B",
+      "kind": "frozen_context_diagnostic",
+      "models": [
+        "S",
+        "B",
+        "Q"
+      ],
+      "depends_on": [
+        "P-positions",
+        "P-operating-freeze"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "implementation": "adapter_required",
+      "estimand": "off_policy_loss_gradient_equal_budget_short_update"
+    },
+    {
+      "id": "L-B-5e7",
+      "phase": "A-training",
+      "kind": "lr_screen",
+      "models": [
+        "S",
+        "B"
+      ],
+      "depends_on": [
+        "C-quality-screen-S",
+        "C-quality-screen-B",
+        "P-operating-freeze"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "optimizer_steps": 30,
+      "lr": 5e-07,
+      "scheduler_horizon": 150,
+      "eval_development_problems": 256,
+      "implementation": "strict_OPD_training_adapter_required"
+    },
+    {
+      "id": "L-B-1e6",
+      "phase": "A-training",
+      "kind": "lr_screen",
+      "models": [
+        "S",
+        "B"
+      ],
+      "depends_on": [
+        "C-quality-screen-S",
+        "C-quality-screen-B",
+        "P-operating-freeze"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "optimizer_steps": 30,
+      "lr": 1e-06,
+      "scheduler_horizon": 150,
+      "eval_development_problems": 256,
+      "implementation": "strict_OPD_training_adapter_required"
+    },
+    {
+      "id": "L-B-2e6",
+      "phase": "A-training",
+      "kind": "lr_screen",
+      "models": [
+        "S",
+        "B"
+      ],
+      "depends_on": [
+        "C-quality-screen-S",
+        "C-quality-screen-B",
+        "P-operating-freeze"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "optimizer_steps": 30,
+      "lr": 2e-06,
+      "scheduler_horizon": 150,
+      "eval_development_problems": 256,
+      "implementation": "strict_OPD_training_adapter_required"
+    },
+    {
+      "id": "P-LR-freeze",
+      "phase": "A-training",
+      "kind": "cpu_lr_selection",
+      "models": [],
+      "depends_on": [
+        "L-B-5e7",
+        "L-B-1e6",
+        "L-B-2e6"
+      ],
+      "gate": "development_accuracy_tie_lower_lr",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null
+    },
+    {
+      "id": "T-B-all",
+      "phase": "training-H1-P1",
+      "kind": "training",
+      "models": [
+        "S",
+        "B"
+      ],
+      "depends_on": [
+        "P-LR-freeze",
+        "D-census"
+      ],
+      "gate": "G0_LR_freeze_support_mask_corruption_qualification_not_G1",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "teacher": "B",
+      "policy": "all_valid_content",
+      "optimizer_steps": 150,
+      "seed": 42,
+      "implementation": "study_adapter_required"
+    },
+    {
+      "id": "T-B-strict",
+      "phase": "training-H1-P1",
+      "kind": "training",
+      "models": [
+        "S",
+        "B"
+      ],
+      "depends_on": [
+        "P-LR-freeze",
+        "D-census"
+      ],
+      "gate": "G0_LR_freeze_support_mask_corruption_qualification_not_G1",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "teacher": "B",
+      "policy": "joint_strict",
+      "optimizer_steps": 150,
+      "seed": 42,
+      "implementation": "study_adapter_required"
+    },
+    {
+      "id": "T-Q-strict",
+      "phase": "training-H1-P1",
+      "kind": "training",
+      "models": [
+        "S",
+        "Q"
+      ],
+      "depends_on": [
+        "P-LR-freeze",
+        "D-census",
+        "C-quality-screen-Q"
+      ],
+      "gate": "G0_LR_freeze_support_mask_corruption_qualification_not_G1",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "teacher": "Q",
+      "policy": "joint_strict",
+      "optimizer_steps": 150,
+      "seed": 42,
+      "implementation": "study_adapter_required"
+    },
+    {
+      "id": "T-B-shift15",
+      "phase": "training-H1-P1",
+      "kind": "training",
+      "models": [
+        "S",
+        "B"
+      ],
+      "depends_on": [
+        "P-LR-freeze",
+        "D-census"
+      ],
+      "gate": "G0_LR_freeze_support_mask_corruption_qualification_not_G1",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "teacher": "B",
+      "policy": "joint_strict_shift_15pct",
+      "optimizer_steps": 150,
+      "seed": 42,
+      "implementation": "study_adapter_required"
+    },
+    {
+      "id": "T-B-shift05",
+      "phase": "training-H1-P1",
+      "kind": "training",
+      "models": [
+        "S",
+        "B"
+      ],
+      "depends_on": [
+        "P-LR-freeze",
+        "D-census",
+        "T-B-shift15"
+      ],
+      "gate": "G0_LR_freeze_support_mask_corruption_qualification_not_G1",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "teacher": "B",
+      "policy": "joint_strict_shift_5pct",
+      "optimizer_steps": 150,
+      "seed": 42,
+      "implementation": "study_adapter_required"
+    },
+    {
+      "id": "T-B-shift30",
+      "phase": "training-H1-P1",
+      "kind": "training",
+      "models": [
+        "S",
+        "B"
+      ],
+      "depends_on": [
+        "P-LR-freeze",
+        "D-census",
+        "T-B-shift15"
+      ],
+      "gate": "G0_LR_freeze_support_mask_corruption_qualification_not_G1",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "teacher": "B",
+      "policy": "joint_strict_shift_30pct",
+      "optimizer_steps": 150,
+      "seed": 42,
+      "implementation": "study_adapter_required"
+    },
+    {
+      "id": "F-screen",
+      "phase": "C",
+      "kind": "counterfactual_student",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "D-H2"
+      ],
+      "gate": "G1_or_explicit_provisional_diagnostic",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "disagreement_positions": 200,
+      "agreement_positions": 100,
+      "branches": 2,
+      "continuations_per_branch": 8,
+      "continuations": 4800,
+      "implementation": "fork_adapter_required"
+    },
+    {
+      "id": "F-local-screen",
+      "phase": "C",
+      "kind": "local_competence",
+      "models": [
+        "B",
+        "Q"
+      ],
+      "depends_on": [
+        "F-screen"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "max_prefixes": 200,
+      "samples_per_teacher": 4,
+      "max_continuations": 1600
+    },
+    {
+      "id": "F-full-00",
+      "phase": "C",
+      "kind": "counterfactual_student",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "F-screen",
+        "F-local-screen"
+      ],
+      "gate": "G1_and_screen_correctness_feasibility_not_effect_sign",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "00",
+      "all_shards_disagreement_positions": 2000,
+      "all_shards_agreement_positions": 500,
+      "all_shards_continuations": 40000,
+      "reuse_valid_screen_task_keys": true
+    },
+    {
+      "id": "F-local-B-00",
+      "phase": "D",
+      "kind": "local_competence",
+      "models": [
+        "B"
+      ],
+      "depends_on": [
+        "F-full-00"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "00",
+      "samples_per_prefix": 4,
+      "all_shards_max_continuations_per_teacher": 8000
+    },
+    {
+      "id": "F-local-Q-00",
+      "phase": "D",
+      "kind": "local_competence",
+      "models": [
+        "Q"
+      ],
+      "depends_on": [
+        "F-full-00"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "00",
+      "samples_per_prefix": 4,
+      "all_shards_max_continuations_per_teacher": 8000
+    },
+    {
+      "id": "F-full-01",
+      "phase": "C",
+      "kind": "counterfactual_student",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "F-screen",
+        "F-local-screen"
+      ],
+      "gate": "G1_and_screen_correctness_feasibility_not_effect_sign",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "01",
+      "all_shards_disagreement_positions": 2000,
+      "all_shards_agreement_positions": 500,
+      "all_shards_continuations": 40000,
+      "reuse_valid_screen_task_keys": true
+    },
+    {
+      "id": "F-local-B-01",
+      "phase": "D",
+      "kind": "local_competence",
+      "models": [
+        "B"
+      ],
+      "depends_on": [
+        "F-full-01"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "01",
+      "samples_per_prefix": 4,
+      "all_shards_max_continuations_per_teacher": 8000
+    },
+    {
+      "id": "F-local-Q-01",
+      "phase": "D",
+      "kind": "local_competence",
+      "models": [
+        "Q"
+      ],
+      "depends_on": [
+        "F-full-01"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "01",
+      "samples_per_prefix": 4,
+      "all_shards_max_continuations_per_teacher": 8000
+    },
+    {
+      "id": "F-full-02",
+      "phase": "C",
+      "kind": "counterfactual_student",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "F-screen",
+        "F-local-screen"
+      ],
+      "gate": "G1_and_screen_correctness_feasibility_not_effect_sign",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "02",
+      "all_shards_disagreement_positions": 2000,
+      "all_shards_agreement_positions": 500,
+      "all_shards_continuations": 40000,
+      "reuse_valid_screen_task_keys": true
+    },
+    {
+      "id": "F-local-B-02",
+      "phase": "D",
+      "kind": "local_competence",
+      "models": [
+        "B"
+      ],
+      "depends_on": [
+        "F-full-02"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "02",
+      "samples_per_prefix": 4,
+      "all_shards_max_continuations_per_teacher": 8000
+    },
+    {
+      "id": "F-local-Q-02",
+      "phase": "D",
+      "kind": "local_competence",
+      "models": [
+        "Q"
+      ],
+      "depends_on": [
+        "F-full-02"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "02",
+      "samples_per_prefix": 4,
+      "all_shards_max_continuations_per_teacher": 8000
+    },
+    {
+      "id": "F-full-03",
+      "phase": "C",
+      "kind": "counterfactual_student",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "F-screen",
+        "F-local-screen"
+      ],
+      "gate": "G1_and_screen_correctness_feasibility_not_effect_sign",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "03",
+      "all_shards_disagreement_positions": 2000,
+      "all_shards_agreement_positions": 500,
+      "all_shards_continuations": 40000,
+      "reuse_valid_screen_task_keys": true
+    },
+    {
+      "id": "F-local-B-03",
+      "phase": "D",
+      "kind": "local_competence",
+      "models": [
+        "B"
+      ],
+      "depends_on": [
+        "F-full-03"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "03",
+      "samples_per_prefix": 4,
+      "all_shards_max_continuations_per_teacher": 8000
+    },
+    {
+      "id": "F-local-Q-03",
+      "phase": "D",
+      "kind": "local_competence",
+      "models": [
+        "Q"
+      ],
+      "depends_on": [
+        "F-full-03"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "03",
+      "samples_per_prefix": 4,
+      "all_shards_max_continuations_per_teacher": 8000
+    },
+    {
+      "id": "F-full-04",
+      "phase": "C",
+      "kind": "counterfactual_student",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "F-screen",
+        "F-local-screen"
+      ],
+      "gate": "G1_and_screen_correctness_feasibility_not_effect_sign",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "04",
+      "all_shards_disagreement_positions": 2000,
+      "all_shards_agreement_positions": 500,
+      "all_shards_continuations": 40000,
+      "reuse_valid_screen_task_keys": true
+    },
+    {
+      "id": "F-local-B-04",
+      "phase": "D",
+      "kind": "local_competence",
+      "models": [
+        "B"
+      ],
+      "depends_on": [
+        "F-full-04"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "04",
+      "samples_per_prefix": 4,
+      "all_shards_max_continuations_per_teacher": 8000
+    },
+    {
+      "id": "F-local-Q-04",
+      "phase": "D",
+      "kind": "local_competence",
+      "models": [
+        "Q"
+      ],
+      "depends_on": [
+        "F-full-04"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "04",
+      "samples_per_prefix": 4,
+      "all_shards_max_continuations_per_teacher": 8000
+    },
+    {
+      "id": "F-full-05",
+      "phase": "C",
+      "kind": "counterfactual_student",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "F-screen",
+        "F-local-screen"
+      ],
+      "gate": "G1_and_screen_correctness_feasibility_not_effect_sign",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "05",
+      "all_shards_disagreement_positions": 2000,
+      "all_shards_agreement_positions": 500,
+      "all_shards_continuations": 40000,
+      "reuse_valid_screen_task_keys": true
+    },
+    {
+      "id": "F-local-B-05",
+      "phase": "D",
+      "kind": "local_competence",
+      "models": [
+        "B"
+      ],
+      "depends_on": [
+        "F-full-05"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "05",
+      "samples_per_prefix": 4,
+      "all_shards_max_continuations_per_teacher": 8000
+    },
+    {
+      "id": "F-local-Q-05",
+      "phase": "D",
+      "kind": "local_competence",
+      "models": [
+        "Q"
+      ],
+      "depends_on": [
+        "F-full-05"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "05",
+      "samples_per_prefix": 4,
+      "all_shards_max_continuations_per_teacher": 8000
+    },
+    {
+      "id": "F-full-06",
+      "phase": "C",
+      "kind": "counterfactual_student",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "F-screen",
+        "F-local-screen"
+      ],
+      "gate": "G1_and_screen_correctness_feasibility_not_effect_sign",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "06",
+      "all_shards_disagreement_positions": 2000,
+      "all_shards_agreement_positions": 500,
+      "all_shards_continuations": 40000,
+      "reuse_valid_screen_task_keys": true
+    },
+    {
+      "id": "F-local-B-06",
+      "phase": "D",
+      "kind": "local_competence",
+      "models": [
+        "B"
+      ],
+      "depends_on": [
+        "F-full-06"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "06",
+      "samples_per_prefix": 4,
+      "all_shards_max_continuations_per_teacher": 8000
+    },
+    {
+      "id": "F-local-Q-06",
+      "phase": "D",
+      "kind": "local_competence",
+      "models": [
+        "Q"
+      ],
+      "depends_on": [
+        "F-full-06"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "06",
+      "samples_per_prefix": 4,
+      "all_shards_max_continuations_per_teacher": 8000
+    },
+    {
+      "id": "F-full-07",
+      "phase": "C",
+      "kind": "counterfactual_student",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "F-screen",
+        "F-local-screen"
+      ],
+      "gate": "G1_and_screen_correctness_feasibility_not_effect_sign",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "07",
+      "all_shards_disagreement_positions": 2000,
+      "all_shards_agreement_positions": 500,
+      "all_shards_continuations": 40000,
+      "reuse_valid_screen_task_keys": true
+    },
+    {
+      "id": "F-local-B-07",
+      "phase": "D",
+      "kind": "local_competence",
+      "models": [
+        "B"
+      ],
+      "depends_on": [
+        "F-full-07"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "07",
+      "samples_per_prefix": 4,
+      "all_shards_max_continuations_per_teacher": 8000
+    },
+    {
+      "id": "F-local-Q-07",
+      "phase": "D",
+      "kind": "local_competence",
+      "models": [
+        "Q"
+      ],
+      "depends_on": [
+        "F-full-07"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "07",
+      "samples_per_prefix": 4,
+      "all_shards_max_continuations_per_teacher": 8000
+    },
+    {
+      "id": "F-full-08",
+      "phase": "C",
+      "kind": "counterfactual_student",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "F-screen",
+        "F-local-screen"
+      ],
+      "gate": "G1_and_screen_correctness_feasibility_not_effect_sign",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "08",
+      "all_shards_disagreement_positions": 2000,
+      "all_shards_agreement_positions": 500,
+      "all_shards_continuations": 40000,
+      "reuse_valid_screen_task_keys": true
+    },
+    {
+      "id": "F-local-B-08",
+      "phase": "D",
+      "kind": "local_competence",
+      "models": [
+        "B"
+      ],
+      "depends_on": [
+        "F-full-08"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "08",
+      "samples_per_prefix": 4,
+      "all_shards_max_continuations_per_teacher": 8000
+    },
+    {
+      "id": "F-local-Q-08",
+      "phase": "D",
+      "kind": "local_competence",
+      "models": [
+        "Q"
+      ],
+      "depends_on": [
+        "F-full-08"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "08",
+      "samples_per_prefix": 4,
+      "all_shards_max_continuations_per_teacher": 8000
+    },
+    {
+      "id": "F-full-09",
+      "phase": "C",
+      "kind": "counterfactual_student",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "F-screen",
+        "F-local-screen"
+      ],
+      "gate": "G1_and_screen_correctness_feasibility_not_effect_sign",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "09",
+      "all_shards_disagreement_positions": 2000,
+      "all_shards_agreement_positions": 500,
+      "all_shards_continuations": 40000,
+      "reuse_valid_screen_task_keys": true
+    },
+    {
+      "id": "F-local-B-09",
+      "phase": "D",
+      "kind": "local_competence",
+      "models": [
+        "B"
+      ],
+      "depends_on": [
+        "F-full-09"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "09",
+      "samples_per_prefix": 4,
+      "all_shards_max_continuations_per_teacher": 8000
+    },
+    {
+      "id": "F-local-Q-09",
+      "phase": "D",
+      "kind": "local_competence",
+      "models": [
+        "Q"
+      ],
+      "depends_on": [
+        "F-full-09"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "shard": "09",
+      "samples_per_prefix": 4,
+      "all_shards_max_continuations_per_teacher": 8000
+    },
+    {
+      "id": "F-analysis",
+      "phase": "D",
+      "kind": "cpu_predictive_analysis",
+      "models": [
+        "S",
+        "B",
+        "Q"
+      ],
+      "depends_on": [
+        "F-full-00",
+        "F-local-B-00",
+        "F-local-Q-00",
+        "F-full-01",
+        "F-local-B-01",
+        "F-local-Q-01",
+        "F-full-02",
+        "F-local-B-02",
+        "F-local-Q-02",
+        "F-full-03",
+        "F-local-B-03",
+        "F-local-Q-03",
+        "F-full-04",
+        "F-local-B-04",
+        "F-local-Q-04",
+        "F-full-05",
+        "F-local-B-05",
+        "F-local-Q-05",
+        "F-full-06",
+        "F-local-B-06",
+        "F-local-Q-06",
+        "F-full-07",
+        "F-local-B-07",
+        "F-local-Q-07",
+        "F-full-08",
+        "F-local-B-08",
+        "F-local-Q-08",
+        "F-full-09",
+        "F-local-B-09",
+        "F-local-Q-09"
+      ],
+      "gate": "correctness_and_frozen_manifest",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null
+    },
+    {
+      "id": "P-mask-qual",
+      "phase": "D",
+      "kind": "mask_qualification",
+      "models": [
+        "S",
+        "B",
+        "Q"
+      ],
+      "depends_on": [
+        "D-H2",
+        "D-paired-P1"
+      ],
+      "gate": "G1_and_E2_E3_rank_acceptance_count_loss_mass_matching",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "implementation": "adapter_required"
+    },
+    {
+      "id": "T-Q-top25",
+      "phase": "training-H3",
+      "kind": "training",
+      "models": [
+        "S",
+        "B",
+        "Q"
+      ],
+      "depends_on": [
+        "P-LR-freeze",
+        "F-analysis",
+        "P-mask-qual"
+      ],
+      "gate": "G1; G2_null_allows_one_seed42_confirmation_not_predictor_scale",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "teacher": "Q",
+      "policy": "top25_calibrated_E2_X",
+      "seed": 42,
+      "optimizer_steps": 150,
+      "implementation": "study_adapter_required"
+    },
+    {
+      "id": "T-Q-random25",
+      "phase": "training-H3",
+      "kind": "training",
+      "models": [
+        "S",
+        "B",
+        "Q"
+      ],
+      "depends_on": [
+        "P-LR-freeze",
+        "F-analysis",
+        "P-mask-qual"
+      ],
+      "gate": "G1; G2_null_allows_one_seed42_confirmation_not_predictor_scale",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "teacher": "Q",
+      "policy": "matched_random25",
+      "seed": 42,
+      "optimizer_steps": 150,
+      "implementation": "study_adapter_required"
+    },
+    {
+      "id": "T-B-top25",
+      "phase": "training-H3",
+      "kind": "training",
+      "models": [
+        "S",
+        "B"
+      ],
+      "depends_on": [
+        "P-LR-freeze",
+        "F-analysis",
+        "P-mask-qual"
+      ],
+      "gate": "G1; G2_null_allows_one_seed42_confirmation_not_predictor_scale",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "teacher": "B",
+      "policy": "top25_raw_B_disagreement",
+      "seed": 42,
+      "optimizer_steps": 150,
+      "implementation": "study_adapter_required"
+    },
+    {
+      "id": "T-B-random25",
+      "phase": "training-H3",
+      "kind": "training",
+      "models": [
+        "S",
+        "B"
+      ],
+      "depends_on": [
+        "P-LR-freeze",
+        "F-analysis",
+        "P-mask-qual"
+      ],
+      "gate": "G1; G2_null_allows_one_seed42_confirmation_not_predictor_scale",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "teacher": "B",
+      "policy": "matched_random25",
+      "seed": 42,
+      "optimizer_steps": 150,
+      "implementation": "study_adapter_required"
+    },
+    {
+      "id": "B-Q-top16",
+      "phase": "baseline",
+      "kind": "training",
+      "models": [
+        "S",
+        "Q"
+      ],
+      "depends_on": [
+        "P-LR-freeze",
+        "P-operating-freeze"
+      ],
+      "gate": "method_specific_qualification_and_frozen_config",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "comparator": "strict_top16",
+      "optimizer_steps": 150,
+      "seed": 42,
+      "implementation": "method_wiring_and_semantic_qualification_required"
+    },
+    {
+      "id": "B-Q-BPM",
+      "phase": "baseline",
+      "kind": "training",
+      "models": [
+        "S",
+        "Q"
+      ],
+      "depends_on": [
+        "P-LR-freeze",
+        "P-operating-freeze"
+      ],
+      "gate": "method_specific_qualification_and_frozen_config",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "comparator": "byte_prefix_whitespace_mask",
+      "optimizer_steps": 150,
+      "seed": 42,
+      "implementation": "method_wiring_and_semantic_qualification_required"
+    },
+    {
+      "id": "B-GRPO",
+      "phase": "baseline",
+      "kind": "training",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "P-LR-freeze",
+        "P-operating-freeze"
+      ],
+      "gate": "method_specific_qualification_and_frozen_config",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "comparator": "verifier_GRPO",
+      "optimizer_steps": 150,
+      "seed": 42,
+      "implementation": "method_wiring_and_semantic_qualification_required"
+    },
+    {
+      "id": "E-T-B-all",
+      "phase": "eval",
+      "kind": "checkpoint_eval",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "T-B-all"
+      ],
+      "gate": "valid_fixed_step150_checkpoint_and_frozen_evaluator",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "checkpoint_step": 150,
+      "gsm8k_test": 1319,
+      "math500": 500,
+      "samples_per_problem": 8
+    },
+    {
+      "id": "E-T-B-strict",
+      "phase": "eval",
+      "kind": "checkpoint_eval",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "T-B-strict"
+      ],
+      "gate": "valid_fixed_step150_checkpoint_and_frozen_evaluator",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "checkpoint_step": 150,
+      "gsm8k_test": 1319,
+      "math500": 500,
+      "samples_per_problem": 8
+    },
+    {
+      "id": "E-T-Q-strict",
+      "phase": "eval",
+      "kind": "checkpoint_eval",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "T-Q-strict"
+      ],
+      "gate": "valid_fixed_step150_checkpoint_and_frozen_evaluator",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "checkpoint_step": 150,
+      "gsm8k_test": 1319,
+      "math500": 500,
+      "samples_per_problem": 8
+    },
+    {
+      "id": "E-T-B-shift15",
+      "phase": "eval",
+      "kind": "checkpoint_eval",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "T-B-shift15"
+      ],
+      "gate": "valid_fixed_step150_checkpoint_and_frozen_evaluator",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "checkpoint_step": 150,
+      "gsm8k_test": 1319,
+      "math500": 500,
+      "samples_per_problem": 8
+    },
+    {
+      "id": "E-T-B-shift05",
+      "phase": "eval",
+      "kind": "checkpoint_eval",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "T-B-shift05"
+      ],
+      "gate": "valid_fixed_step150_checkpoint_and_frozen_evaluator",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "checkpoint_step": 150,
+      "gsm8k_test": 1319,
+      "math500": 500,
+      "samples_per_problem": 8
+    },
+    {
+      "id": "E-T-B-shift30",
+      "phase": "eval",
+      "kind": "checkpoint_eval",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "T-B-shift30"
+      ],
+      "gate": "valid_fixed_step150_checkpoint_and_frozen_evaluator",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "checkpoint_step": 150,
+      "gsm8k_test": 1319,
+      "math500": 500,
+      "samples_per_problem": 8
+    },
+    {
+      "id": "E-T-Q-top25",
+      "phase": "eval",
+      "kind": "checkpoint_eval",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "T-Q-top25"
+      ],
+      "gate": "valid_fixed_step150_checkpoint_and_frozen_evaluator",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "checkpoint_step": 150,
+      "gsm8k_test": 1319,
+      "math500": 500,
+      "samples_per_problem": 8
+    },
+    {
+      "id": "E-T-Q-random25",
+      "phase": "eval",
+      "kind": "checkpoint_eval",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "T-Q-random25"
+      ],
+      "gate": "valid_fixed_step150_checkpoint_and_frozen_evaluator",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "checkpoint_step": 150,
+      "gsm8k_test": 1319,
+      "math500": 500,
+      "samples_per_problem": 8
+    },
+    {
+      "id": "E-T-B-top25",
+      "phase": "eval",
+      "kind": "checkpoint_eval",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "T-B-top25"
+      ],
+      "gate": "valid_fixed_step150_checkpoint_and_frozen_evaluator",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "checkpoint_step": 150,
+      "gsm8k_test": 1319,
+      "math500": 500,
+      "samples_per_problem": 8
+    },
+    {
+      "id": "E-T-B-random25",
+      "phase": "eval",
+      "kind": "checkpoint_eval",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "T-B-random25"
+      ],
+      "gate": "valid_fixed_step150_checkpoint_and_frozen_evaluator",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "checkpoint_step": 150,
+      "gsm8k_test": 1319,
+      "math500": 500,
+      "samples_per_problem": 8
+    },
+    {
+      "id": "E-B-Q-top16",
+      "phase": "eval",
+      "kind": "checkpoint_eval",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "B-Q-top16"
+      ],
+      "gate": "valid_fixed_step150_checkpoint_and_frozen_evaluator",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "checkpoint_step": 150,
+      "gsm8k_test": 1319,
+      "math500": 500,
+      "samples_per_problem": 8
+    },
+    {
+      "id": "E-B-Q-BPM",
+      "phase": "eval",
+      "kind": "checkpoint_eval",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "B-Q-BPM"
+      ],
+      "gate": "valid_fixed_step150_checkpoint_and_frozen_evaluator",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "checkpoint_step": 150,
+      "gsm8k_test": 1319,
+      "math500": 500,
+      "samples_per_problem": 8
+    },
+    {
+      "id": "E-B-GRPO",
+      "phase": "eval",
+      "kind": "checkpoint_eval",
+      "models": [
+        "S"
+      ],
+      "depends_on": [
+        "B-GRPO"
+      ],
+      "gate": "valid_fixed_step150_checkpoint_and_frozen_evaluator",
+      "status": "planned_not_submitted",
+      "launch_ready": false,
+      "entrypoint": null,
+      "checkpoint_step": 150,
+      "gsm8k_test": 1319,
+      "math500": 500,
+      "samples_per_problem": 8
+    }
+  ],
+  "counts": {
+    "lr_screens": 3,
+    "main_training_arms": 8,
+    "dose_completion": 2,
+    "comparator_training": 3,
+    "training_total_if_all_gates_open": 16,
+    "fixed_step150_eval_families": 13
+  },
+  "not_covered_full_draft": [
+    "all_misroute_drop_rates",
+    "ULD_GOLD_SimCT_BPM_method_on_identity",
+    "capacity_placebo",
+    "D5_D6",
+    "P4_transplant",
+    "second_cross_family_teacher",
+    "generalization_eval"
+  ]
+}

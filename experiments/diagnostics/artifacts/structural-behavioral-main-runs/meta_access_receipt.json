@@ -1,0 +1,37 @@
+{
+  "checked_at_utc": "2026-10-16T09:44:33.424313+00:00",
+  "repo": "meta-llama/Llama-3.1-8B-Instruct",
+  "metadata_http_status": 200,
+  "weights_downloaded_locally": false,
+  "credential_value_logged": false,
+  "checks": {
+    "config.json": {
+      "http_status": 200,
+      "sha256": "29e4c210b0d6ac178b16b2a255a568bdb23b581e50ca1ef6a6d071dd85704e6e"
+    },
+    "tokenizer_config.json": {
+      "http_status": 200,
+      "sha256": "177c7b61e616fecb84c17ce0591acb92c6c4d60e9ac5ababfb940ff23bbcd424"
+    },
+    "first_weight_head": {
+      "file": "model-00001-of-00004.safetensors",
+      "http_status": 302,
+      "access_authorized_or_signed_redirect": true
+    }
+  },
+  "revision": "0e9e39f249a16976918f6564b8830bc894c89659",
+  "weights_lfs": {
+    "model-00001-of-00004.safetensors": "2b1879f356aed350030bb40eb45ad362c89d9891096f79a3ab323d3ba5607668",
+    "model-00002-of-00004.safetensors": "09d433f650646834a83c580877bd60c6d1f88f7755305c12576b5c7058f9af15",
+    "model-00003-of-00004.safetensors": "fc1cdddd6bfa91128d6e94ee73d0ce62bfcdb7af29e978ddcab30c66ae9ea7fa",
+    "model-00004-of-00004.safetensors": "92ecfe1a2414458b4821ac8c13cf8cb70aed66b5eea8dc5ad9eeb4ff309d6d7b"
+  },
+  "pilot_comparison": {
+    "run_id": "h2-llama32-qwen2-s42-p100-n2-e1000-20261015-r1",
+    "mirror_repo": "NousResearch/Meta-Llama-3.1-8B-Instruct",
+    "mirror_revision": "d10aef7999a2b5ba950ab3974312feeedbfe0b77",
+    "all_four_weight_lfs_hashes_match_pilot_verified_weights": true,
+    "tokenizer_config_bytes_identical": false,
+    "generation_or_scoring_equivalence_verified": false
+  }
+}

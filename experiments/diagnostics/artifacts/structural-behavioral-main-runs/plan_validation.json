@@ -1,0 +1,18 @@
+{
+  "validation": "PASS",
+  "type": "static_plan_consistency_not_runtime_test",
+  "DAG_nodes": 139,
+  "DAG_acyclic": true,
+  "local_document_links_valid": true,
+  "prior_staged_index_unchanged": true,
+  "models_consistent": true,
+  "training_plus_lr_total": 16,
+  "GPU_jobs_launched": 0,
+  "input_sha256": {
+    "experiments/diagnostics/STRUCTURAL_BEHAVIORAL_MAIN_PLAN.md": "879a53272a5380e93c837e48e3f95664e0fa6b85c77bd5b18162bf7b8ede8d17",
+    "experiments/diagnostics/structural_behavioral_plan_contract.json": "1b7d5b92bef6d60eb0329d3e00289c732ac7d98c7600312a739efa62323ede6c",
+    "experiments/diagnostics/artifacts/structural-behavioral-main-runs/RUN_MATRIX.md": "86c20bc0daa057e046d1dfb2714d0f68f7403ea174c843faebc4b604a6b9d53c",
+    "experiments/diagnostics/artifacts/structural-behavioral-main-runs/run_matrix.json": "9348a54b48324f09f2a15a4ae4c0cf770e5ab9e91b4e3c74d660790f2bd5c4a8",
+    "experiments/diagnostics/artifacts/structural-behavioral-main-runs/meta_access_receipt.json": "6a9f3d3ac6e36129f29a60097bfc04f73111cf4b376ac403916f8bbf0bc49853"
+  }
+}

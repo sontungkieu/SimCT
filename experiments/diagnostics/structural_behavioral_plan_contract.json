@@ -1,0 +1,350 @@
+{
+  "study_version": "sb-main-v2",
+  "date_local": "2026-10-16",
+  "timezone": "Asia/Saigon",
+  "status": "design_complete_execution_not_started_by_this_turn",
+  "plan_document": "STRUCTURAL_BEHAVIORAL_MAIN_PLAN.md",
+  "primary_objective": "Separate structural, measurement, calibration, teacher-quality and behavioral explanations for cross-tokenizer disagreement; then test supervision reliability and targeted intervention.",
+  "source": {
+    "artifact_url": "https://claude.ai/artifact/8ZaYo6r8ggu937EF8dXM3m#1210cb5e-8513",
+    "saved_content_html_sha256": "24e8521d2cee71794f4f299250e79f9809f24f406c2c3855080f957535ee87ea",
+    "extracted_draft_lf_sha256": "1fbeb8cabde59ce51f0f65fd84517122da8b780a154a9944f1119cdc4461c435",
+    "default_protocol": "lean_five_experiments_with_detailed_protocol_as_reference",
+    "user_model_overrides_take_priority": true
+  },
+  "existing_results": {
+    "gold_uld_company_results": "retain_as_evidence; inventory actual manifests before deciding comparability",
+    "company_run_count_reported_by_user": 10,
+    "company_live_status_verified_this_turn": false,
+    "cancel_delete_or_modify_existing_jobs": false,
+    "h2_pilot_run_id": "h2-llama32-qwen2-s42-p100-n2-e1000-20261015-r1",
+    "h2_pilot_prompt_count": 100,
+    "h2_pilot_response_count": 200,
+    "h2_pilot_positions_requested": 1000,
+    "h2_pilot_positions_valid": 998,
+    "h2_pilot_x_raw_mean_nats": 0.024866232461953505,
+    "h2_pilot_x_shape_mean_nats": 0.025318023992987538,
+    "h2_pilot_claim_level": "exploratory_canonical_word_proxy_not_original_detailed_gate1",
+    "h2_pilot_B": {
+      "repo": "NousResearch/Meta-Llama-3.1-8B-Instruct",
+      "revision": "d10aef7999a2b5ba950ab3974312feeedbfe0b77",
+      "role": "same_tokenizer_reference_subject_to_identity_audit",
+      "mirror_authorized_by_user": true,
+      "preserve_actual_mirror_tokenizer_and_template": true
+    }
+  },
+  "models": {
+    "S": {
+      "repo": "meta-llama/Llama-3.2-3B-Instruct",
+      "revision": "0cb88a4f764b7a12671c53f0838cd831a0843b95",
+      "role": "student",
+      "additional_sft_warmup": false
+    },
+    "B": {
+      "repo": "meta-llama/Llama-3.1-8B-Instruct",
+      "revision": "0e9e39f249a16976918f6564b8830bc894c89659",
+      "role": "same_tokenizer_reference_subject_to_identity_audit",
+      "official_meta_requested_by_user": true,
+      "access_receipt": "artifacts/structural-behavioral-main-runs/meta_access_receipt.json",
+      "company_download_and_load_verified": false,
+      "bridge_against_pilot_required": true
+    },
+    "Q": {
+      "repo": "Qwen/Qwen2-7B-Instruct",
+      "revision": "f2826a00ceef68f0f2b946d945ecc0477ce4450c",
+      "role": "cross_family_teacher"
+    }
+  },
+  "hypotheses": {
+    "H1": "alignment handling errors impose training cost; dose-response needs multiple corruption rates",
+    "H2": "excess disagreement persists at strict joint positions after specified controls in the operational event estimator",
+    "H3_predictive": "excess disagreement predicts counterfactual reliability beyond generic disagreement and local teacher competence",
+    "H3_causal": "targeted masking outperforms matched random removal beyond same-tokenizer generic-noise controls",
+    "H4": "causal tokenizer-behavior separability remains conditional on a valid factorial manipulation"
+  },
+  "main_pool_proposed": {
+    "seed": 42,
+    "prompt_count": 2000,
+    "gsm8k_train_prompts": 1000,
+    "math_train_prompts": 1000,
+    "disjoint_from_pilot_prompts": true,
+    "responses_per_prompt": 4,
+    "expected_response_count": 8000,
+    "max_new_tokens": 1024,
+    "temperature": 1.0,
+    "top_p": 1.0,
+    "top_k": 0,
+    "e3_positions": 5000,
+    "calibration_reference_texts": 512,
+    "calibration_disjoint_from_pilot_main_eval": true,
+    "quality_samples_per_problem_per_model": 8,
+    "quality_full_problems": 3819,
+    "quality_full_responses_all_three_models_before_reuse": 91656,
+    "template_control_responses": 200,
+    "source_dataset_and_prompt_manifests": "must_freeze_before_execution"
+  },
+  "partitioning": {
+    "kind": "ten_prompt_data_shards_not_ten_training_seeds",
+    "shard_ids": [
+      "00",
+      "01",
+      "02",
+      "03",
+      "04",
+      "05",
+      "06",
+      "07",
+      "08",
+      "09"
+    ],
+    "assignment": "stable_hash_sort_canonical_dataset_row_id_and_study_seed_then_round_robin",
+    "prompts_per_shard": 200,
+    "responses_per_shard": 800,
+    "all_responses_and_forks_of_prompt_share_shard": true,
+    "all_model_scores_share_position_and_candidate_ids": true,
+    "independent_teacher_position_sampling": false,
+    "rng_keys": "precomputed_logical_task_keys; batching_and_backend_recorded_separately"
+  },
+  "measurement": {
+    "x_definition": "JS(Q,S)-JS(B,S) at identical prefixes and common event cells",
+    "primary_aggregation": "equal_prompt_mean_of_sampling_weighted_available_position_means",
+    "uncertainty_cluster": "prompt",
+    "primary_content_stratum": "word_initial",
+    "primary_h2_reporting_space": "audited_E3_with_explicit_exact_or_proxy_label",
+    "online_p3_mask_space": "global_calibrated_E2_X; E2_E3_rank_concordance_must_be_reported",
+    "online_p3_teacher_target_temperature": 1.0,
+    "existing_word_scoring_contract": "exact_ASCII_atomic_events_plus_canonical_word_boundary_proxy",
+    "next_byte_is_separate_sensitivity_not_E2_replacement": true,
+    "global_token_temperature_is_distinct_from_event_cell_entropy_matching": true,
+    "full_text_marginal_or_pure_family_causality_claim_permitted": false
+  },
+  "gates": {
+    "G0": {
+      "status": "company_runtime_not_verified",
+      "requirements": [
+        "identity_and_roundtrip",
+        "native_canonical_audit",
+        "probability_mass_and_residual",
+        "cached_uncached_parity",
+        "batched_independent_parity",
+        "backend_precision_qualification"
+      ]
+    },
+    "G1_adapted_lean": {
+      "status": "not_tested_on_main_pool",
+      "minimum_practical_x_nats_proposed": 0.005,
+      "confidence_level": 0.95,
+      "requires_controls_and_error_bounds": true,
+      "unbounded_measurement_or_unmatched_quality_disposition": "provisional_d4_diagnostic_only",
+      "ci_includes_zero_disposition": "inconclusive_not_automatic_equivalence",
+      "original_detailed_placebo_capacity_gate_claim": false
+    },
+    "G2": {
+      "status": "not_tested",
+      "predictive_delta_auroc_target_from_draft": 0.03,
+      "requires_prompt_heldout_prediction_and_cluster_uncertainty": true,
+      "null_disposition": "one_p3_confirmation_screen_then_decide; skip_predictor_scale"
+    }
+  },
+  "counterfactual_proposed": {
+    "screen_disagreement_positions": 200,
+    "screen_agreement_positions": 100,
+    "full_disagreement_positions": 2000,
+    "full_agreement_positions": 500,
+    "student_continuations_per_branch": 8,
+    "branches_per_position": 2,
+    "full_student_continuations": 40000,
+    "teacher_continuations_per_prefix_per_teacher": 4,
+    "teacher_local_competence_max_continuations": 16000,
+    "agreement_null_seed_policy": "independent_continuation_seeds_on_identical_forced_event",
+    "treatment_control_seed_policy": "paired_logical_task_seeds_not_a_guarantee_of_variance_reduction",
+    "word_vs_token_unit_mismatch_allowed": false,
+    "delta_policy": "preregistered_quantile_of_independent_agreement_null_calibration_subset",
+    "optional_teacher_block_variant_positions": 1000,
+    "optional_teacher_block_variant_tokens": 8
+  },
+  "training_proposed_not_qualified": {
+    "screen_seed": 42,
+    "optimizer_steps_main": 150,
+    "prompts_per_update": 64,
+    "rollouts_per_prompt": 4,
+    "sequences_per_update": 256,
+    "lr_development_candidates": [
+      5e-07,
+      1e-06,
+      2e-06
+    ],
+    "lr_development_updates": 30,
+    "scheduler_horizon_unchanged_during_screen": 150,
+    "optimizer": "AdamW",
+    "scheduler": "cosine",
+    "lr_warmup_ratio": 0.05,
+    "lr_warmup_optimizer_updates_rounded_up": 8,
+    "gradient_clip": 1.0,
+    "primary_divergence": "reverse_KL_on_audited_E1_shared_byte_content_support",
+    "p1_onpolicy_estimand": "teacher_total_training_effect_under_common_joint_strict_eligibility_rule",
+    "p1_identical_actual_positions_across_independent_onpolicy_runs_claim": false,
+    "loss_normalizer": "total_pre_mask_response_tokens",
+    "mask_fraction": 0.25,
+    "random_twin_exact_mask_count": true,
+    "random_twin_loss_mass_relative_tolerance_proposed": 0.01,
+    "causal_accuracy_gain_target_absolute_from_draft": 0.01,
+    "primary_eval_checkpoint_step": 150,
+    "arms": [
+      "T-B-all",
+      "T-B-strict",
+      "T-Q-strict",
+      "T-B-shift15",
+      "T-Q-top25",
+      "T-Q-random25",
+      "T-B-top25",
+      "T-B-random25"
+    ],
+    "required_html_comparator_cells": [
+      "initial_student",
+      "GRPO_matched_rollouts",
+      "strict_full_shared_vocab",
+      "strict_top16",
+      "BPM_whitespace_mask"
+    ],
+    "automatic_additional_seeds": false,
+    "dose_response_completion_arms": [
+      "T-B-shift05",
+      "T-B-shift30"
+    ],
+    "adapted_comparator_arms": [
+      "B-Q-top16",
+      "B-Q-BPM",
+      "B-GRPO"
+    ],
+    "lr_development_eval_prompts": 256,
+    "lr_dev_disjoint_from_main_pilot_calibration_test": true,
+    "primary_eval_samples_per_problem": 8
+  },
+  "work_packages": [
+    {
+      "id": "01",
+      "name": "evidence_inventory",
+      "depends_on": [],
+      "gpu_needed": false
+    },
+    {
+      "id": "02",
+      "name": "correctness_runtime_gate",
+      "depends_on": [
+        "01"
+      ],
+      "gpu_needed": true
+    },
+    {
+      "id": "03",
+      "name": "quality_calibration_template",
+      "depends_on": [
+        "02"
+      ],
+      "gpu_needed": true
+    },
+    {
+      "id": "04",
+      "name": "main_pool",
+      "depends_on": [
+        "02"
+      ],
+      "gpu_needed": true
+    },
+    {
+      "id": "05",
+      "name": "structural_census",
+      "depends_on": [
+        "04"
+      ],
+      "gpu_needed": false
+    },
+    {
+      "id": "06",
+      "name": "event_spaces_excess_divergence_gate1",
+      "depends_on": [
+        "03",
+        "04",
+        "05"
+      ],
+      "gpu_needed": true
+    },
+    {
+      "id": "07",
+      "name": "counterfactual_forks",
+      "depends_on": [
+        "06"
+      ],
+      "gate": "G1_or_explicit_diagnostic_screen",
+      "gpu_needed": true
+    },
+    {
+      "id": "08",
+      "name": "local_competence_predictive_analysis",
+      "depends_on": [
+        "07"
+      ],
+      "gpu_needed": true
+    },
+    {
+      "id": "09",
+      "name": "position_comparison_structural_intervention",
+      "depends_on": [
+        "02",
+        "03",
+        "04"
+      ],
+      "gpu_needed": true
+    },
+    {
+      "id": "10",
+      "name": "matched_masking_evaluation_synthesis",
+      "depends_on": [
+        "06",
+        "08",
+        "09"
+      ],
+      "gate": "G1; G2_null_allows_one_confirmation_screen",
+      "gpu_needed": true
+    }
+  ],
+  "compute": {
+    "company_gpus_available_reported": 6,
+    "company_nodes_reported": 4,
+    "logical_worker_slots": [
+      "W1",
+      "W2",
+      "W3",
+      "W4",
+      "W5",
+      "W6"
+    ],
+    "node_uuid_mapping": null,
+    "planning_only_no_launch_this_turn": true,
+    "inference_cross_node_nccl_required": false,
+    "benchmark_positions_per_model": [
+      100,
+      200
+    ],
+    "budget_margin_fraction_proposed": 0.2,
+    "estimate_basis": "company_model_specific_generation_and_candidate_scoring_benchmark; not_historical_Gemma_generation_tok_per_s",
+    "new_paid_modal_jobs": false
+  },
+  "conditional_extensions": [
+    "capacity_reference",
+    "larger_same_family_placebo",
+    "D5_learnability",
+    "D6_drift",
+    "P2_full_dose_response",
+    "P3b_predictor",
+    "P4_factorial_transplant",
+    "second_cross_family_teacher",
+    "second_student",
+    "IFEval_MMLU_generalization"
+  ],
+  "next_action": "Freeze task/data manifests, map assigned UUIDs, qualify official B and backend, run bridge and benchmarks; execute the concrete gated run matrix using existing SimCT components.",
+  "no_fake_entrypoints": true,
+  "run_matrix": "artifacts/structural-behavioral-main-runs/run_matrix.json",
+  "run_matrix_document": "artifacts/structural-behavioral-main-runs/RUN_MATRIX.md"
+}
