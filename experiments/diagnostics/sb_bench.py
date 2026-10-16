@@ -32,7 +32,13 @@ def main() -> None:
     import pandas as pd
     from transformers import AutoModelForCausalLM, AutoTokenizer
     from hf_frozen_sampler import terminal_token_ids
-    from h2_pilot import render
+
+    def render(tok, prompt):
+        # Same user-only chat render as h2_pilot.render, without importing
+        # h2_pilot (its module level mkdirs /results on import).
+        return [int(x) for x in tok.apply_chat_template(
+            [{"role": "user", "content": prompt}],
+            tokenize=True, add_generation_prompt=True)]
 
     root = Path(args.root)
     new = Path(os.environ.get("SB_NEW", ""))

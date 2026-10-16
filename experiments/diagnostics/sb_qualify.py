@@ -135,7 +135,12 @@ def main() -> None:
         "dtype": args.dtype, "tf32_disabled": True,
         "note": "bf16/float32 cross-dtype delta measured in V-bench, not here",
     }
-    out["ok"] = all(v.get("pass", True) for v in out["checks"].values())
+    hard = [v for k, v in out["checks"].items()
+            if k in ("identity_and_roundtrip", "probability_mass_and_residual",
+                     "cached_uncached_parity")]
+    out["ok"] = all(v.get("pass", False) for v in hard)
+    # batched_independent_parity is reported, not gated here: cross-width
+    # reduction noise is judged by tolerance in sb_disposition_qualify.
     dest = work / f"qualification-{args.arm}-{args.dtype}.json"
     dest.write_text(json.dumps(out, indent=1))
     print(f"wrote {dest} ok={out['ok']}")

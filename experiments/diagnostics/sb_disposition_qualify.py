@@ -12,7 +12,11 @@ import sys
 from pathlib import Path
 
 ARMS = ("S", "B", "Q")
-FP32_TOL = 1e-4
+# Batched-vs-solo spans different total widths, so even fp32 accumulates
+# reduction-order noise (~4e-5 observed). Tolerance carries 25x margin;
+# bf16 noise is recorded per-arm and judged at rank level in V-bench.
+FP32_TOL = 1e-3
+BF16_WARN = 0.5
 
 
 def main() -> None:
@@ -43,14 +47,20 @@ def main() -> None:
                     ad["ok"] = False
                     ad.setdefault("failed", []).append(f"float32/batched={v}")
             else:
-                ad["bf16_batch_noise"] = b.get("max_abs_diff")
+                v = b.get("max_abs_diff")
+                ad["bf16_batch_noise"] = v
+                if not isinstance(v, (int, float)):
+                    ad["ok"] = False
+                    ad.setdefault("failed", []).append("bfloat16/batched=missing")
+                elif v > BF16_WARN:
+                    ad.setdefault("warnings", []).append(f"bfloat16/batched={v} > {BF16_WARN}")
         if not ad["ok"]:
             verdict["G0"] = "FAIL"
         verdict["arms"][arm] = ad
     verdict["notes"] = [
         "cached parity exact 0.0 => KV-cache implementation correct.",
-        "fp32 batched ~4e-5 => batching geometry exact modulo fp accumulation.",
-        "bf16 batched noise (S 0.0/B 0.125/Q 0.359) is precision, not a bug;",
+        "fp32 batched ~4e-5 (tol 1e-3) => batching geometry exact modulo fp accumulation.",
+        "bf16 batched noise is precision-by-width, recorded per-arm;",
         "V-bench must test whether it disturbs E2/X rank order; fp32 fallback ready.",
         "Qwen sliding-window+eager warning recorded; bench compares impls if needed.",
     ]
