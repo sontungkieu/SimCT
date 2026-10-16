@@ -32,6 +32,7 @@ image = modal.Image.from_registry(IMAGE).entrypoint([])
 
 SOURCES = {
     "experiments/diagnostics/sb_qualify.py": "sb_qualify.py",
+    "experiments/diagnostics/sb_pool.py": "sb_pool.py",
     "experiments/diagnostics/sb_bench.py": "sb_bench.py",
     "experiments/diagnostics/sb_disposition_qualify.py": "sb_disposition_qualify.py",
     "experiments/diagnostics/h2_measurements.py": "h2_measurements.py",
@@ -159,20 +160,25 @@ def fetch(arm: str):
     return {"arm": arm, "cached": False}
 
 
-def _gpu_job(kind: str, arm: str, dtype: str, seconds: int):
+def _gpu_job(kind: str, arm: str, dtype: str, seconds: int, shard: str = ""):
     assets.reload()
     results.reload()
     root = Path("/results") / RUN
     work = root / "work"
     work.mkdir(parents=True, exist_ok=True)
     _write_assets(root)
-    script = {"qualify": "sb_qualify.py", "bench": "sb_bench.py"}[kind]
-    log = work / f"{kind}-{arm}-{dtype}.log"
+    script = {"qualify": "sb_qualify.py", "bench": "sb_bench.py",
+              "pool": "sb_pool.py"}[kind]
+    log = work / (f"{kind}-{arm}-{dtype}.log" if kind != "pool"
+                  else f"pool-{shard}.log")
     if log.exists():
         raise RuntimeError("output exists; use a new run id for repairs")
     env = _study_env(root)
-    rc = _run([PY, "-u", f"/opt/sb/{script}", "--arm", arm, "--dtype", dtype],
-              env, log, seconds)
+    if kind == "pool":
+        cmd = [PY, "-u", "/opt/sb/sb_pool.py", "--shard", shard]
+    else:
+        cmd = [PY, "-u", f"/opt/sb/{script}", "--arm", arm, "--dtype", dtype]
+    rc = _run(cmd, env, log, seconds)
     results.commit()
     tail = "\n".join(log.read_text().splitlines()[-8:])
     print(f"SB_{kind.upper()} arm={arm} dtype={dtype} rc={rc}\n{tail}", flush=True)
@@ -207,8 +213,15 @@ def bench_big(arm: str, dtype: str):
     return _gpu_job("bench", arm, dtype, 1500)
 
 
+@app.function(image=image, gpu="L4", cpu=4, memory=24576, timeout=3300,
+              retries=0, max_containers=1, scaledown_window=2, volumes=volumes)
+def pool_s(shard: str):
+    return _gpu_job("pool", "S", "bfloat16", 3200, shard)
+
+
 @app.local_entrypoint()
-def main(job: str = "fetch", arm: str = "S", dtype: str = "bfloat16"):
+def main(job: str = "fetch", arm: str = "S", dtype: str = "bfloat16",
+         shard: str = ""):
     if job == "fetch":
         if arm not in MODELS:
             raise ValueError(arm)
@@ -221,5 +234,9 @@ def main(job: str = "fetch", arm: str = "S", dtype: str = "bfloat16"):
     elif job == "bench":
         fn = bench_s if (arm == "S" and dtype == "bfloat16") else bench_big
         print("SB_LOCAL_JSON=" + json.dumps(fn.remote(arm, dtype)))
+    elif job == "pool":
+        if arm != "S" or not shard:
+            raise ValueError("pool needs arm=S and --shard NN")
+        print("SB_LOCAL_JSON=" + json.dumps(pool_s.remote(shard)))
     else:
         raise ValueError(job)

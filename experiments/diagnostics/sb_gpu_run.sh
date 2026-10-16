@@ -6,12 +6,13 @@
 set -u
 set -o pipefail
 STAGE="${1:?usage: sb_gpu_run.sh <stage> --arm A --dtype D --gpu N}"; shift
-ARM=""; DTYPE="bfloat16"; GPU=""
+ARM=""; DTYPE="bfloat16"; GPU=""; SHARD=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --arm) ARM="${2:?}"; shift 2;;
     --dtype) DTYPE="${2:?}"; shift 2;;
     --gpu) GPU="${2:?}"; shift 2;;
+    --shard) SHARD="${2:?}"; shift 2;;
     *) echo "REFUSE: unknown arg $1"; exit 2;;
   esac
 done
@@ -47,6 +48,18 @@ role_for() {
     bench:huyhq21-membedding-v3-0-0:1) echo "S";;
     bench:huyhq21-membedding-v3-0-0:3) echo "B";;
     bench:convert-nemo-rl-4gpus-v100-2608-0-3:0) echo "Q";;
+    pool:convert-nemo-rl-4gpus-v100-2608-0-3:*) echo "S";;
+    *) echo "";;
+  esac
+}
+
+# Pool shards per nemo gpu (10 shards over 4 cards).
+pool_shards_for() {
+  case "$1:$2" in
+    convert-nemo-rl-4gpus-v100-2608-0-3:0) echo "00 01";;
+    convert-nemo-rl-4gpus-v100-2608-0-3:1) echo "02 03";;
+    convert-nemo-rl-4gpus-v100-2608-0-3:2) echo "04 05 06";;
+    convert-nemo-rl-4gpus-v100-2608-0-3:3) echo "07 08 09";;
     *) echo "";;
   esac
 }
@@ -62,6 +75,13 @@ fi
 WANT="$(role_for "$STAGE" "$HOST" "$GPU")"
 [ -n "$WANT" ] || { echo "REFUSE: $HOST gpu$GPU not assigned for stage $STAGE"; exit 5; }
 [ "$ARM" = "$WANT" ] || { echo "REFUSE: $HOST gpu$GPU runs $WANT this phase, not $ARM"; exit 5; }
+if [ "$STAGE" = "pool" ]; then
+  [ -n "$SHARD" ] || { echo "REFUSE: pool needs --shard NN"; exit 2; }
+  case " $(pool_shards_for "$HOST" "$GPU") " in
+    *" $SHARD "*) ;;
+    *) echo "REFUSE: shard $SHARD not assigned to $HOST gpu$GPU"; exit 5;;
+  esac
+fi
 
 export CUDA_VISIBLE_DEVICES="$GPU"
 export PYTHONPATH="$SB_NEW/experiments/diagnostics:$SB_NEW/experiments/mp_opd"
@@ -79,6 +99,11 @@ case "$STAGE" in
     esac
     exec /opt/venv/bin/python "$SB_NEW/experiments/diagnostics/sb_bench.py" \
       --arm "$ARM" --dtype "$DTYPE"
+    ;;
+  pool)
+    [ "$ARM" = "S" ] || { echo "REFUSE: pool is student-only"; exit 2; }
+    exec /opt/venv/bin/python "$SB_NEW/experiments/diagnostics/sb_pool.py" \
+      --shard "$SHARD"
     ;;
   *) echo "REFUSE: unknown stage $STAGE"; exit 2;;
 esac
