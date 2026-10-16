@@ -6,7 +6,7 @@
 set -u
 set -o pipefail
 STAGE="${1:?usage: sb_gpu_run.sh <stage> --arm A ...}"; shift
-ARM=""; DTYPE="bfloat16"; GPU=""; SHARD=""; RUN=""; LR=""
+ARM=""; DTYPE="bfloat16"; GPU=""; SHARD=""; RUN=""; LR=""; TAG=""; STEP=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --arm) ARM="${2:?}"; shift 2;;
@@ -15,6 +15,8 @@ while [ $# -gt 0 ]; do
     --shard) SHARD="${2:?}"; shift 2;;
     --run) RUN="${2:?}"; shift 2;;
     --lr) LR="${2:?}"; shift 2;;
+    --tag) TAG="${2:?}"; shift 2;;
+    --step) STEP="${2:?}"; shift 2;;
     *) echo "REFUSE: unknown arg $1"; exit 2;;
   esac
 done
@@ -65,6 +67,8 @@ role_for() {
     score:huyhq21-membedding-v1-0-0:*) echo "Q";;
     bridge:huyhq21-membedding-v3-0-0:3) echo "B";;
     train:huyhq21-membedding-v3-0-0:*) echo "S";;
+    eval:huyhq21-membedding-v3-0-0:*) echo "S";;
+    eval:huyhq21-membedding-v1-0-0:*) echo "S";;
     *) echo "";;
   esac
 }
@@ -159,6 +163,17 @@ case "$STAGE" in
       exec /opt/venv/bin/python "$SB_NEW/experiments/diagnostics/sb_train.py" \
         --run "$RUN"
     fi
+    ;;
+  eval)
+    [ "$ARM" = "S" ] || { echo "REFUSE: eval student is S"; exit 2; }
+    [ -n "$TAG" ] || { echo "REFUSE: eval needs --tag"; exit 2; }
+    [ -n "$RUN" ] || { echo "REFUSE: eval needs --run ID"; exit 2; }
+    [ -n "$STEP" ] || { echo "REFUSE: eval needs --step N|latest"; exit 2; }
+    if [ "$STEP" = "latest" ]; then CK="$SB_ROOT/work/train/$RUN/step_latest.pt";
+    else CK="$SB_ROOT/work/train/$RUN/checkpoint-step$STEP.pt"; fi
+    [ -f "$CK" ] || { echo "REFUSE: checkpoint missing $CK"; exit 6; }
+    exec /opt/venv/bin/python "$SB_NEW/experiments/diagnostics/sb_eval.py" \
+      --tag "$TAG" --split dev --samples 4 --checkpoint "$CK"
     ;;
   *) echo "REFUSE: unknown stage $STAGE"; exit 2;;
 esac
