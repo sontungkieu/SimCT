@@ -110,12 +110,15 @@ def main() -> None:
         batch = torch.tensor([[pad] * (w - len(a)) + a, [pad] * (w - len(b)) + b], device="cuda")
         mask = torch.tensor([[0] * (w - len(a)) + [1] * len(a),
                              [0] * (w - len(b)) + [1] * len(b)], device="cuda")
+        # Left pads must not shift rotary positions: real tokens keep solo
+        # positions 0..len-1, pads sit at 0 (masked out anyway).
+        pos = (mask.cumsum(-1) - 1).clamp(min=0)
         with torch.inference_mode():
             # CausalLM forward already returns vocab logits; no extra lm_head.
             # attention_mask is required: without it pad tokens pollute logits.
-            lp_cached = model(input_ids=batch, attention_mask=mask,
+            lp_cached = model(input_ids=batch, attention_mask=mask, position_ids=pos,
                               use_cache=True).logits.double()
-            lp_plain = model(input_ids=batch, attention_mask=mask,
+            lp_plain = model(input_ids=batch, attention_mask=mask, position_ids=pos,
                              use_cache=False).logits.double()
             lp_solo = model(
                 input_ids=torch.tensor([a], device="cuda"), use_cache=False
