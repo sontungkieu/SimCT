@@ -109,12 +109,12 @@ def main() -> None:
         pad = tok.pad_token_id if tok.pad_token_id is not None else tok.eos_token_id
         batch = torch.tensor([[pad] * (w - len(a)) + a, [pad] * (w - len(b)) + b], device="cuda")
         with torch.inference_mode():
-            out_cached = model(input_ids=batch, use_cache=True)
-            lp_cached = model.lm_head(out_cached.logits).double()
-            out_plain = model(input_ids=batch, use_cache=False)
-            lp_plain = model.lm_head(out_plain.logits).double()
-            solo = model(input_ids=torch.tensor([a], device="cuda"), use_cache=False)
-            lp_solo = model.lm_head(solo.logits).double()
+            # CausalLM forward already returns vocab logits; no extra lm_head.
+            lp_cached = model(input_ids=batch, use_cache=True).logits.double()
+            lp_plain = model(input_ids=batch, use_cache=False).logits.double()
+            lp_solo = model(
+                input_ids=torch.tensor([a], device="cuda"), use_cache=False
+            ).logits.double()
         d_cache = float((lp_cached - lp_plain).abs().max())
         d_batch = float((lp_plain[0, -1] - lp_solo[0, -1]).abs().max())
         out["checks"]["cached_uncached_parity"] = {"pass": bool(d_cache == 0.0), "max_abs_diff": d_cache}
